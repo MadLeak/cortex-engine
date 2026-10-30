@@ -1,0 +1,10 @@
+{
+  "vault": "Fern Cortex",
+  "siblings": {
+    "Kitchen Cortex": "../kitchen-cortex"
+  },
+  "warn_dependency_on": [],
+  "half_life_days": 30,
+  "allowed_addresses": {},
+  "learner": "fern"
+}
