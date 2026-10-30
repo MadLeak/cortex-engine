@@ -1,0 +1,1669 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brain panel</title>
+<!-- Template of brain.py: `build` writes _brain/Panel.html with the vault data inlined below. Self-contained, works offline. -->
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --wash: rgba(11,11,11,0.04);
+  --l0: #0b0b0b; --l1: #2a78d6; --l2: #eb6834; --l3: #1baf7a; --tool: #8a4fd8;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --shadow: 0 6px 24px rgba(11,11,11,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+    --l0: #f0efec; --l1: #3987e5; --l2: #d95926; --l3: #199e70; --tool: #a57cf0;
+    --shadow: 0 6px 24px rgba(0,0,0,0.5);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+  --l0: #f0efec; --l1: #3987e5; --l2: #d95926; --l3: #199e70; --tool: #a57cf0;
+  --shadow: 0 6px 24px rgba(0,0,0,0.5);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.wrap { max-width: 1440px; margin: 0 auto; padding: 16px; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+h1 { font-size: 20px; font-weight: 650; margin: 0; }
+.sub { color: var(--ink2); font-size: 12px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button, .chip { font: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+  border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+button:hover, .chip:hover { background: var(--wash); }
+.chip[aria-pressed="false"] { color: var(--muted); background: transparent; }
+.chip[aria-pressed="false"] .key { opacity: .35; }
+.key { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.key.L1 { background: var(--l1); } .key.L2 { background: var(--l2); } .key.L3 { background: var(--l3); } .key.tool { background: var(--tool); }
+.key.line { width: 14px; height: 2px; border-radius: 1px; background: var(--muted); vertical-align: middle; }
+.key.spoke { width: 14px; height: 1px; background: var(--axis); vertical-align: middle; }
+input[type=search] { font: inherit; font-size: 13px; border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+  border-radius: 8px; padding: 5px 10px; width: 220px; max-width: 100%; }
+label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.tile, .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; min-width: 0; }
+.tile { padding: 10px 12px; }
+.tile .k { font-size: 12px; color: var(--ink2); }
+.tile .v { font-size: 24px; font-weight: 650; line-height: 1.25; }
+.tile .d { font-size: 12px; color: var(--muted); }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; margin-bottom: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
+@media (max-width: 960px) { .main { grid-template-columns: 1fr; } }
+.card { padding: 12px 14px; }
+.card h2 { font-size: 13px; font-weight: 650; margin: 0 0 8px; }
+/* the toolbar is its own row and the view fills the rest of the card, so the brain never sits under the buttons and the card leaves no empty band below it */
+.orbit-card { position: relative; padding: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--page); } /* the toolbar row shares the black the 3D canvas paints */
+.orbit-tools { position: relative; padding: 10px 10px 0; display: flex; gap: 6px; flex-wrap: wrap; z-index: 2; }
+.rf { position: relative; display: inline-block; }
+.rf-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 3; min-width: 250px; max-height: 60vh; overflow: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 8px; }
+.rf-pop .rf-head { display: flex; gap: 6px; margin-bottom: 6px; }
+.rf-row { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 12px; }
+.rf-row:hover { background: var(--wash); }
+.rf-row label { flex: 1; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.rf-row .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.rf-row .only { border: 0; background: none; color: var(--muted); padding: 0 4px; font-size: 11px; }
+.rf-row .only:hover { color: var(--ink); text-decoration: underline; }
+.key.region { background: var(--c, var(--ink2)); }
+#rf-btn::after, #rfo-btn::after { content: " ▾"; color: var(--muted); }
+/* a focused region lights up like Tools: its sector and label in its colour, stronger; the others fade */
+#orbit .lit .sector, #orbit .lit .sector.odd { fill: var(--c); opacity: .26; }
+#orbit .lit .sector-edge { stroke: var(--c); stroke-dasharray: none; opacity: .8; }
+#orbit .lit .area-label { fill: var(--c); font-weight: 750; }
+#orbit .off .sector, #orbit .off .sector.odd { opacity: .03; } #orbit .off .area-label { opacity: .3; }
+#orbit, #sphere { display: block; width: 100%; flex: 1 1 auto; height: min(72vh, 740px); min-height: 360px; touch-action: none; cursor: grab; user-select: none; }
+#orbit[hidden], #sphere[hidden], .only3d[hidden] { display: none; }
+.seg { display: inline-flex; gap: 0; margin-right: 4px; }
+.seg .chip:first-child { border-radius: 999px 0 0 999px; } .seg .chip:last-child { border-radius: 0 999px 999px 0; margin-left: -1px; }
+.ring { fill: none; stroke: var(--axis); stroke-width: 1; }
+.ring.cold { stroke: var(--axis); stroke-dasharray: 3 7; }
+.ring-label { fill: var(--muted); font-size: 11px; text-anchor: middle; }
+.band { fill: none; pointer-events: none; }
+.band.L1 { stroke: var(--l1); opacity: .09; } .band.L2 { stroke: var(--l2); opacity: .08; } .band.L3 { stroke: var(--l3); opacity: .08; }
+.sector { fill: var(--ink); opacity: .06; pointer-events: none; }
+.sector.limb { fill: var(--tool); opacity: .13; }
+.sector.odd { opacity: 0; }
+.sector-edge { stroke: var(--axis); stroke-width: 1; stroke-dasharray: 2 6; pointer-events: none; }
+.area-label { fill: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
+  text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+.spoke { stroke: var(--axis); stroke-width: 1; }
+.syn { fill: none; stroke: var(--muted); stroke-width: 1.4; opacity: .38; }
+.syn.contradicts { stroke: var(--critical); stroke-dasharray: 6 4; opacity: .9; }
+.syn.hl { opacity: 1; stroke: var(--ink2); stroke-width: 2.2; }
+.syn.contradicts.hl { stroke: var(--critical); }
+.center circle { fill: var(--l0); stroke: var(--surface); stroke-width: 3; }
+.center text { fill: var(--surface); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+.node { cursor: pointer; }
+.node .hit { fill: transparent; }
+.node .dot { stroke: var(--surface); stroke-width: 2; }
+.node.L1 .dot { fill: var(--l1); } .node.L2 .dot { fill: var(--l2); } .node.L3 .dot { fill: var(--l3); }
+.node.seed .dot { fill: var(--surface); stroke-width: 2.5; }
+.node.seed.L1 .dot { stroke: var(--l1); } .node.seed.L2 .dot { stroke: var(--l2); } .node.seed.L3 .dot { stroke: var(--l3); }
+.node.obsolete .dot { fill: var(--muted); stroke: var(--surface); opacity: .7; }
+.node.provisional .dot { fill: var(--surface); stroke-width: 2; stroke-dasharray: 2 1.5; }
+.node.provisional.L1 .dot { stroke: var(--l1); } .node.provisional.L2 .dot { stroke: var(--l2); } .node.provisional.L3 .dot { stroke: var(--l3); }
+/* the Tools region: the agent's limbs, in their own colour; a tool nobody has used lately fades */
+.node.limb .dot { fill: var(--tool); } .node.limb.seed .dot, .node.limb.provisional .dot { fill: var(--surface); stroke: var(--tool); }
+.node.limb.cool .dot { opacity: .45; }
+.area-label.limb { fill: var(--tool); }
+/* colour by region: each region (top domain) has its own colour, set per element as --c; the ring still tells the layer */
+.colreg .node .dot { fill: var(--c); }
+.colreg .node.seed .dot, .colreg .node.provisional .dot { fill: var(--surface); stroke: var(--c); }
+.colreg .node.obsolete .dot { fill: var(--muted); stroke: var(--surface); }
+.colreg .sector, .colreg .sector.odd { fill: var(--c); opacity: .11; }
+.colreg .area-label { fill: var(--c); }
+.node .halo { fill: none; stroke: var(--ink); stroke-width: 2; display: none; }
+.node.sel .halo, .node.match .halo { display: inline; }
+.node.match:not(.sel) .halo { stroke-dasharray: 3 3; }
+.lbl { font-size: 12px; fill: var(--ink2); paint-order: stroke; stroke: var(--surface); stroke-width: 3.5px; stroke-linejoin: round; pointer-events: none; }
+.lbl.l1 { font-size: 14px; font-weight: 600; fill: var(--ink); }
+.dim { opacity: .12; }
+.lbl.dim { opacity: .2; }
+.sig, .sig-glow, .ripple { pointer-events: none; }
+.sig-glow { opacity: .22; }
+.sig.L1, .sig-glow.L1 { fill: var(--l1); } .sig.L2, .sig-glow.L2 { fill: var(--l2); } .sig.L3, .sig-glow.L3 { fill: var(--l3); }
+.sig.contradicts, .sig-glow.contradicts { fill: var(--critical); }
+.sig.query, .sig-glow.query { fill: var(--ink); }
+.ripple { fill: none; stroke-width: 2; }
+.ripple.query { stroke: var(--ink); } .ripple.validated { stroke: var(--good); }
+.ripple.L1 { stroke: var(--l1); } .ripple.L2 { stroke: var(--l2); } .ripple.L3 { stroke: var(--l3); }
+.qlabel { fill: var(--ink); font-size: 13px; text-anchor: middle; paint-order: stroke; stroke: var(--surface); stroke-width: 4px;
+  stroke-linejoin: round; transition: opacity .6s; pointer-events: none; }
+.ticker { position: absolute; left: 10px; bottom: 10px; max-width: min(420px, 70%); font-size: 12px; color: var(--ink2);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; pointer-events: none; }
+.ticker div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ticker div:first-child { color: var(--ink); }
+.live { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--ink2); margin-bottom: 6px; }
+.live .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; }
+.live.on .pulse { animation: pulse 2s ease-in-out infinite; }
+.live.off .pulse { background: var(--muted); }
+@keyframes pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .live.on .pulse { animation: none; } }
+.q-row { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.q-row .replay { margin-left: auto; padding: 1px 8px; font-size: 11px; }
+#tip { position: fixed; z-index: 10; max-width: 320px; background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow); padding: 8px 10px; font-size: 12px; pointer-events: none; }
+#tip b { display: block; font-size: 13px; margin-bottom: 2px; }
+#tip .m { color: var(--ink2); margin-bottom: 4px; }
+#detail h2.title { font-size: 16px; margin: 0 0 6px; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.pill { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--ink2); }
+.summary { margin: 0 0 10px; }
+.meter { height: 6px; background: var(--wash); border-radius: 3px; overflow: hidden; margin: 2px 0 10px; }
+.meter > i { display: block; height: 100%; border-radius: 3px; }
+.meter > i.L1 { background: var(--l1); } .meter > i.L2 { background: var(--l2); } .meter > i.L3 { background: var(--l3); }
+.sect { font-size: 12px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .04em; }
+ul.plain { list-style: none; margin: 0; padding: 0; }
+ul.plain li { padding: 3px 0; border-top: 1px solid var(--border); font-size: 13px; }
+ul.plain li:first-child { border-top: 0; }
+a.node-link { color: var(--ink); text-decoration: underline; text-decoration-color: var(--axis); cursor: pointer; }
+a.node-link:hover { text-decoration-color: var(--ink); }
+.reason { color: var(--ink2); }
+.crumbs { font-size: 12px; color: var(--ink2); margin-bottom: 6px; }
+.btn-primary { background: var(--ink); color: var(--surface); border-color: var(--ink); text-decoration: none; display: inline-block; margin-top: 10px; }
+.btn-primary:hover { background: var(--ink2); }
+.legend { display: grid; gap: 6px; font-size: 13px; }
+.legend svg { vertical-align: middle; margin-right: 6px; }
+.muted { color: var(--muted); }
+.empty { color: var(--muted); font-size: 13px; margin: 4px 0; }
+svg.chart { width: 100%; height: auto; display: block; }
+.chart .gridline { stroke: var(--grid); stroke-width: 1; }
+.chart .baseline { stroke: var(--axis); stroke-width: 1; }
+.chart .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .area.L1 { fill: var(--l1); } .chart .area.L2 { fill: var(--l2); } .chart .area.L3 { fill: var(--l3); }
+.chart .area { opacity: .22; }
+.chart .line { fill: none; stroke-width: 2; }
+.chart .line.L1 { stroke: var(--l1); } .chart .line.L2 { stroke: var(--l2); } .chart .line.L3 { stroke: var(--l3); }
+.chart .dlabel { fill: var(--ink2); font-size: 12px; }
+.chart .cross { stroke: var(--ink2); stroke-width: 1; }
+.bars { display: grid; gap: 6px; }
+.bar-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 40px; gap: 8px; align-items: center; font-size: 13px; }
+.bar-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { height: 10px; }
+.bar { height: 10px; border-radius: 0 4px 4px 0; min-width: 2px; }
+.bar.L1 { background: var(--l1); } .bar.L2 { background: var(--l2); } .bar.L3 { background: var(--l3); } .bar.tool { background: var(--tool); }
+.tool-row { margin-bottom: 8px; } .tool-row .bar-row { margin-bottom: 2px; } .tool-row .m { font-size: 11px; color: var(--muted); padding-left: 2px; }
+.num { font-variant-numeric: tabular-nums; text-align: right; color: var(--ink2); }
+.status { display: inline-flex; width: 18px; height: 18px; border-radius: 50%; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: #fff; flex: none; }
+.status.good { background: var(--good); } .status.warning { background: var(--warning); color: #0b0b0b; }
+.status.serious { background: var(--serious); } .status.critical { background: var(--critical); }
+.health-row { display: flex; gap: 8px; align-items: center; padding: 3px 0; font-size: 13px; }
+.health-row .num { margin-left: auto; }
+.mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; color: var(--ink2); }
+.cold-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.cold-grid div { text-align: center; } .cold-grid b { display: block; font-size: 20px; }
+details > summary { cursor: pointer; font-weight: 650; font-size: 13px; }
+.table-wrap { overflow-x: auto; margin-top: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 5px 8px; border-top: 1px solid var(--border); white-space: nowrap; }
+td.wrap-cell { white-space: normal; min-width: 240px; }
+th { font-size: 12px; color: var(--ink2); cursor: pointer; border-top: 0; position: sticky; top: 0; background: var(--surface); }
+tbody tr { cursor: pointer; } tbody tr:hover { background: var(--wash); }
+footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 0 16px; }
+@media (max-width: 520px) { .wrap { padding: 12px 16px; } input[type=search] { width: 100%; } .cold-grid { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="title">Brain panel</h1>
+      <div class="sub" id="subtitle"></div>
+    </div>
+    <div class="controls">
+      <input type="search" id="search" placeholder="Search nodes…" aria-label="Search nodes">
+      <label class="toggle"><input type="checkbox" id="auto"> Auto-refresh</label>
+      <button id="theme" type="button" aria-label="Toggle light and dark theme">Theme</button>
+    </div>
+  </header>
+
+  <section class="tiles" id="tiles" aria-label="Key figures"></section>
+
+  <section class="main">
+    <div class="card orbit-card">
+      <div class="orbit-tools" role="toolbar" aria-label="View controls">
+        <span class="seg" role="group" aria-label="View"><button type="button" class="chip" id="v-orbit" aria-pressed="true">2D orbit</button><button type="button" class="chip" id="v-sphere" aria-pressed="false">3D sphere</button></span>
+        <button type="button" class="chip" data-layer="1" aria-pressed="true"><span class="key L1"></span>L1</button>
+        <button type="button" class="chip" data-layer="2" aria-pressed="true"><span class="key L2"></span>L2</button>
+        <button type="button" class="chip" data-layer="3" aria-pressed="true"><span class="key L3"></span>L3</button>
+        <button type="button" class="chip" id="t-syn" aria-pressed="true"><span class="key line"></span>Synapses</button>
+        <button type="button" class="chip" id="t-spoke" aria-pressed="true"><span class="key spoke"></span>Hierarchy</button>
+        <button type="button" class="chip" id="t-sig" aria-pressed="true">Signals</button>
+        <span class="rf"><button type="button" class="chip" id="rf-btn" aria-haspopup="true" aria-expanded="false" title="Show or hide regions, alone or combined">Regions: all</button><div class="rf-pop" id="rf-pop" hidden role="group" aria-label="Region filter"></div></span>
+        <span class="rf"><button type="button" class="chip rf-drop" id="rfo-btn" aria-haspopup="true" aria-expanded="false" title="Light up one region or several in their colours, like Tools; the rest dims">Focus: none</button><div class="rf-pop" id="rfo-pop" hidden role="group" aria-label="Region focus"></div></span>
+        <span class="seg" role="group" aria-label="Colour by"><button type="button" class="chip" id="c-region" aria-pressed="true">Region colours</button><button type="button" class="chip" id="c-layer" aria-pressed="false">Layer colours</button></span>
+        <button type="button" class="chip" id="t-tools" aria-pressed="false" hidden title="Focus the Tools region: the agent's limbs"><span class="key tool"></span>Tools</button>
+        <button type="button" class="chip only3d" id="t-shell" aria-pressed="true" hidden>Spheres</button>
+        <button type="button" class="chip only3d" id="t-region" aria-pressed="true" hidden>Regions</button>
+        <button type="button" id="play" aria-label="Pause or resume the orbit">Pause orbit</button>
+        <button type="button" id="zin" aria-label="Zoom in">+</button>
+        <button type="button" id="zout" aria-label="Zoom out">−</button>
+        <button type="button" id="reset">Reset</button>
+      </div>
+      <canvas id="sphere" hidden role="img" aria-label="Three-dimensional view of the vault: L1 domains on the inner sphere, L2 concepts on the middle one, L3 details on the outer one, each domain a region of the spheres"></canvas>
+      <svg id="orbit" viewBox="0 0 1000 1000" role="img" aria-label="Orbital map of the vault: MAP at the center, then rings for L1 domains, L2 concepts, L3 details and the cold ring"></svg>
+      <div class="ticker" id="ticker" aria-live="polite" hidden></div>
+    </div>
+    <aside class="card" id="detail" aria-live="polite"></aside>
+  </section>
+
+  <section class="grid2">
+    <div class="card"><h2>Agent queries</h2><div id="queries"></div></div>
+    <div class="card"><h2>Growth by layer</h2><div id="growth"></div></div>
+  </section>
+  <section class="grid2">
+    <div class="card"><h2>Top 10 by weight</h2><div id="top" class="bars"></div></div>
+    <div class="card"><h2>Tools — the agent's limbs</h2><div id="tools" class="bars"></div></div>
+    <div class="card"><h2>Health</h2><div id="health"></div></div>
+    <div class="card"><h2>Strongest co-activations</h2><div id="coact"></div></div>
+    <div class="card"><h2>Latest learnings</h2><div id="commits"></div></div>
+    <div class="card"><h2>Cold ring</h2><div id="cold" class="cold-grid"></div></div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <details id="table-box">
+      <summary>All nodes (table view)</summary>
+      <div class="table-wrap"><table id="table"></table></div>
+    </details>
+  </section>
+  <footer id="footer"></footer>
+</div>
+<div id="tip" hidden></div>
+
+<script id="brain-data" type="application/json">__BRAIN_DATA__</script>
+<script>
+(() => {
+  'use strict';
+  const $ = (s, root = document) => root.querySelector(s);
+  const NS = 'http://www.w3.org/2000/svg';
+  const svgEl = (tag, attrs = {}, parent) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  };
+  const el = (tag, attrs = {}, text, parent) => {
+    const e = document.createElement(tag);
+    for (const k in attrs) k === 'class' ? (e.className = attrs[k]) : e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    if (parent) parent.appendChild(e);
+    return e;
+  };
+  const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const fmt = v => (Math.round(v * 100) / 100).toFixed(2);
+  const LAYER = { 1: 'L1 Domain', 2: 'L2 Concept', 3: 'L3 Detail' };
+
+  let DATA = null;
+  try {
+    const raw = $('#brain-data').textContent.trim();
+    if (raw.startsWith('{')) DATA = JSON.parse(raw);
+  } catch (e) { DATA = null; }
+  if (!DATA) {
+    $('.wrap').replaceChildren(el('p', { class: 'empty' }, 'No data yet: run "python _brain/scripts/brain.py build" in the vault.'));
+    return;
+  }
+
+  // ---------- per-viewer state (localStorage may be unavailable) ----------
+  const KEY = 'brain-panel:' + DATA.vault + ':';
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(KEY + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem(KEY + k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
+  };
+  const root = document.documentElement;
+  const savedTheme = store.get('theme', null);
+  if (savedTheme) root.dataset.theme = savedTheme;
+  const effectiveTheme = () => root.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  $('#theme').addEventListener('click', () => {
+    const t = effectiveTheme() === 'dark' ? 'light' : 'dark';
+    root.dataset.theme = t; store.set('theme', t);
+  });
+
+  // ---------- model ----------
+  const nodes = DATA.nodes.map(n => ({ ...n, children: [], parent: null, syn: [] }));
+  const byTitle = new Map(nodes.map(n => [norm(n.title), n]));
+  const ROOT = { id: '__map__', title: 'MAP', layer: 0, children: [], x: 500, y: 500 };
+  const unplaced = [];
+  for (const n of nodes) {
+    const up = norm(n.up);
+    const p = up === 'map' ? ROOT : byTitle.get(up);
+    // a domain may nest inside another domain (a subdomain under its domain): it shares the L1 ring, inside its parent's sector
+    const fits = p && (p.layer === n.layer - 1 || (n.layer === 1 && p.layer === 1));
+    if (!fits) { unplaced.push(n); continue; }
+    n.parent = p; p.children.push(n);
+  }
+  // the Tools region: everything under a domain of type "tools", one concept per tool and its lessons as details
+  for (const n of nodes) { for (let p = n; p && p !== ROOT; p = p.parent) if (p.type === 'tools') { n.limb = true; break; } }
+  const limbs = new Set(nodes.filter(n => n.limb));
+  // a node's region is its top domain (the L1 hanging from MAP, or a misplaced root); the region filter hides whole regions
+  for (const n of nodes) { let p = n; while (p.parent && p.parent !== ROOT) p = p.parent; n.region = p; }
+  // one colour per region, by title so it stays put as the vault grows; the Tools region keeps the tool colour
+  const REGION_COLORS = ['#3b82c4', '#e8743b', '#d64545', '#2fb3a6', '#5aa046', '#d9a520', '#e8649a', '#9c7552', '#4fb6e0', '#8f9a2a', '#c4573a', '#5f6fd0'];
+  const regionList = [...new Set(nodes.map(n => n.region))].sort((a, b) => a.title.localeCompare(b.title));
+  regionList.filter(r => !r.limb).forEach((r, i) => { r.color = REGION_COLORS[i % REGION_COLORS.length]; });
+  const regionCss = r => (r.limb ? 'var(--tool)' : r.color);
+  let colorBy = store.get('color-by', 'region');
+  // a tool's lessons: the details under it and the details linked to it by a synapse; its heat is its hottest lesson,
+  // since an agent credits the lesson it used, not the tool
+  const lessonsOf = n => { const s = new Set(n.children); n.syn.forEach(o => { const m = o.a === n ? o.b : o.a; if (m.layer === 3) s.add(m); }); return [...s]; };
+  const heat = n => (n.limb && n.layer === 2 ? Math.max(n.weight || 0, ...lessonsOf(n).map(m => m.weight || 0)) : n.weight || 0);
+  const cooling = n => n.limb && n.status !== 'provisional' && heat(n) < 0.05;
+  let limbFocus = false;
+  const syns = [];
+  for (const s of DATA.synapses || []) {
+    const a = byTitle.get(norm(s.source)), b = byTitle.get(norm(s.target));
+    if (!a || !b || a === b) continue;
+    const o = { a, b, type: s.type, reason: s.reason || '' };
+    syns.push(o); a.syn.push(o); b.syn.push(o);
+  }
+  const counts = { 1: 0, 2: 0, 3: 0 };
+  nodes.forEach(n => { counts[n.layer] = (counts[n.layer] || 0) + 1; });
+
+  // ---------- orbital layout: each subtree owns an angular sector proportional to its leaves ----------
+  const C = 500, R = 430;
+  // each layer is a band, not a line: nodes spread across its width so the connections between them can be read
+  const BAND = { 1: [0.13 * R, 0.43 * R], 2: [0.47 * R, 0.73 * R], 3: [0.77 * R, 1.0 * R] };
+  const RAD = { 1: 0.28 * R, 2: 0.6 * R, 3: 0.885 * R };
+  const COLD = R * 1.06;
+  const byName = (a, b) => a.title.localeCompare(b.title);
+  const span = n => (n._span = n.children.length ? n.children.sort(byName).reduce((s, c) => s + span(c), 0) : 1);
+  const assign = (n, a0, a1) => {
+    n.angle = (a0 + a1) / 2;
+    let a = a0;
+    for (const c of n.children) { const w = (a1 - a0) * c._span / n._span; assign(c, a, a + w); a += w; }
+  };
+  ROOT.children.sort(byName);
+  const total = ROOT.children.reduce((s, c) => s + span(c), 0) + unplaced.reduce((s, n) => s + span(n), 0);
+  let a0 = -Math.PI / 2;
+  const areas = [];
+  for (const c of ROOT.children) { const w = 2 * Math.PI * c._span / total; assign(c, a0, a0 + w); areas.push({ title: c.title, a0, a1: a0 + w, limb: !!c.limb }); a0 += w; }
+  // an unplaced node still carries its subtree: without a sector its descendants had no angle and piled up on one point
+  for (const n of unplaced) { const w = 2 * Math.PI * n._span / total; assign(n, a0, a0 + w); a0 += w; n.unplaced = true; }
+  // radial place inside the band: a domain sits deeper the more it is nested; concepts and details alternate
+  // between tracks in angular order, so neighbours do not overlap and their links fan out across the band
+  const depth = n => { let d = 0, p = n.parent; while (p && p !== ROOT && p.layer === n.layer) { d++; p = p.parent; } return d; };
+  const TRACKS = { 1: 3, 2: 3, 3: 4 };
+  for (const L of [1, 2, 3]) {
+    const [lo, hi] = BAND[L], T = TRACKS[L];
+    const ring = nodes.filter(n => n.layer === L).sort((a, b) => a.angle - b.angle);
+    ring.forEach((n, i) => {
+      const t = L === 1 ? Math.min(depth(n), T - 1) : i % T;
+      n.rad = lo + (hi - lo) * (t + 0.5) / T;
+    });
+  }
+  const radius = n => ({ 1: 10 + 9 * (n.weight || 0), 2: 6 + 6 * (n.weight || 0), 3: 4 + 4 * (n.weight || 0) })[n.layer] || 5;
+
+  // ---------- orbit rendering ----------
+  const f1 = v => v.toFixed(1);
+  const svg = $('#orbit');
+  const gRings = svgEl('g', {}, svg), gSpokes = svgEl('g', {}, svg), gSyn = svgEl('g', {}, svg);
+  const gNodes = svgEl('g', {}, svg), gSig = svgEl('g', {}, svg), gLabels = svgEl('g', {}, svg);
+  ROOT.r = 24;
+  const gSectors = svgEl('g', {}, gRings);
+  const pt = (r, a) => `${f1(C + r * Math.cos(a))},${f1(C + r * Math.sin(a))}`;
+  areas.forEach((s, i) => {
+    const [r0, r1] = [BAND[1][0], BAND[3][1]], big = s.a1 - s.a0 > Math.PI ? 1 : 0;
+    const g = s.el = svgEl('g', {}, gSectors);
+    const top = regionList.find(r => r.title === s.title);
+    if (top) g.style.setProperty('--c', regionCss(top));
+    {
+      svgEl('path', { class: s.limb ? 'sector limb' : i % 2 ? 'sector odd' : 'sector', d: `M${pt(r0, s.a0)} L${pt(r1, s.a0)} A${r1},${r1} 0 ${big} 1 ${pt(r1, s.a1)} L${pt(r0, s.a1)} A${r0},${r0} 0 ${big} 0 ${pt(r0, s.a0)}Z` }, g);
+    }
+    svgEl('line', { class: 'sector-edge', x1: C + r0 * Math.cos(s.a0), y1: C + r0 * Math.sin(s.a0), x2: C + r1 * Math.cos(s.a0), y2: C + r1 * Math.sin(s.a0) }, g);
+    if (s.a1 - s.a0 > 0.12 || s.limb) {
+      const am = (s.a0 + s.a1) / 2, rl = R * 1.03;
+      const t = svgEl('text', { class: s.limb ? 'area-label limb' : 'area-label', x: C + rl * Math.cos(am), y: C + rl * Math.sin(am) }, g);
+      t.textContent = s.title;
+    }
+  });
+  for (const L of [1, 2, 3]) {
+    const [lo, hi] = BAND[L];
+    svgEl('circle', { class: `band L${L}`, cx: C, cy: C, r: (lo + hi) / 2, 'stroke-width': hi - lo }, gRings);
+    svgEl('circle', { class: 'ring', cx: C, cy: C, r: lo }, gRings);
+    svgEl('circle', { class: 'ring', cx: C, cy: C, r: hi }, gRings);
+    const t = svgEl('text', { class: 'ring-label', x: C, y: C + hi - 7 }, gRings);
+    t.textContent = `${LAYER[L]}s · ${counts[L] || 0}`;
+  }
+  svgEl('circle', { class: 'ring cold', cx: C, cy: C, r: COLD }, gRings);
+  const cold = DATA.cold || {};
+  const coldTxt = svgEl('text', { class: 'ring-label', x: C, y: C + COLD + 16 }, gRings);
+  coldTxt.textContent = 'Cold ring · ' + Object.entries(cold).map(([k, v]) => `${k.replace(/^_/, '')} ${v}`).join(' · ');
+  const center = svgEl('g', { class: 'center' }, svg);
+  svgEl('circle', { cx: C, cy: C, r: 24 }, center);
+  svgEl('text', { x: C, y: C }, center).textContent = 'MAP';
+
+  for (const n of nodes) {
+    const g = svgEl('g', { class: `node L${n.layer} ${n.status || 'seed'}${n.limb ? ' limb' : ''}${cooling(n) ? ' cool' : ''}`, 'data-id': n.id }, gNodes);
+    const r = radius(n);
+    svgEl('circle', { class: 'hit', r: r + 8 }, g);
+    svgEl('circle', { class: 'halo', r: r + 5 }, g);
+    svgEl('circle', { class: 'dot', r }, g);
+    n.el = g; n.r = r;
+    g.style.setProperty('--c', regionCss(n.region));
+    n.lbl = svgEl('text', { class: `lbl l${n.layer}` }, gLabels);
+    n.lbl.textContent = n.title.length > 42 ? n.title.slice(0, 41) + '…' : n.title;
+    if (n.parent) n.spoke = svgEl('line', { class: 'spoke' }, gSpokes);
+    g.addEventListener('pointerenter', e => { hovered = n; applyFocus(); showTip(e, nodeTip(n)); });
+    g.addEventListener('pointermove', moveTip);
+    g.addEventListener('pointerleave', () => { hovered = null; applyFocus(); hideTip(); });
+    g.addEventListener('click', e => { e.stopPropagation(); select(selected === n ? null : n); });
+  }
+  for (const s of syns) s.el = svgEl('path', { class: `syn ${s.type}` }, gSyn);
+
+  let rot = store.get('rot', 0);
+  // a connection follows the bands as an arc around MAP: its bend point sits at the angular midpoint, a little inside
+  // the inner end, and dips deeper only when the two ends face each other; links from MAP keep the plain bend
+  function ctrl(a, b) {
+    if (a.pr === undefined || b.pr === undefined) {
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      return [mx + (C - mx) * 0.45, my + (C - my) * 0.45];
+    }
+    let d = b.pa - a.pa;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    const am = a.pa + d / 2, rm = Math.min(a.pr, b.pr) * (1 - 0.5 * Math.abs(d) / Math.PI) / Math.max(Math.cos(d / 2), 0.5);
+    return [C + Math.min(rm, BAND[3][1]) * Math.cos(am), C + Math.min(rm, BAND[3][1]) * Math.sin(am)];
+  }
+  function place() {
+    gSectors.setAttribute('transform', `rotate(${f1(rot * 180 / Math.PI)} ${C} ${C})`);
+    for (const n of nodes) {
+      const a = n.angle + rot, r = n.rad || RAD[n.layer] || RAD[3];
+      n.x = C + r * Math.cos(a); n.y = C + r * Math.sin(a); n.cos = Math.cos(a); n.sin = Math.sin(a); n.pa = a; n.pr = r;
+    }
+    for (const n of nodes) {
+      n.el.setAttribute('transform', `translate(${f1(n.x)},${f1(n.y)})`);
+      if (n.spoke) {
+        const p = n.parent;
+        n.spoke.setAttribute('x1', f1(p.x)); n.spoke.setAttribute('y1', f1(p.y));
+        n.spoke.setAttribute('x2', f1(n.x)); n.spoke.setAttribute('y2', f1(n.y));
+      }
+      const off = n.r + 6;
+      n.lbl.setAttribute('x', f1(n.x + n.cos * off)); n.lbl.setAttribute('y', f1(n.y + n.sin * off));
+      n.lbl.setAttribute('text-anchor', n.cos > 0.3 ? 'start' : n.cos < -0.3 ? 'end' : 'middle');
+      n.lbl.setAttribute('dominant-baseline', n.sin > 0.3 ? 'hanging' : n.sin < -0.3 ? 'auto' : 'middle');
+    }
+    for (const s of syns) {
+      const { a, b } = s, [qx, qy] = ctrl(a, b);
+      s.el.setAttribute('d', `M${f1(a.x)},${f1(a.y)} Q${f1(qx)},${f1(qy)} ${f1(b.x)},${f1(b.y)}`);
+    }
+  }
+
+  // ---------- focus, filters, search (shared by both views) ----------
+  let sphere = null;   // the 3D view, built further down
+  let view = /#3d|#sphere/i.test(location.hash) ? 'sphere' : store.get('view', 'orbit');
+  let hovered = null, selected = null, query = '', matches = new Set();
+  const hidden = new Set(store.get('hidden', []));
+  // the region dropdown focuses regions like the Tools chip: they light up in their colour, the rest dims; none disappears
+  const focusRegions = new Set(store.get('regions-focus', []));
+  const hiddenRegions = new Set(store.get('regions-hidden', []));  // the Regions filter: hidden regions disappear
+  let regionNodes = null;
+  const groupFocus = () => {
+    if (!limbFocus && !regionNodes) return null;
+    if (!regionNodes) return limbs;
+    return limbFocus ? new Set([...limbs, ...regionNodes]) : regionNodes;
+  };
+  const shown = n => n === ROOT || (!hidden.has(n.layer) && !hiddenRegions.has(n.region.title));
+  let showSyn = store.get('syn', true), showSpokes = store.get('spokes', true);
+  let zoom = 1;
+  const neighborhood = n => {
+    const s = new Set([n]);
+    if (n.parent && n.parent !== ROOT) s.add(n.parent);
+    n.children.forEach(c => s.add(c));
+    n.syn.forEach(o => { s.add(o.a); s.add(o.b); });
+    return s;
+  };
+  function labelVisible(n, focus) {
+    if (n.layer === 1 || n.flash > performance.now()) return true;
+    // a large focus (a whole region) labels its members only as far as zoom allows, or the labels bury the orbit
+    if (focus && focus.has(n) && (focus.size <= 60 || n.layer === 1 || !regionNodes)) return true;
+    if (query && matches.has(n)) return true;
+    if (n.layer === 2) return counts[2] <= 24 || zoom >= 1.8;
+    return counts[3] <= 12 || zoom >= 3;
+  }
+  function applyFocus() {
+    const anchor = selected || hovered;
+    const focus = anchor ? neighborhood(anchor) : groupFocus();
+    for (const n of nodes) {
+      const vis = shown(n);
+      const dim = focus ? !focus.has(n) : (query ? !matches.has(n) : false);
+      n.el.style.display = vis ? '' : 'none';
+      n.el.classList.toggle('dim', dim);
+      n.el.classList.toggle('sel', n === selected);
+      n.el.classList.toggle('match', !!query && matches.has(n));
+      n.lbl.style.display = vis && labelVisible(n, focus) ? '' : 'none';
+      n.lbl.classList.toggle('dim', dim);
+      if (n.spoke) {
+        const pv = shown(n.parent);
+        n.spoke.style.display = vis && pv && showSpokes ? '' : 'none';
+        n.spoke.classList.toggle('dim', focus ? !(focus.has(n) && (n.parent === ROOT || focus.has(n.parent))) : dim);
+      }
+    }
+    for (const s of areas) s.el.style.display = hiddenRegions.has(s.title) ? 'none' : '';
+    for (const s of syns) {
+      s.el.style.display = showSyn && shown(s.a) && shown(s.b) ? '' : 'none';
+      const on = !!anchor && (s.a === anchor || s.b === anchor);
+      s.el.classList.toggle('hl', on);
+      s.el.classList.toggle('dim', anchor ? !on : !!focus && !(focus.has(s.a) || focus.has(s.b)));
+    }
+    if (sphere) sphere.refresh();
+  }
+  document.querySelectorAll('.chip[data-layer]').forEach(b => {
+    const L = +b.dataset.layer;
+    b.setAttribute('aria-pressed', String(!hidden.has(L)));
+    b.addEventListener('click', () => {
+      hidden.has(L) ? hidden.delete(L) : hidden.add(L);
+      b.setAttribute('aria-pressed', String(!hidden.has(L)));
+      store.set('hidden', [...hidden]); applyFocus();
+    });
+  });
+  const toggleBtn = (id, get, set) => {
+    const b = $(id);
+    b.setAttribute('aria-pressed', String(get()));
+    b.addEventListener('click', () => { set(!get()); b.setAttribute('aria-pressed', String(get())); applyFocus(); });
+  };
+  toggleBtn('#t-syn', () => showSyn, v => { showSyn = v; store.set('syn', v); });
+  toggleBtn('#t-spoke', () => showSpokes, v => { showSpokes = v; store.set('spokes', v); });
+  if (limbs.size) {
+    $('#t-tools').hidden = false;
+    toggleBtn('#t-tools', () => limbFocus, v => {
+      limbFocus = v;
+      const top = nodes.find(n => n.limb && n.type === 'tools');
+      if (v && view === 'sphere' && top) sphere.focus(top);
+    });
+  }
+
+  // ---------- region filter: any combination of regions, one alone, or all ----------
+  (function regionFilter() {
+    const btn = $('#rf-btn'), pop = $('#rf-pop');
+    const regions = [...regionList].sort((a, b) => (b.limb ? 1 : 0) - (a.limb ? 1 : 0) || byName(a, b));
+    const size = new Map(regions.map(r => [r, nodes.filter(n => n.region === r).length]));
+    for (const t of [...hiddenRegions]) if (!regions.some(r => r.title === t)) hiddenRegions.delete(t);
+    const boxes = new Map();
+    const apply = () => {
+      store.set('regions-hidden', [...hiddenRegions]);
+      const on = regions.filter(r => !hiddenRegions.has(r.title));
+      btn.textContent = on.length === regions.length ? 'Regions: all' : on.length === 1 ? `Region: ${on[0].title}` : `Regions: ${on.length} of ${regions.length}`;
+      btn.setAttribute('aria-pressed', String(on.length < regions.length));
+      for (const [r, cb] of boxes) cb.checked = !hiddenRegions.has(r.title);
+      if (selected && !shown(selected)) select(null); else applyFocus();
+    };
+    const head = el('div', { class: 'rf-head' }, null, pop);
+    el('button', { type: 'button', class: 'chip' }, 'All', head).addEventListener('click', () => { hiddenRegions.clear(); apply(); });
+    el('button', { type: 'button', class: 'chip' }, 'None', head).addEventListener('click', () => { regions.forEach(r => hiddenRegions.add(r.title)); apply(); });
+    regions.forEach((r, i) => {
+      const row = el('div', { class: 'rf-row' }, null, pop);
+      const lab = el('label', {}, null, row);
+      const cb = el('input', { type: 'checkbox', id: `rf-${i}` }, null, lab);
+      boxes.set(r, cb);
+      el('span', { class: `key ${r.limb ? 'tool' : 'region'}`, style: 'margin-right:0' }, null, lab).style.setProperty('--c', regionCss(r));
+      lab.append(r.title);
+      el('span', { class: 'n' }, String(size.get(r)), row);
+      cb.addEventListener('change', () => { cb.checked ? hiddenRegions.delete(r.title) : hiddenRegions.add(r.title); apply(); });
+      el('button', { type: 'button', class: 'only', title: `Show only ${r.title}` }, 'only', row).addEventListener('click', () => {
+        regions.forEach(x => hiddenRegions.add(x.title)); hiddenRegions.delete(r.title); apply();
+      });
+    });
+    const open = v => { pop.hidden = !v; btn.setAttribute('aria-expanded', String(v)); };
+    btn.addEventListener('click', e => { e.stopPropagation(); document.querySelectorAll('.rf-pop').forEach(x => { if (x !== pop) x.hidden = true; }); open(pop.hidden); });
+    pop.addEventListener('click', e => e.stopPropagation());
+    document.addEventListener('click', () => open(false));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') open(false); });
+    apply();
+  })();
+
+  // ---------- region focus: a dropdown with one checkbox per region; the chosen light up, the rest dims ----------
+  (function regionFilter() {
+    const btn = $('#rfo-btn'), pop = $('#rfo-pop');
+    const regions = [...regionList].sort((a, b) => (b.limb ? 1 : 0) - (a.limb ? 1 : 0) || byName(a, b));
+    const size = new Map(regions.map(r => [r, nodes.filter(n => n.region === r).length]));
+    for (const t of [...focusRegions]) if (!regions.some(r => r.title === t)) focusRegions.delete(t);
+    const boxes = new Map();
+    const apply = () => {
+      store.set('regions-focus', [...focusRegions]);
+      const on = regions.filter(r => focusRegions.has(r.title));
+      regionNodes = on.length ? new Set(nodes.filter(n => focusRegions.has(n.region.title))) : null;
+      for (const a of areas) { a.el.classList.toggle('lit', focusRegions.has(a.title)); a.el.classList.toggle('off', on.length > 0 && !focusRegions.has(a.title)); }
+      btn.textContent = !on.length ? 'Focus: none' : on.length === 1 ? `Focus: ${on[0].title}` : `Focus: ${on.length} regions`;
+      btn.setAttribute('aria-pressed', String(on.length > 0));
+      for (const [r, cb] of boxes) cb.checked = focusRegions.has(r.title);
+      if (selected && !shown(selected)) select(null); else applyFocus();
+      if (on.length === 1 && view === 'sphere' && sphere && !selected) sphere.focus(on[0]);
+    };
+    const head = el('div', { class: 'rf-head' }, null, pop);
+    el('button', { type: 'button', class: 'chip' }, 'Clear', head).addEventListener('click', () => { focusRegions.clear(); apply(); });
+    regions.forEach((r, i) => {
+      const row = el('div', { class: 'rf-row' }, null, pop);
+      const lab = el('label', {}, null, row);
+      const cb = el('input', { type: 'checkbox', id: `rfo-${i}` }, null, lab);
+      boxes.set(r, cb);
+      const key = el('span', { class: `key ${r.limb ? 'tool' : 'region'}`, style: 'margin-right:0' }, null, lab);
+      key.style.setProperty('--c', regionCss(r));
+      lab.append(r.title);
+      el('span', { class: 'n' }, String(size.get(r)), row);
+      cb.addEventListener('change', () => { cb.checked ? focusRegions.add(r.title) : focusRegions.delete(r.title); apply(); });
+      el('button', { type: 'button', class: 'only', title: `Focus only ${r.title}` }, 'only', row).addEventListener('click', () => {
+        focusRegions.clear(); focusRegions.add(r.title); apply();
+      });
+    });
+    const open = v => { pop.hidden = !v; btn.setAttribute('aria-expanded', String(v)); };
+    btn.addEventListener('click', e => { e.stopPropagation(); document.querySelectorAll('.rf-pop').forEach(x => { if (x !== pop) x.hidden = true; }); open(pop.hidden); });
+    pop.addEventListener('click', e => e.stopPropagation());
+    document.addEventListener('click', () => open(false));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') open(false); });
+    apply();
+  })();
+
+  // ---------- colour by region or by layer ----------
+  (function colorMode() {
+    const set = v => {
+      colorBy = v; store.set('color-by', v);
+      svg.classList.toggle('colreg', v === 'region');
+      $('#c-region').setAttribute('aria-pressed', String(v === 'region'));
+      $('#c-layer').setAttribute('aria-pressed', String(v === 'layer'));
+      if (sphere) sphere.refresh();
+    };
+    $('#c-region').addEventListener('click', () => set('region'));
+    $('#c-layer').addEventListener('click', () => set('layer'));
+    set(colorBy);
+  })();
+
+  const search = $('#search');
+  search.addEventListener('input', () => {
+    query = norm(search.value);
+    matches = new Set(query ? nodes.filter(n => norm([n.title, n.summary, ...(n.aliases || [])].join(' ')).includes(query)) : []);
+    applyFocus();
+  });
+  search.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && matches.size) select([...matches][0], true);
+    if (e.key === 'Escape') { search.value = ''; search.dispatchEvent(new Event('input')); }
+  });
+
+  // ---------- tooltip ----------
+  const tip = $('#tip');
+  function nodeTip(n) {
+    const f = document.createDocumentFragment();
+    el('b', {}, n.title, f);
+    el('div', { class: 'm' }, `${LAYER[n.layer]}${n.type ? ' · ' + n.type : ''} · ${n.status} · weight ${fmt(n.weight || 0)}`, f);
+    if (n.summary) el('div', {}, n.summary, f);
+    return f;
+  }
+  function showTip(e, content) { tip.replaceChildren(content); tip.hidden = false; moveTip(e); }
+  function moveTip(e) {
+    if (tip.hidden) return;
+    const pad = 14; let x = e.clientX + pad, y = e.clientY + pad;
+    if (x + tip.offsetWidth > innerWidth - 8) x = e.clientX - tip.offsetWidth - pad;
+    if (y + tip.offsetHeight > innerHeight - 8) y = e.clientY - tip.offsetHeight - pad;
+    tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+  }
+  const hideTip = () => { tip.hidden = true; };
+
+  // ---------- detail panel ----------
+  const obsidianUri = n => `obsidian://open?vault=${encodeURIComponent(DATA.vault)}&file=${encodeURIComponent(n.path || n.title)}`;
+  const nodeLink = (n, parent) => {
+    const a = el('a', { class: 'node-link', role: 'button', tabindex: '0' }, n.title, parent);
+    a.addEventListener('click', () => select(n, true));
+    a.addEventListener('keydown', e => { if (e.key === 'Enter') select(n, true); });
+    return a;
+  };
+  function dotSvg(cls, hollow) {
+    const s = svgEl('svg', { width: 14, height: 14, viewBox: '0 0 14 14', 'aria-hidden': 'true' });
+    const c = svgEl('circle', { cx: 7, cy: 7, r: 5 }, s);
+    const color = cls === 'obsolete' ? 'var(--muted)' : `var(--${cls})`;
+    c.setAttribute('fill', hollow ? 'var(--surface)' : color);
+    c.setAttribute('stroke', hollow ? color : 'var(--surface)');
+    c.setAttribute('stroke-width', hollow ? '2.5' : '1');
+    return s;
+  }
+  function sigSvg(color) {
+    const s = svgEl('svg', { width: 22, height: 14, viewBox: '0 0 22 14', 'aria-hidden': 'true' });
+    svgEl('line', { x1: 1, y1: 7, x2: 21, y2: 7, stroke: 'var(--axis)', 'stroke-width': 1 }, s);
+    svgEl('circle', { cx: 13, cy: 7, r: 6, fill: color, opacity: .22 }, s);
+    svgEl('circle', { cx: 13, cy: 7, r: 2.6, fill: color }, s);
+    return s;
+  }
+  function lineSvg(color, dash) {
+    const s = svgEl('svg', { width: 22, height: 10, viewBox: '0 0 22 10', 'aria-hidden': 'true' });
+    svgEl('line', { x1: 1, y1: 5, x2: 21, y2: 5, stroke: color, 'stroke-width': 2, 'stroke-dasharray': dash || '' }, s);
+    return s;
+  }
+  function renderDetail() {
+    const box = $('#detail'); box.replaceChildren();
+    const n = selected;
+    if (!n) {
+      el('h2', {}, 'How to read the orbit', box);
+      el('p', { class: 'muted', style: 'margin-top:0' }, 'MAP sits at the center; each ring is a layer, from general (inside) to specific (outside). Size is weight: recent use, validations and incoming synapses. Hover for the summary, click to focus a node and its neighbors.', box);
+      const lg = el('div', { class: 'legend' }, null, box);
+      const row = (svgNode, text) => { const d = el('div', {}, null, lg); d.appendChild(svgNode); d.append(text); };
+      row(dotSvg('l1'), 'L1 Domain — synthesis of an area');
+      row(dotSvg('l2'), 'L2 Concept — one atomic idea');
+      row(dotSvg('l3'), 'L3 Detail — fact, procedure, example, error, decision');
+      row(dotSvg('l2', true), 'Hollow: seed, awaiting validation');
+      row(dotSvg('l3', true), 'Hollow detail: provisional, learned by an agent, not yet confirmed by use');
+      row(dotSvg('obsolete'), 'Gray: obsolete');
+      el('p', { class: 'muted', style: 'margin:2px 0' }, 'Region colours (default): each region of the brain — a top domain — has its own colour, shown on its nodes, its sector and its key in the dropdowns; Layer colours switches back to the L1/L2/L3 colours below. Regions shows or hides whole regions; Focus lights up the regions chosen, like Tools, and dims the rest.', lg);
+      row(dotSvg('tool'), 'Tools region — the agent\'s limbs: one concept per tool, its lessons below it or linked to it; faded = cooling or not used yet');
+      row(lineSvg('var(--muted)'), 'Synapse (typed, with a reason)');
+      row(lineSvg('var(--critical)', '6 4'), 'Contradicts — check before trusting');
+      row(lineSvg('var(--axis)'), 'Hierarchy (up → parent)');
+      row(sigSvg('var(--l3)'), 'Feed signal — flows from what feeds to what is fed: detail → concept → domain → MAP, cause → effect, dependency → dependent');
+      row(sigSvg('var(--ink)'), 'Query signal — an agent recall or read, descending from MAP through the layers to the node');
+      row(sigSvg('var(--l2)'), 'Used — a credited node sends its knowledge back up to MAP (the agent)');
+      el('p', { class: 'muted' }, '3D sphere: the same layers as nested spheres, L1 inside and L3 outside; each domain is a region of the spheres. Drag to rotate, double-click a node to bring it to the front.', box);
+      el('p', { class: 'muted' }, 'Drag to pan, scroll to zoom. The panel is rebuilt on every commit.', box);
+      return;
+    }
+    const crumbs = el('div', { class: 'crumbs' }, null, box);
+    const chain = []; for (let p = n.parent; p && p !== ROOT; p = p.parent) chain.unshift(p);
+    crumbs.append('MAP');
+    chain.forEach(p => { crumbs.append(' › '); nodeLink(p, crumbs); });
+    el('h2', { class: 'title' }, n.title, box);
+    const pills = el('div', { class: 'pills' }, null, box);
+    [LAYER[n.layer], n.layer === 3 || n.limb ? n.type : null, n.status, n.unplaced ? 'misplaced' : null].filter(Boolean).forEach(t => el('span', { class: 'pill' }, t, pills));
+    if (n.summary) el('p', { class: 'summary' }, n.summary, box);
+    el('div', { class: 'sect' }, `Weight ${fmt(n.weight || 0)}`, box);
+    const m = el('div', { class: 'meter' }, null, box);
+    el('i', { class: `L${n.layer}`, style: `width:${Math.round((n.weight || 0) * 100)}%` }, null, m);
+    if (n.children.length) {
+      el('div', { class: 'sect' }, n.layer === 1 ? 'Branches' : 'Details', box);
+      const ul = el('ul', { class: 'plain' }, null, box);
+      n.children.forEach(c => nodeLink(c, el('li', {}, null, ul)));
+    }
+    if (n.syn.length) {
+      el('div', { class: 'sect' }, `Synapses · ${n.syn.length}`, box);
+      const ul = el('ul', { class: 'plain' }, null, box);
+      n.syn.forEach(s => {
+        const li = el('li', {}, null, ul);
+        const out = s.a === n, other = out ? s.b : s.a;
+        el('span', { class: 'mono' }, (out ? '→ ' : '← ') + s.type + ' ', li);
+        if (s.type === 'contradicts') el('span', { class: 'status critical', title: 'contradicts', style: 'width:14px;height:14px;font-size:9px;margin-right:4px' }, '!', li);
+        nodeLink(other, li);
+        if (s.reason) el('span', { class: 'reason' }, ' — ' + s.reason, li);
+      });
+    }
+    if ((n.external || []).length) {
+      el('div', { class: 'sect' }, 'External references', box);
+      const ul = el('ul', { class: 'plain' }, null, box);
+      n.external.forEach(u => {
+        const li = el('li', {}, null, ul);
+        const mm = /vault=([^&]+)&file=(.+)$/.exec(u);
+        el('a', { href: u, class: 'node-link' }, mm ? `${decodeURIComponent(mm[1])} › ${decodeURIComponent(mm[2])}` : u, li);
+      });
+    }
+    el('div', { class: 'sect' }, 'Record', box);
+    el('div', { class: 'mono' }, `id ${n.id} · updated ${n.updated || '—'}`, box);
+    el('a', { class: 'btn-primary', href: obsidianUri(n) , role: 'button', style: 'border-radius:999px;padding:5px 12px;font-size:12px' }, 'Open in Obsidian', box);
+  }
+  function select(n, bring) {
+    selected = n; store.set('sel', n ? n.id : null);
+    applyFocus(); renderDetail();
+    if (bring && n && view === 'sphere') sphere.focus(n);
+  }
+
+  // ---------- pan & zoom (viewBox) ----------
+  const VB0 = { x: -10, y: -10, w: 1020, h: 1020 };
+  let vb = store.get('vb', { ...VB0 });
+  const applyVB = () => { svg.setAttribute('viewBox', `${f1(vb.x)} ${f1(vb.y)} ${f1(vb.w)} ${f1(vb.h)}`); zoom = VB0.w / vb.w; applyFocus(); };
+  const toSvg = (cx, cy) => { const p = svg.createSVGPoint(); p.x = cx; p.y = cy; return p.matrixTransform(svg.getScreenCTM().inverse()); };
+  function zoomAt(px, py, factor) {
+    const nw = clamp(vb.w * factor, VB0.w / 8, VB0.w / 0.6), s = nw / vb.w;
+    vb = { x: px - (px - vb.x) * s, y: py - (py - vb.y) * s, w: nw, h: nw };
+    applyVB(); store.set('vb', vb);
+  }
+  svg.addEventListener('wheel', e => { e.preventDefault(); const p = toSvg(e.clientX, e.clientY); zoomAt(p.x, p.y, Math.exp(e.deltaY * 0.0015)); }, { passive: false });
+  $('#zin').addEventListener('click', () => (view === 'sphere' ? sphere.zoom(0.8) : zoomAt(vb.x + vb.w / 2, vb.y + vb.h / 2, 0.75)));
+  $('#zout').addEventListener('click', () => (view === 'sphere' ? sphere.zoom(1.25) : zoomAt(vb.x + vb.w / 2, vb.y + vb.h / 2, 1 / 0.75)));
+  $('#reset').addEventListener('click', () => { if (view === 'sphere') sphere.reset(); else { vb = { ...VB0 }; applyVB(); store.set('vb', vb); } select(null); });
+  let drag = null;
+  svg.addEventListener('pointerdown', e => {
+    if (e.target.closest('.node')) return;
+    drag = { x: e.clientX, y: e.clientY, vb: { ...vb }, moved: false, k: svg.getScreenCTM().a };
+    svg.setPointerCapture(e.pointerId); svg.style.cursor = 'grabbing';
+  });
+  svg.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+    vb = { ...drag.vb, x: drag.vb.x - dx / drag.k, y: drag.vb.y - dy / drag.k };
+    svg.setAttribute('viewBox', `${f1(vb.x)} ${f1(vb.y)} ${f1(vb.w)} ${f1(vb.h)}`);
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    if (!drag.moved) select(null);
+    drag = null; svg.style.cursor = ''; store.set('vb', vb);
+  };
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', endDrag);
+
+  // ---------- orbit motion (one revolution every 4 minutes; pauses while you look) ----------
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let playing = store.get('play', !reduced && nodes.length <= 500);
+  const playBtn = $('#play');
+  const syncPlay = () => {
+    if (view === 'sphere') playBtn.textContent = sphere && sphere.spin ? 'Pause rotation' : 'Play rotation';
+    else playBtn.textContent = playing ? 'Pause orbit' : 'Play orbit';
+  };
+  playBtn.addEventListener('click', () => {
+    if (view === 'sphere') sphere.spin = !sphere.spin; else { playing = !playing; store.set('play', playing); }
+    syncPlay();
+  });
+  syncPlay();
+  const SPEED = 2 * Math.PI / 240000;
+  let last = null;
+  function tick(t) {
+    if (view === 'sphere') { last = null; requestAnimationFrame(tick); return; }   // the sphere runs its own frames
+    if (playing && !hovered && !selected && !drag && !document.hidden) {
+      if (last != null) { rot = (rot + (t - last) * SPEED) % (2 * Math.PI); place(); }
+      last = t;
+    } else last = null;
+    spawnFeed(t);
+    stepSignals(t);
+    requestAnimationFrame(tick);
+  }
+
+  // ---------- signals: what feeds what, and the agent's queries descending the funnel ----------
+  let signalsOn = store.get('signals', !reduced);
+  const signals = [], ripples = [];
+  const ease = p => 0.5 - Math.cos(Math.PI * p) / 2;
+  const lerp = (a, b, p) => ({ x: a.x + (b.x - a.x) * p, y: a.y + (b.y - a.y) * p });
+  function clearSignals() {
+    signals.splice(0).forEach(s => { s.dot.remove(); s.glow.remove(); });
+    ripples.splice(0).forEach(r => r.c.remove());
+  }
+  toggleBtn('#t-sig', () => signalsOn, v => { signalsOn = v; store.set('signals', v); if (!v) { clearSignals(); sphere.clear(); } });
+  // routes read live positions, so a signal keeps riding its edge while the orbit turns
+  const polyline = getPts => p => {
+    const pts = getPts(), seg = [];
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) { const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); seg.push(d); total += d; }
+    let rest = p * total;
+    for (let i = 0; i < seg.length; i++) {
+      if (rest <= seg[i] || i === seg.length - 1) return lerp(pts[i], pts[i + 1], seg[i] ? Math.min(1, rest / seg[i]) : 1);
+      rest -= seg[i];
+    }
+    return pts[pts.length - 1];
+  };
+  const curve = (from, to) => p => {
+    const [qx, qy] = ctrl(from, to), u = 1 - p;
+    return { x: u * u * from.x + 2 * u * p * qx + p * p * to.x, y: u * u * from.y + 2 * u * p * qy + p * p * to.y };
+  };
+  const chainTo = n => { const c = [n]; for (let p = n.parent; p && p !== ROOT; p = p.parent) c.unshift(p); c.unshift(ROOT); return c; };
+  function launch(route, cls, { r = 3.5, dur = 1200, delay = 0, ends = [], onArrive } = {}) {
+    if (!signalsOn) return;
+    const glow = svgEl('circle', { class: `sig-glow ${cls}`, r: r * 2.6 }, gSig);
+    const dot = svgEl('circle', { class: `sig ${cls}`, r }, gSig);
+    glow.style.display = dot.style.display = 'none';
+    signals.push({ route, t0: performance.now() + delay, dur, dot, glow, ends, onArrive });
+  }
+  function ripple(n, cls, { delay = 0, dur = 900, grow = 22 } = {}) {
+    if (!signalsOn) return;
+    const c = svgEl('circle', { class: `ripple ${cls}` }, gSig);
+    c.style.display = 'none';
+    ripples.push({ n, c, t0: performance.now() + delay, dur, grow });
+  }
+  function stepSignals(now) {
+    const anchor = selected || hovered, focus = anchor ? neighborhood(anchor) : null;
+    for (let i = signals.length - 1; i >= 0; i--) {
+      const s = signals[i], p = (now - s.t0) / s.dur;
+      if (p < 0) continue;
+      if (p >= 1) { s.dot.remove(); s.glow.remove(); signals.splice(i, 1); if (s.onArrive) s.onArrive(); continue; }
+      const pt = s.route(ease(p));
+      const faded = focus && s.ends.length && !s.ends.some(n => focus.has(n));
+      for (const e of [s.dot, s.glow]) { e.setAttribute('cx', f1(pt.x)); e.setAttribute('cy', f1(pt.y)); e.style.display = ''; }
+      s.dot.style.opacity = faded ? '.15' : ''; s.glow.style.opacity = faded ? '.04' : '';
+    }
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i], p = (now - r.t0) / r.dur;
+      if (p < 0) continue;
+      if (p >= 1) { r.c.remove(); ripples.splice(i, 1); continue; }
+      r.c.setAttribute('cx', f1(r.n.x)); r.c.setAttribute('cy', f1(r.n.y));
+      r.c.setAttribute('r', f1(r.n.r + 2 + r.grow * p)); r.c.style.opacity = String(1 - p); r.c.style.display = '';
+    }
+    if (qUntil && now > qUntil) { qLabel.style.opacity = '0'; qUntil = 0; }
+  }
+  // feeding: details feed concepts, concepts feed domains, domains feed MAP; synapses carry cause → effect,
+  // dependency → dependent, example → concept; related and contradicts flow both ways
+  const feeds = [];
+  for (const n of nodes) if (n.parent) feeds.push({ from: n, to: n.parent, spoke: true });
+  for (const s of syns) {
+    const [from, to] = s.type === 'depends_on' ? [s.b, s.a] : [s.a, s.b];
+    feeds.push({ from, to, syn: s });
+    if (s.type === 'related' || s.type === 'contradicts') feeds.push({ from: to, to: from, syn: s });
+  }
+  const feedEvery = clamp(2400 / Math.sqrt(feeds.length + 1), 250, 1200);
+  let nextFeed = 0;
+  function spawnFeed(now) {
+    if (!signalsOn || document.hidden || !feeds.length || now < nextFeed) return;
+    nextFeed = now + feedEvery * (0.6 + Math.random() * 0.8);
+    if (signals.length > 16) return;
+    const live = feeds.filter(f => (f.spoke ? showSpokes : showSyn) && shown(f.from) && shown(f.to));
+    if (!live.length) return;
+    const odds = f => 0.15 + (f.from.weight || 0);   // heavier nodes feed more often
+    let pick = Math.random() * live.reduce((s, f) => s + odds(f), 0), f = live[0];
+    for (const x of live) { pick -= odds(x); if (pick <= 0) { f = x; break; } }
+    const cls = f.syn && f.syn.type === 'contradicts' ? 'contradicts' : `L${f.from.layer}`;
+    const len = Math.hypot(f.to.x - f.from.x, f.to.y - f.from.y);
+    launch(f.spoke ? p => lerp(f.from, f.to, p) : curve(f.from, f.to), cls, { r: 3.5, dur: 900 + len * 2.2, ends: [f.from, f.to] });
+  }
+
+  // ---------- agent activity: _brain/state/activity.js, written by brain.py on every recall/read/credit/status ----------
+  const ticker = $('#ticker');
+  const qLabel = svgEl('text', { class: 'qlabel', x: C, y: C + 48 }, svg);
+  let qUntil = 0;
+  const hhmm = t => String(t || '').slice(11, 16);
+  function tickerLine(text) {
+    ticker.prepend(el('div', {}, text));
+    while (ticker.children.length > 4) ticker.lastChild.remove();
+    ticker.hidden = false;
+  }
+  function flash(n) { n.flash = performance.now() + 4000; applyFocus(); setTimeout(applyFocus, 4100); }
+  function playEvent(e, delay) {
+    const n = e.title ? byTitle.get(norm(e.title)) : null;
+    setTimeout(() => {
+      if (e.e === 'recall') {
+        if (view === 'sphere') sphere.query(`recall “${e.q}” · ${e.n} signatures`);
+        else {
+          qLabel.textContent = `recall “${e.q}” · ${e.n} signatures`; qLabel.style.opacity = '1'; qUntil = performance.now() + 5000;
+          ripple(ROOT, 'query', { grow: 30, dur: 1100 });
+        }
+        tickerLine(`${hhmm(e.t)} · recall “${e.q}” → ${e.n} signatures`);
+      } else if (e.e !== 'activated') tickerLine(`${hhmm(e.t)} · ${e.e} ${e.title || ''}`);
+    }, delay);
+    if (view === 'sphere') { sphere.play(e, n, delay); return; }
+    if (!n) return;
+    const down = polyline(() => chainTo(n));
+    if (e.e === 'activated') launch(down, 'query', { r: 3.5, dur: 900, delay, ends: [n], onArrive: () => ripple(n, 'query', { grow: 12, dur: 600 }) });
+    else if (e.e === 'read') launch(down, 'query', { r: 6, dur: 1400, delay, ends: [n], onArrive: () => { ripple(n, 'query', { grow: 24 }); flash(n); } });
+    else if (e.e === 'used') launch(polyline(() => chainTo(n).reverse()), `L${n.layer}`, { r: 6, dur: 1400, delay, ends: [n], onArrive: () => ripple(ROOT, `L${n.layer}`, { grow: 26 }) });
+    else if (e.e === 'validated') ripple(n, 'validated', { delay, grow: 30, dur: 1400 });
+  }
+  const STEP = { recall: 450, activated: 80, read: 650, used: 500, validated: 400 };
+  function playEvents(list) {
+    let d = 0;
+    for (const e of list.slice(-80)) { playEvent(e, d); d += STEP[e.e] || 200; }
+  }
+  function renderQueries(events, updated) {
+    const box = $('#queries');
+    box.replaceChildren();
+    const live = el('div', { class: `live ${events ? 'on' : 'off'}` }, null, box);
+    el('span', { class: 'pulse', 'aria-hidden': 'true' }, null, live);
+    live.append(events ? `Live · last activity ${String(updated || '').replace('T', ' ').slice(0, 16)}` : 'Waiting for activity (_brain/state/activity.js)');
+    const recalls = (events || []).map((e, i) => (e.e === 'recall' ? i : -1)).filter(i => i >= 0);
+    if (!recalls.length) {
+      el('p', { class: 'empty' }, 'No agent queries yet. They appear here, and as signals in the orbit, when an agent runs recall, read or credit.', box);
+      return;
+    }
+    const ul = el('ul', { class: 'plain' }, null, box);
+    for (const idx of recalls.slice(-8).reverse()) {
+      const e = events[idx];
+      let end = events.length;
+      for (let j = idx + 1; j < events.length; j++) if (events[j].e === 'recall' && events[j].s === e.s) { end = j; break; }
+      const part = events.slice(idx, end).filter(x => x.s === e.s);
+      const count = k => part.filter(x => x.e === k).length;
+      const li = el('li', { class: 'q-row' }, null, ul);
+      el('span', { class: 'mono' }, hhmm(e.t), li);
+      el('span', {}, `“${e.q}”`, li);
+      el('span', { class: 'muted' }, `${e.n} signatures · ${count('read')} read · ${count('used')} used`, li);
+      const b = el('button', { type: 'button', class: 'replay' }, 'Replay', li);
+      b.addEventListener('click', () => { if (!signalsOn) $('#t-sig').click(); playEvents(part); $('.orbit-card').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
+    }
+  }
+  // a page opened from disk cannot fetch files, but it can load scripts: re-inject the feed every few seconds
+  let lastSeq = store.get('seq', null), feedSeen = false;
+  function ingest(feed) {
+    if (!feed || feed.vault !== DATA.vault || !Array.isArray(feed.events)) return;
+    feedSeen = true;
+    const top = feed.events.length ? feed.events[feed.events.length - 1].i : 0;
+    const fresh = lastSeq == null || top < lastSeq ? [] : feed.events.filter(e => e.i > lastSeq);
+    if (lastSeq !== top) { lastSeq = top; store.set('seq', top); }
+    renderQueries(feed.events, feed.updated);
+    if (fresh.length) playEvents(fresh);
+  }
+  function poll() {
+    if (document.hidden) return;
+    const s = document.createElement('script');
+    s.src = 'state/activity.js?v=' + Date.now();
+    s.onload = () => { s.remove(); ingest(window.BRAIN_ACTIVITY); };
+    s.onerror = () => { s.remove(); if (!feedSeen) renderQueries(null); };
+    document.head.appendChild(s);
+  }
+
+  // ---------- 3D view: the same brain as nested spheres ----------
+  // L1 domains on the inner sphere, L2 concepts on the middle one, L3 details outside. Each top domain owns a cap of
+  // the spheres sized by its leaves, so a domain reads as a region and its concepts and details radiate outward from
+  // it. Drawn on a 2D canvas (no library, works offline); filters, selection, search and signals are the 2D view's.
+  sphere = (() => {
+    const RS = { 1: 150, 2: 290, 3: 420 };
+    const SHELL = { 1: 0, 2: 16, 3: 24 };   // a sphere is a shell with thickness, like the 2D bands
+    const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const unit = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+    const basis = d => { const u = unit(cross(Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0], d)); return [u, cross(d, u)]; };
+    const inCone = (d, theta, phi) => {
+      const [u, v] = basis(d);
+      return unit(add(mul(d, Math.cos(theta)), mul(add(mul(u, Math.cos(phi)), mul(v, Math.sin(phi))), Math.sin(theta))));
+    };
+    const GOLD = Math.PI * (3 - Math.sqrt(5));
+
+    // ---- layout (span() already ran for the orbit) ----
+    const tops = [...ROOT.children, ...unplaced].sort((a, b) => b._span - a._span);
+    const total = tops.reduce((s, n) => s + n._span, 0) || 1;
+    // cap half-angle from the domain's share of the sphere's area, share = (1 - cos a) / 2, less a margin so regions show gaps
+    tops.forEach((t, i) => {
+      t.cap = Math.acos(1 - 2 * Math.min(0.4, 0.72 * t._span / total));
+      const z = 1 - 2 * (i + 0.5) / tops.length, r = Math.sqrt(1 - z * z);
+      t.d3 = [r * Math.cos(i * GOLD), z, r * Math.sin(i * GOLD)];
+    });
+    for (let it = 0; it < 400; it++) {   // push overlapping caps apart; the smaller cap moves more
+      for (let i = 0; i < tops.length; i++) for (let j = i + 1; j < tops.length; j++) {
+        const a = tops[i], b = tops[j], c = dot(a.d3, b.d3);
+        const ang = Math.acos(Math.max(-1, Math.min(1, c))), want = (a.cap + b.cap) * 0.98;
+        if (ang >= want) continue;
+        const push = (want - ang) * 0.1, wa = b._span / (a._span + b._span);
+        a.d3 = unit(add(a.d3, mul(unit(add(b.d3, mul(a.d3, -c))), -push * wa)));
+        b.d3 = unit(add(b.d3, mul(unit(add(a.d3, mul(b.d3, -c))), -push * (1 - wa))));
+      }
+    }
+    // children spread inside their parent's cone on a sunflower spiral, largest subtree at the center
+    const place = (n, d, cone, i, nest) => {
+      n.p3 = mul(d, RS[n.layer] + (n.layer === 1 ? 26 * nest : SHELL[n.layer] * ((i % 3) - 1)));
+      const kids = [...n.children].sort((a, b) => b._span - a._span || byName(a, b)), k = kids.length;
+      kids.forEach((c, j) => {
+        const theta = k === 1 ? 0 : cone * 0.82 * Math.sqrt((j + 0.5) / k);
+        const sub = Math.max(0.012, cone * Math.min(0.6, Math.sqrt(c._span / n._span)) * 0.85);
+        place(c, inCone(d, theta, j * GOLD), sub, j, c.layer === 1 ? nest + 1 : nest);
+      });
+    };
+    tops.forEach((t, i) => place(t, t.d3, t.cap, i, 0));
+    const posOf = n => (n === ROOT ? [0, 0, 0] : n.p3);
+
+    // ---- camera ----
+    const cv = $('#sphere'), ctx = cv.getContext('2d');
+    const HOME = { yaw: 0.6, pitch: 0.25, dist: 1450 };
+    const cam = { ...HOME };
+    let W = 0, H = 0, DPR = 1, F = 1, cy = 1, sy = 0, cp = 1, sp = 0;
+    let active = false, dirty = true, anim = null, dragging = false;
+    let spin = store.get('spin', !reduced);
+    const show = { shell: store.get('shell', true), region: store.get('region', true) };
+    let COL = {};
+    const readColors = () => {
+      const cs = getComputedStyle(document.documentElement);
+      for (const k of ['page', 'ink', 'ink2', 'muted', 'axis', 'l1', 'l2', 'l3', 'tool', 'critical', 'good']) COL[k] = cs.getPropertyValue('--' + k).trim();
+      dirty = true;
+    };
+    new MutationObserver(readColors).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readColors);
+    new ResizeObserver(() => {
+      const r = cv.getBoundingClientRect();
+      DPR = Math.min(2, window.devicePixelRatio || 1); W = r.width; H = r.height;
+      cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR); dirty = true;
+    }).observe(cv);
+    const setCam = () => { cy = Math.cos(cam.yaw); sy = Math.sin(cam.yaw); cp = Math.cos(cam.pitch); sp = Math.sin(cam.pitch); F = Math.min(W, H) * 1.25; };
+    // [screen x, screen y, depth toward the viewer (+ is front), scale]
+    const proj = p => {
+      const x1 = p[0] * cy + p[2] * sy, z1 = -p[0] * sy + p[2] * cy;
+      const y2 = p[1] * cp - z1 * sp, z2 = p[1] * sp + z1 * cp, s = F / (cam.dist - z2);
+      return [W / 2 + x1 * s, H / 2 - y2 * s, z2, s];
+    };
+    const fog = z => 0.22 + 0.78 * Math.max(0, Math.min(1, (z + RS[3]) / (2 * RS[3])));
+    const lc = l => COL['l' + l];
+    const nc = n => (n.limb ? COL.tool : colorBy === 'region' ? n.region.color : lc(n.layer));
+    const visible = n => shown(n) && n.p3;
+    const focusSet = () => (selected ? neighborhood(selected) : groupFocus());
+    const dimmed = (n, focus) => (focus ? !focus.has(n) : query ? !matches.has(n) : false);
+    const synCtrl = (a, b) => {
+      const mid = add(a, b), lift = Math.max(Math.hypot(...a), Math.hypot(...b)) * 1.12;
+      return Math.hypot(...mid) < 1 ? mul(basis(unit(a))[0], lift) : mul(unit(mid), lift);
+    };
+    const focusOn = n => {
+      if (!n || !n.p3) return;
+      const [x, y, z] = n.p3;
+      let yaw = Math.atan2(-x, z);
+      while (yaw - cam.yaw > Math.PI) yaw -= 2 * Math.PI;
+      while (cam.yaw - yaw > Math.PI) yaw += 2 * Math.PI;
+      anim = { from: { ...cam }, to: { yaw, pitch: Math.atan2(y, Math.hypot(x, z)), dist: Math.min(cam.dist, 1150) }, t0: performance.now(), ms: reduced ? 1 : 700 };
+    };
+
+    // ---- drawing ----
+    const ring = (f, alphaOf) => {
+      let prev = null;
+      for (let i = 0; i <= 72; i++) {
+        const q = proj(f(i / 72 * 2 * Math.PI));
+        if (prev) { ctx.globalAlpha = alphaOf(prev[2] + q[2]); ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); }
+        prev = q;
+      }
+    };
+    const drawShells = () => {
+      for (const l of [3, 2, 1]) {
+        if (hidden.has(l)) continue;
+        const r = RS[l], c = proj([0, 0, 0]), rad = r * c[3];
+        const g = ctx.createRadialGradient(c[0] - rad * 0.3, c[1] - rad * 0.3, rad * 0.1, c[0], c[1], rad);
+        g.addColorStop(0, lc(l) + '14'); g.addColorStop(1, lc(l) + '05');
+        ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(c[0], c[1], rad, 0, 2 * Math.PI); ctx.fill();
+        ctx.strokeStyle = lc(l); ctx.lineWidth = 1;
+        for (let lat = -60; lat <= 60; lat += 30) {
+          const a = lat * Math.PI / 180;
+          ring(t => [r * Math.cos(a) * Math.cos(t), r * Math.sin(a), r * Math.cos(a) * Math.sin(t)], z => (z > 0 ? 0.16 : 0.05));
+        }
+        for (let lon = 0; lon < 180; lon += 30) {
+          const a = lon * Math.PI / 180;
+          ring(t => [r * Math.cos(t) * Math.cos(a), r * Math.sin(t), r * Math.cos(t) * Math.sin(a)], z => (z > 0 ? 0.16 : 0.05));
+        }
+      }
+    };
+    const drawRegions = focus => {
+      ctx.setLineDash([3, 6]); ctx.lineWidth = 1; ctx.strokeStyle = COL.muted;
+      for (const t of tops) {
+        if (hiddenRegions.has(t.title)) continue;
+        const k = focus && !focus.has(t) ? 0.4 : 1, lit = t.limb ? limbFocus || focusRegions.has(t.title) : focusRegions.has(t.title);
+        ctx.strokeStyle = t.limb ? COL.tool : colorBy === 'region' || lit ? t.color : COL.muted;
+        ctx.lineWidth = lit ? 3 : t.limb || colorBy === 'region' ? 2 : 1;
+        ring(p => mul(inCone(t.d3, t.cap, p), RS[3] + SHELL[3] + 14), z => (z > 0 ? (t.limb ? 0.9 : 0.55) : 0.12) * k);
+      }
+      ctx.setLineDash([]);
+    };
+    const drawRegionLabels = focus => {
+      ctx.font = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineWidth = 3; ctx.strokeStyle = COL.page; ctx.lineJoin = 'round';
+      for (const t of tops) {
+        const q = proj(mul(t.d3, RS[3] + SHELL[3] + 46));
+        if (q[2] < -RS[3] * 0.35 || hiddenRegions.has(t.title)) continue;
+        ctx.globalAlpha = fog(q[2]) * (focus && !focus.has(t) ? 0.4 : 1);
+        ctx.fillStyle = t.limb ? COL.tool : colorBy === 'region' ? t.color : COL.ink2;
+        ctx.strokeText(t.title.toUpperCase(), q[0], q[1]); ctx.fillText(t.title.toUpperCase(), q[0], q[1]);
+      }
+    };
+    const drawTree = focus => {
+      ctx.lineWidth = 1;
+      for (const n of nodes) {
+        const p = n.parent;
+        if (!p || !p.p3 || !visible(n) || !shown(p)) continue;
+        const a = proj(p.p3), b = proj(n.p3), hl = focus && focus.has(n) && focus.has(p);
+        ctx.strokeStyle = hl ? COL.ink2 : COL.axis; ctx.lineWidth = hl ? 1.6 : 1;
+        ctx.globalAlpha = hl ? 0.9 : 0.45 * fog((a[2] + b[2]) / 2) * (dimmed(n, focus) ? 0.18 : 1);
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      }
+    };
+    const drawSynapses = () => {
+      const anchor = selected || hovered;
+      for (const s of syns) {
+        if (!visible(s.a) || !visible(s.b)) continue;
+        const a = proj(s.a.p3), b = proj(s.b.p3), q = proj(synCtrl(s.a.p3, s.b.p3));
+        const hl = anchor && (s.a === anchor || s.b === anchor), bad = s.type === 'contradicts';
+        ctx.strokeStyle = bad ? COL.critical : hl ? COL.ink2 : COL.muted; ctx.lineWidth = hl ? 2 : 1;
+        ctx.setLineDash(bad ? [6, 4] : []);
+        ctx.globalAlpha = hl ? 0.95 : anchor ? 0.04 : (bad ? 0.8 : 0.22) * fog(q[2]);
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.quadraticCurveTo(q[0], q[1], b[0], b[1]); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    };
+    let drawn = [];
+    const drawNodes = (focus, now) => {
+      drawn = [];
+      for (const n of nodes) {
+        if (!visible(n)) continue;
+        const q = proj(n.p3), base = n.layer === 1 ? 7 : n.layer === 2 ? 3.6 : 2.2;
+        drawn.push({ n, x: q[0], y: q[1], z: q[2], r: Math.max(1.2, (base + Math.min(3, (n.weight || 0) * 3)) * q[3] * cam.dist / F * 1.6) });
+      }
+      drawn.sort((a, b) => a.z - b.z);
+      for (const d of drawn) {
+        const n = d.n, on = n === selected || n === hovered || n.flash > now;
+        const hollow = (n.status === 'seed' && n.layer < 3) || n.status === 'provisional', gray = n.status === 'obsolete';
+        ctx.globalAlpha = on ? 1 : fog(d.z) * (dimmed(n, focus) ? 0.18 : 1) * (cooling(n) ? 0.45 : 1);
+        ctx.beginPath(); ctx.arc(d.x, d.y, on ? d.r + 2 : d.r, 0, 2 * Math.PI);
+        ctx.fillStyle = gray ? COL.muted : hollow ? COL.page : nc(n); ctx.fill();
+        if (n.layer < 3 || on || hollow) {
+          ctx.strokeStyle = on ? COL.ink : hollow ? nc(n) : COL.page; ctx.lineWidth = on ? 2 : hollow ? 1.8 : 1; ctx.stroke();
+        }
+      }
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.lineWidth = 3; ctx.strokeStyle = COL.page; ctx.lineJoin = 'round';
+      for (const d of drawn) {
+        const n = d.n, top = !n.parent || n.parent === ROOT;
+        const want = n === selected || n === hovered || n.flash > now || (focus && focus.has(n) && n.layer < 3 && (focus.size <= 60 || n.layer === 1 || !regionNodes)) || (query && matches.has(n) && matches.size <= 30)
+          || (!focus && n.layer === 1 && (top || cam.dist < 1000) && d.z > -RS[1] * 0.2) || (!focus && n.layer === 2 && cam.dist < 900 && d.z > RS[2] * 0.5);
+        if (!want) continue;
+        ctx.font = (n.layer === 1 ? '600 12px' : '11px') + ' system-ui, -apple-system, "Segoe UI", sans-serif';
+        ctx.globalAlpha = n === selected || n === hovered ? 1 : 0.85 * fog(d.z);
+        ctx.strokeText(n.title, d.x + d.r + 4, d.y); ctx.fillStyle = COL.ink; ctx.fillText(n.title, d.x + d.r + 4, d.y);
+      }
+    };
+
+    // ---- signals: the same feeding and query events as the orbit, riding 3D routes ----
+    const sigs = [], rips = [];
+    let qText = '', qUntil = 0, flashUntil = 0;
+    const ease = p => 0.5 - Math.cos(Math.PI * p) / 2;
+    const lerp3 = (a, b, p) => [a[0] + (b[0] - a[0]) * p, a[1] + (b[1] - a[1]) * p, a[2] + (b[2] - a[2]) * p];
+    const arc3 = (a, b) => { const c = synCtrl(a, b); return p => { const u = 1 - p; return add(add(mul(a, u * u), mul(c, 2 * u * p)), mul(b, p * p)); }; };
+    const path3 = list => p => {
+      const pts = list.map(posOf), seg = [];
+      let tot = 0;
+      for (let i = 1; i < pts.length; i++) { const d = Math.hypot(...add(pts[i], mul(pts[i - 1], -1))); seg.push(d); tot += d; }
+      let rest = p * tot;
+      for (let i = 0; i < seg.length; i++) {
+        if (rest <= seg[i] || i === seg.length - 1) return lerp3(pts[i], pts[i + 1], seg[i] ? Math.min(1, rest / seg[i]) : 1);
+        rest -= seg[i];
+      }
+      return pts[pts.length - 1];
+    };
+    const sigColor = cls => (cls === 'query' ? COL.ink : cls === 'contradicts' ? COL.critical : cls === 'validated' ? COL.good : COL[cls.toLowerCase()]);
+    const launch3 = (route, cls, { r = 3.5, dur = 1200, delay = 0, ends = [], onArrive } = {}) => {
+      if (signalsOn) sigs.push({ route, cls, r, dur, ends, onArrive, t0: performance.now() + delay });
+    };
+    const ripple3 = (n, cls, { delay = 0, dur = 900, grow = 22 } = {}) => {
+      if (signalsOn) rips.push({ n, cls, dur, grow, t0: performance.now() + delay });
+    };
+    const feeds3 = [];
+    for (const n of nodes) if (n.p3) feeds3.push({ from: n, to: n.parent && n.parent !== ROOT ? n.parent : ROOT, spoke: true });
+    for (const s of syns) {
+      const [from, to] = s.type === 'depends_on' ? [s.b, s.a] : [s.a, s.b];
+      feeds3.push({ from, to, syn: s });
+      if (s.type === 'related' || s.type === 'contradicts') feeds3.push({ from: to, to: from, syn: s });
+    }
+    const every = clamp(2400 / Math.sqrt(feeds3.length + 1), 250, 1200);
+    let nextFeed = 0;
+    const feed = now => {
+      if (!signalsOn || document.hidden || now < nextFeed) return;
+      nextFeed = now + every * (0.6 + Math.random() * 0.8);
+      if (sigs.length > 16) return;
+      const live = feeds3.filter(f => (f.spoke ? showSpokes : showSyn) && shown(f.from) && shown(f.to));
+      if (!live.length) return;
+      const odds = f => 0.15 + (f.from.weight || 0);   // heavier nodes feed more often
+      let pick = Math.random() * live.reduce((s, f) => s + odds(f), 0), f = live[0];
+      for (const x of live) { pick -= odds(x); if (pick <= 0) { f = x; break; } }
+      const a = posOf(f.from), b = posOf(f.to);
+      launch3(f.spoke ? p => lerp3(a, b, p) : arc3(a, b), f.syn && f.syn.type === 'contradicts' ? 'contradicts' : `L${f.from.layer}`,
+        { dur: 900 + Math.hypot(...add(b, mul(a, -1))) * 2.2, ends: [f.from, f.to] });
+    };
+    const chain = n => { const c = [n]; for (let p = n.parent; p && p !== ROOT; p = p.parent) c.unshift(p); c.unshift(ROOT); return c; };
+    const drawSignals = (now, focus) => {
+      for (const s of sigs) {
+        const p = (now - s.t0) / s.dur;
+        if (p < 0 || p >= 1) continue;
+        const q = proj(s.route(ease(p))), faded = focus && s.ends.length && !s.ends.some(n => focus.has(n));
+        const r = s.r * Math.max(0.6, q[3] * cam.dist / F);
+        ctx.fillStyle = sigColor(s.cls);
+        ctx.globalAlpha = faded ? 0.04 : 0.22; ctx.beginPath(); ctx.arc(q[0], q[1], r * 2.6, 0, 2 * Math.PI); ctx.fill();
+        ctx.globalAlpha = faded ? 0.15 : 1; ctx.beginPath(); ctx.arc(q[0], q[1], r, 0, 2 * Math.PI); ctx.fill();
+      }
+      ctx.lineWidth = 2;
+      for (const r of rips) {
+        const p = (now - r.t0) / r.dur;
+        if (p < 0 || p >= 1 || (r.n !== ROOT && !visible(r.n))) continue;
+        const q = proj(posOf(r.n));
+        ctx.strokeStyle = sigColor(r.cls); ctx.globalAlpha = 1 - p;
+        ctx.beginPath(); ctx.arc(q[0], q[1], (r.n === ROOT ? 6 : 4) + r.grow * p, 0, 2 * Math.PI); ctx.stroke();
+      }
+      if (now < qUntil) {
+        ctx.font = '13px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.globalAlpha = Math.min(1, (qUntil - now) / 600); ctx.lineWidth = 4; ctx.strokeStyle = COL.page;
+        ctx.strokeText(qText, W / 2, H - 14); ctx.fillStyle = COL.ink; ctx.fillText(qText, W / 2, H - 14);
+      }
+    };
+
+    const draw = now => {
+      setCam();
+      const focus = focusSet();
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      ctx.globalAlpha = 1; ctx.fillStyle = COL.page; ctx.fillRect(0, 0, W, H);
+      if (show.shell) drawShells();
+      if (showSpokes) drawTree(focus);
+      if (showSyn) drawSynapses();
+      if (show.region) drawRegions(focus);
+      drawNodes(focus, now);
+      if (show.region) drawRegionLabels(focus);
+      if (signalsOn) drawSignals(now, focus);
+      ctx.globalAlpha = 1;
+    };
+    let last = performance.now();
+    const frame = now => {
+      const dt = Math.min(64, now - last); last = now;
+      if (active) {
+        if (anim) {
+          const t = Math.min(1, (now - anim.t0) / anim.ms), e = t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+          for (const k of ['yaw', 'pitch', 'dist']) cam[k] = anim.from[k] + (anim.to[k] - anim.from[k]) * e;
+          if (t >= 1) anim = null;
+          dirty = true;
+        } else if (spin && !dragging && !selected && !hovered && !document.hidden) { cam.yaw += dt * 0.00012; dirty = true; }
+        feed(now);
+        for (let i = sigs.length - 1; i >= 0; i--) if (now - sigs[i].t0 >= sigs[i].dur) { const s = sigs.splice(i, 1)[0]; if (s.onArrive) s.onArrive(); }
+        for (let i = rips.length - 1; i >= 0; i--) if (now - rips[i].t0 >= rips[i].dur) rips.splice(i, 1);
+        if (sigs.length || rips.length || now < qUntil || now < flashUntil + 100) dirty = true;
+        if (dirty && W) { draw(now); dirty = false; }
+      }
+      requestAnimationFrame(frame);
+    };
+
+    // ---- pointer ----
+    let moved = 0, lx = 0, ly = 0;
+    const pick = (x, y) => {
+      let best = null, bd = 144;
+      for (let i = drawn.length - 1; i >= 0; i--) {   // front-most first
+        const d = drawn[i], dd = (d.x - x) ** 2 + (d.y - y) ** 2;
+        if (dd < Math.max(bd, d.r * d.r)) { best = d.n; bd = Math.min(bd, dd); }
+      }
+      return best;
+    };
+    const local = e => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    cv.addEventListener('pointerdown', e => { dragging = true; moved = 0; lx = e.clientX; ly = e.clientY; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; anim = null; });
+    cv.addEventListener('pointermove', e => {
+      if (dragging) {
+        const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
+        moved += Math.abs(dx) + Math.abs(dy);
+        cam.yaw += dx * 0.006; cam.pitch = clamp(cam.pitch + dy * 0.006, -1.45, 1.45);
+        dirty = true; hideTip(); return;
+      }
+      const n = pick(...local(e));
+      if (n !== hovered) { hovered = n; dirty = true; n ? showTip(e, nodeTip(n)) : hideTip(); }
+      else moveTip(e);
+    });
+    cv.addEventListener('pointerup', e => {
+      if (!dragging) return;
+      dragging = false; cv.style.cursor = '';
+      if (moved < 5) { const n = pick(...local(e)); select(n && selected === n ? null : n); }
+    });
+    cv.addEventListener('pointercancel', () => { dragging = false; cv.style.cursor = ''; });
+    cv.addEventListener('pointerleave', () => { if (hovered) { hovered = null; dirty = true; } hideTip(); });
+    cv.addEventListener('dblclick', e => { const n = pick(...local(e)); if (n) { select(n); focusOn(n); } });
+    cv.addEventListener('wheel', e => { e.preventDefault(); anim = null; cam.dist = clamp(cam.dist * Math.exp(e.deltaY * 0.0012), 560, 2800); dirty = true; }, { passive: false });
+
+    readColors();
+    requestAnimationFrame(frame);
+    return {
+      refresh() { dirty = true; },
+      setActive(v) { active = v; dirty = true; if (!v) { sigs.length = 0; rips.length = 0; } },
+      focus: focusOn,
+      zoom(k) { anim = null; cam.dist = clamp(cam.dist * k, 560, 2800); dirty = true; },
+      reset() { anim = { from: { ...cam }, to: { ...HOME }, t0: performance.now(), ms: reduced ? 1 : 600 }; },
+      clear() { sigs.length = 0; rips.length = 0; dirty = true; },
+      get spin() { return spin; },
+      set spin(v) { spin = v; store.set('spin', v); },
+      toggle(k) { show[k] = !show[k]; store.set(k, show[k]); dirty = true; return show[k]; },
+      shown: k => show[k],
+      query(text) { qText = text; qUntil = performance.now() + 5000; ripple3(ROOT, 'query', { grow: 30, dur: 1100 }); },
+      play(e, n, delay) {
+        if (!n || !n.p3) return;
+        const lit = () => { n.flash = performance.now() + 4000; flashUntil = Math.max(flashUntil, n.flash); };
+        if (e.e === 'activated') launch3(path3(chain(n)), 'query', { dur: 900, delay, ends: [n], onArrive: () => ripple3(n, 'query', { grow: 12, dur: 600 }) });
+        else if (e.e === 'read') launch3(path3(chain(n)), 'query', { r: 6, dur: 1400, delay, ends: [n], onArrive: () => { ripple3(n, 'query', { grow: 24 }); lit(); } });
+        else if (e.e === 'used') launch3(path3(chain(n).reverse()), `L${n.layer}`, { r: 6, dur: 1400, delay, ends: [n], onArrive: () => ripple3(ROOT, `L${n.layer}`, { grow: 26 }) });
+        else if (e.e === 'validated') ripple3(n, 'validated', { delay, grow: 30, dur: 1400 });
+      },
+    };
+  })();
+
+  function setView(v) {
+    view = v; store.set('view', v);
+    // toggleAttribute, not .hidden: an <svg> has no hidden property, so the orbit stayed visible under the sphere
+    $('#orbit').toggleAttribute('hidden', v === 'sphere'); $('#sphere').toggleAttribute('hidden', v !== 'sphere');
+    document.querySelectorAll('.only3d').forEach(b => { b.hidden = v !== 'sphere'; });
+    $('#v-orbit').setAttribute('aria-pressed', String(v === 'orbit')); $('#v-sphere').setAttribute('aria-pressed', String(v === 'sphere'));
+    clearSignals(); sphere.setActive(v === 'sphere');
+    hovered = null; hideTip(); applyFocus(); syncPlay();
+    const groupTop = limbFocus ? nodes.find(n => n.limb && n.type === 'tools')
+      : focusRegions.size === 1 ? regionList.find(r => focusRegions.has(r.title)) : null;
+    if (v === 'sphere' && (selected || groupTop)) sphere.focus(selected || groupTop);
+  }
+  $('#v-orbit').addEventListener('click', () => setView('orbit'));
+  $('#v-sphere').addEventListener('click', () => setView('sphere'));
+  for (const k of ['shell', 'region']) {
+    const b = $('#t-' + k);
+    b.setAttribute('aria-pressed', String(sphere.shown(k)));
+    b.addEventListener('click', () => b.setAttribute('aria-pressed', String(sphere.toggle(k))));
+  }
+
+  // ---------- tiles ----------
+  const H = DATA.health || {};
+  function tile(k, v, d, status) {
+    const t = el('div', { class: 'tile' }, null, $('#tiles'));
+    el('div', { class: 'k' }, k, t);
+    const vv = el('div', { class: 'v' }, null, t);
+    if (status) { el('span', { class: `status ${status[0]}`, style: 'margin-right:6px;vertical-align:middle', 'aria-hidden': 'true' }, status[1], vv); }
+    vv.append(String(v));
+    el('div', { class: 'd' }, d, t);
+  }
+  const seeds = nodes.filter(n => n.status === 'seed').length;
+  const contra = syns.filter(s => s.type === 'contradicts').length;
+  const errs = H.errors || 0, warns = H.warnings || 0;
+  tile('Nodes', nodes.length, `L1 ${counts[1]} · L2 ${counts[2]} · L3 ${counts[3]}`);
+  tile('Synapses', syns.length, contra ? `${contra} contradicts` : 'no contradictions');
+  tile('Seeds to validate', seeds, 'awaiting the supervisor');
+  tile('Health', errs ? `${errs} errors` : warns ? `${warns} warnings` : 'Clean', `lint: ${errs} errors · ${warns} warnings`,
+    errs ? ['critical', '✕'] : warns ? ['warning', '!'] : ['good', '✓']);
+  const coldTotal = Object.values(cold).reduce((s, v) => s + v, 0);
+  tile('Cold ring', coldTotal, `${cold._inbox || 0} in the inbox`);
+  tile('Generated', (DATA.generated || '').slice(11, 16) || '—', (DATA.generated || '').slice(0, 10));
+
+  $('#subtitle').textContent = `Vault ${DATA.vault} · engine v${DATA.version}` + ((DATA.siblings || []).length ? ` · sibling: ${DATA.siblings.join(', ')}` : '');
+  $('#title').textContent = DATA.vault;
+  document.title = DATA.vault;
+  $('#footer').textContent = `Generated by brain.py v${DATA.version} on ${DATA.generated}. Do not edit: rebuilt on every commit.`;
+
+  // ---------- growth chart (stacked areas, crosshair tooltip) ----------
+  (function growth() {
+    const box = $('#growth'), Hs = DATA.history || [];
+    if (Hs.length < 2) {
+      el('p', { class: 'empty' }, `The growth curve appears from the second day of activity. Today: L1 ${counts[1]} · L2 ${counts[2]} · L3 ${counts[3]}.`, box);
+      return;
+    }
+    const W = 640, Ht = 230, m = { l: 34, r: 70, t: 10, b: 26 };
+    const g = svgEl('svg', { class: 'chart', viewBox: `0 0 ${W} ${Ht}`, role: 'img', 'aria-label': 'Nodes per layer over time' }, box);
+    const iw = W - m.l - m.r, ih = Ht - m.t - m.b;
+    const xs = i => m.l + iw * i / (Hs.length - 1);
+    const tot = Hs.map(h => (h.l1 || 0) + (h.l2 || 0) + (h.l3 || 0));
+    const rawMax = Math.max(1, ...tot);
+    const step = Math.pow(10, Math.floor(Math.log10(rawMax))) * ([1, 2, 5, 10].find(s => s * Math.pow(10, Math.floor(Math.log10(rawMax))) * 4 >= rawMax) || 10);
+    const max = Math.ceil(rawMax / step) * step;
+    const ys = v => m.t + ih - ih * v / max;
+    for (let v = 0; v <= max + 1e-9; v += step) {
+      svgEl('line', { class: v === 0 ? 'baseline' : 'gridline', x1: m.l, x2: W - m.r, y1: ys(v), y2: ys(v) }, g);
+      svgEl('text', { class: 'tick', x: m.l - 6, y: ys(v), 'text-anchor': 'end', 'dominant-baseline': 'middle' }, g).textContent = v;
+    }
+    let base = Hs.map(() => 0);
+    const tops = {};
+    for (const [k, cls] of [['l1', 'L1'], ['l2', 'L2'], ['l3', 'L3']]) {
+      const top = Hs.map((h, i) => base[i] + (h[k] || 0));
+      const up = top.map((v, i) => `${f1(xs(i))},${f1(ys(v))}`);
+      const down = base.map((v, i) => `${f1(xs(i))},${f1(ys(v))}`).reverse();
+      svgEl('path', { class: `area ${cls}`, d: `M${up.join('L')}L${down.join('L')}Z` }, g);
+      svgEl('path', { class: `line ${cls}`, d: `M${up.join('L')}` }, g);
+      tops[k] = top; base = top;
+    }
+    // direct labels at the right edge, nudged apart
+    const lastI = Hs.length - 1;
+    let prevY = Infinity;
+    for (const [k, cls] of [['l1', 'L1'], ['l2', 'L2'], ['l3', 'L3']]) {
+      const lo = k === 'l1' ? 0 : tops[k === 'l2' ? 'l1' : 'l2'][lastI];
+      let y = ys((lo + tops[k][lastI]) / 2);
+      if (prevY - y < 14) y = prevY - 14;
+      prevY = y;
+      svgEl('text', { class: 'dlabel', x: W - m.r + 8, y, 'dominant-baseline': 'middle' }, g).textContent = `${cls} ${Hs[lastI][k] || 0}`;
+    }
+    const xl = [0, Math.floor(lastI / 2), lastI].filter((v, i, a) => a.indexOf(v) === i);
+    xl.forEach(i => svgEl('text', { class: 'tick', x: xs(i), y: Ht - 8, 'text-anchor': i === 0 ? 'start' : i === lastI ? 'end' : 'middle' }, g).textContent = Hs[i].date);
+    const cross = svgEl('line', { class: 'cross', y1: m.t, y2: m.t + ih, visibility: 'hidden' }, g);
+    const hit = svgEl('rect', { x: m.l, y: m.t, width: iw, height: ih, fill: 'transparent' }, g);
+    hit.addEventListener('pointermove', e => {
+      const p = g.createSVGPoint(); p.x = e.clientX; p.y = e.clientY;
+      const q = p.matrixTransform(g.getScreenCTM().inverse());
+      const i = clamp(Math.round((q.x - m.l) / iw * lastI), 0, lastI), h = Hs[i];
+      cross.setAttribute('x1', xs(i)); cross.setAttribute('x2', xs(i)); cross.setAttribute('visibility', 'visible');
+      const f = document.createDocumentFragment();
+      el('b', {}, h.date, f);
+      el('div', {}, `L1 ${h.l1 || 0} · L2 ${h.l2 || 0} · L3 ${h.l3 || 0} — total ${tot[i]}`, f);
+      el('div', { class: 'm' }, `seeds ${h.seeds || 0} · synapses ${h.synapses || 0} · cold ${h.cold || 0}`, f);
+      showTip(e, f);
+    });
+    hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); hideTip(); });
+  })();
+
+  // ---------- top by weight ----------
+  (function top() {
+    const box = $('#top');
+    const list = [...nodes].sort((a, b) => (b.weight || 0) - (a.weight || 0)).slice(0, 10);
+    if (!list.length) { el('p', { class: 'empty' }, 'No nodes yet.', box); return; }
+    for (const n of list) {
+      const row = el('div', { class: 'bar-row' }, null, box);
+      const name = el('div', { class: 'name' }, null, row); nodeLink(n, name);
+      const track = el('div', { class: 'bar-track' }, null, row);
+      const bar = el('div', { class: `bar L${n.layer}`, style: `width:${Math.max(1, Math.round((n.weight || 0) * 100))}%` }, null, track);
+      bar.addEventListener('pointerenter', e => showTip(e, nodeTip(n)));
+      bar.addEventListener('pointermove', moveTip);
+      bar.addEventListener('pointerleave', hideTip);
+      el('div', { class: 'num' }, fmt(n.weight || 0), row);
+    }
+  })();
+
+  // ---------- tools: how much the agent leans on each limb and what it has learned using it ----------
+  (function tools() {
+    const box = $('#tools');
+    const list = nodes.filter(n => n.limb && n.layer === 2).sort((a, b) => heat(b) - heat(a) || byName(a, b));
+    if (!list.length) {
+      el('p', { class: 'empty' }, 'No Tools region yet: an L1 with --type tools, one L2 per tool with --type tool, and the lessons of using each tool as its L3 details.', box);
+      return;
+    }
+    for (const n of list) {
+      const wrap = el('div', { class: 'tool-row' }, null, box);
+      const row = el('div', { class: 'bar-row' }, null, wrap);
+      const name = el('div', { class: 'name' }, null, row); nodeLink(n, name);
+      const track = el('div', { class: 'bar-track' }, null, row);
+      const bar = el('div', { class: 'bar tool', style: `width:${Math.max(1, Math.round(heat(n) * 100))}%;opacity:${cooling(n) ? 0.45 : 1}` }, null, track);
+      bar.addEventListener('pointerenter', e => showTip(e, nodeTip(n)));
+      bar.addEventListener('pointermove', moveTip);
+      bar.addEventListener('pointerleave', hideTip);
+      el('div', { class: 'num' }, fmt(heat(n)), row);
+      const by = {};
+      lessonsOf(n).forEach(c => { by[c.type] = (by[c.type] || 0) + 1; });
+      const parts = Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v} ${k}${v > 1 ? 's' : ''}`);
+      const state = n.status === 'provisional' ? 'provisional' : !heat(n) ? 'not used yet' : cooling(n) ? 'cooling' : 'in use';
+      el('div', { class: 'm' }, [state, parts.length ? parts.join(' · ') : 'no lessons yet'].join(' · '), wrap);
+    }
+  })();
+
+  // ---------- health ----------
+  (function health() {
+    const box = $('#health');
+    const rows = [
+      ['Lint errors', H.errors, 'critical'], ['Lint warnings', H.warnings, 'warning'],
+      ['Broken links', H.broken, 'serious'], ['Misplaced nodes', H.misplaced, 'serious'],
+      ['Orphans', H.orphans, 'warning'], ['Oversized nodes', H.oversized, 'warning'],
+      ['Not in English', H.not_english, 'warning'], ['Seeds older than 30 days', H.stale_seeds, 'warning'],
+      ['Nodes at the 7-synapse cap', H.full_synapses, 'warning'], ['Inbox pending', H.inbox, 'warning'],
+    ];
+    for (const [label, v, bad] of rows) {
+      const ok = !v;
+      const r = el('div', { class: 'health-row' }, null, box);
+      el('span', { class: `status ${ok ? 'good' : bad}`, 'aria-hidden': 'true' }, ok ? '✓' : bad === 'critical' ? '✕' : '!', r);
+      el('span', {}, label, r);
+      el('span', { class: 'num' }, String(v || 0), r);
+    }
+    const fs = DATA.findings || [];
+    if (fs.length) {
+      const d = el('details', { style: 'margin-top:8px' }, null, box);
+      el('summary', {}, `Findings (${fs.length})`, d);
+      const ul = el('ul', { class: 'plain' }, null, d);
+      fs.slice(0, 40).forEach(f => el('li', {}, `${f.level === 'error' ? '✕' : '!'} ${f.node ? f.node + ' — ' : ''}${f.message}`, ul));
+    }
+  })();
+
+  // ---------- co-activations, commits, cold ring ----------
+  (function coact() {
+    const box = $('#coact'), list = DATA.coactivations || [];
+    if (!list.length) { el('p', { class: 'empty' }, 'No usage data yet: weights grow as agents read, use and credit nodes.', box); return; }
+    const ul = el('ul', { class: 'plain' }, null, box);
+    for (const c of list) {
+      const li = el('li', {}, null, ul);
+      const a = byTitle.get(norm(c.a)), b = byTitle.get(norm(c.b));
+      a ? nodeLink(a, li) : li.append(c.a);
+      li.append(' ↔ ');
+      b ? nodeLink(b, li) : li.append(c.b);
+      el('span', { class: 'num', style: 'float:right' }, fmt(c.score), li);
+    }
+  })();
+  (function commits() {
+    const box = $('#commits'), list = DATA.commits || [];
+    if (!list.length) { el('p', { class: 'empty' }, 'No commits yet.', box); return; }
+    const ul = el('ul', { class: 'plain' }, null, box);
+    for (const c of list) {
+      const li = el('li', {}, null, ul);
+      el('span', { class: 'mono' }, `${c.hash} · ${c.date} `, li);
+      li.append(c.subject);
+    }
+  })();
+  (function coldRing() {
+    const box = $('#cold');
+    for (const [k, label] of [['_inbox', 'inbox'], ['_sources', 'sources'], ['_log', 'log'], ['_archive', 'archive']]) {
+      const d = el('div', {}, null, box);
+      el('b', {}, String(cold[k] || 0), d);
+      el('span', { class: 'muted' }, label, d);
+    }
+  })();
+
+  // ---------- table view ----------
+  (function table() {
+    const t = $('#table');
+    const cols = [['title', 'Title'], ['layer', 'Layer'], ['type', 'Type'], ['status', 'Status'], ['weight', 'Weight'],
+      ['up', 'Parent'], ['nsyn', 'Synapses'], ['updated', 'Updated'], ['summary', 'Summary']];
+    nodes.forEach(n => { n.nsyn = n.syn.length; });
+    let sortKey = 'layer', dir = 1;
+    const head = el('thead', {}, null, t), body = el('tbody', {}, null, t);
+    const hr = el('tr', {}, null, head);
+    cols.forEach(([k, label]) => {
+      const th = el('th', { scope: 'col', tabindex: '0' }, label, hr);
+      const sort = () => { dir = sortKey === k ? -dir : 1; sortKey = k; draw(); };
+      th.addEventListener('click', sort);
+      th.addEventListener('keydown', e => { if (e.key === 'Enter') sort(); });
+    });
+    function draw() {
+      body.replaceChildren();
+      const rows = [...nodes].sort((a, b) => {
+        const x = a[sortKey] ?? '', y = b[sortKey] ?? '';
+        return (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y))) * dir || a.title.localeCompare(b.title);
+      });
+      for (const n of rows) {
+        const tr = el('tr', {}, null, body);
+        cols.forEach(([k]) => {
+          const v = k === 'weight' ? fmt(n.weight || 0) : k === 'layer' ? 'L' + n.layer : (n[k] ?? '');
+          el('td', k === 'summary' ? { class: 'wrap-cell' } : {}, String(v), tr);
+        });
+        tr.addEventListener('click', () => { select(n, true); $('.orbit-card').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
+      }
+    }
+    draw();
+  })();
+
+  // ---------- auto-refresh: reload the regenerated file while idle ----------
+  const auto = $('#auto');
+  auto.checked = store.get('auto', true);
+  auto.addEventListener('change', () => store.set('auto', auto.checked));
+  let lastInput = Date.now();
+  ['pointermove', 'keydown', 'wheel', 'pointerdown'].forEach(ev => addEventListener(ev, () => { lastInput = Date.now(); }, { passive: true }));
+  addEventListener('beforeunload', () => store.set('rot', rot));
+  setInterval(() => {
+    if (auto.checked && !document.hidden && Date.now() - lastInput > 20000) location.reload();
+  }, 60000);
+
+  // ---------- start ----------
+  place();
+  applyVB();
+  setView(view);
+  const saved = store.get('sel', null);
+  select(saved ? nodes.find(n => n.id === saved) || null : null);
+  renderQueries(null);
+  poll();
+  setInterval(poll, 3000);
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

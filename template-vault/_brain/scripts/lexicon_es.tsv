@@ -1,0 +1,468 @@
+# Base Spanish to English lexicon for recall: general work, homelab and software vocabulary, one lemma per line.
+# A query word matches a lemma by its light Spanish stem (ejecuto, ejecutando, ejecución → ejecutar), so list
+# lemmas, not every form. A vault's _brain/glossary.json wins over this file. Written 2026-10-29.
+abrir	open
+acceso	access
+accion	action
+aceptar	accept
+acuse	acknowledgement
+actualizar	update upgrade
+actuar	act
+acuerdo	agreement
+advertencia	warning
+agente	agent
+agregar	add
+ahorrar	save
+aislar	isolate
+ajuste	setting adjustment
+alcance	scope
+alcanzar	reach
+almacenamiento	storage
+alto	high
+alumno	student
+amenaza	threat
+ancho de banda	bandwidth
+antiguo	old legacy
+anuncio	announcement
+aparecer	appear
+aplicacion	application app
+aplicar	apply
+apoyo	support
+aprender	learn
+aprobacion	approval
+aprobar	approve
+archivo	file
+arnes	harness
+arrancar	start boot
+arreglar	fix
+arreglo	fix
+asignacion	assignment
+asignar	assign
+asistente	assistant
+atender	handle
+auditoria	audit
+aumentar	increase
+autenticacion	authentication
+automatico	automatic
+autor	author
+avance	progress
+aviso	notice warning
+ayuda	help
+bajo	low
+barra	slash bar
+barra invertida	backslash
+basura	trash
+biblioteca	library
+bibliotecario	librarian
+bloquear	block
+bloqueo	block lock
+bot	bot
+borrar	delete
+borrador	draft
+boveda	vault
+buscar	search find
+busqueda	search
+cabecera	header
+caida	outage down
+calendario	calendar
+calificacion	grade score
+calificar	grade score
+cambiar	change
+cambio	change
+camara	camera
+campo	field
+cancelar	cancel
+capa	layer
+capacidad	capacity
+captura	capture screenshot
+caracter	character
+carga	load
+cargar	load
+carpeta	folder
+casa	home
+causa	cause
+cerrar	close
+certificado	certificate
+cifrado	encryption
+clave	key
+cliente	client
+codigo	code
+cola	queue
+columna	column
+comando	command
+comentario	comment
+comenzar	start begin
+comillas	quotes
+compartir	share
+compilar	build compile
+completar	complete
+comportamiento	behavior
+comportarse	behave
+computadora	computer pc
+comprobar	check verify
+conectar	connect
+conectividad	connectivity
+conector	connector
+conexion	connection
+configuracion	configuration config settings
+configurar	configure
+confirmar	confirm
+conjunto	set
+conocimiento	knowledge
+consulta	query
+consultar	query check
+contenedor	container
+contener	contain
+contenido	content
+contexto	context
+contrasena	password
+control	control
+controlador	driver controller
+copiar	copy
+corregir	fix correct
+correo	email mail
+correr	run
+cortar	cut
+costo	cost
+crear	create
+cuenta	account
+cuestionario	quiz
+culpa	fault
+cumplir	meet comply
+dano	damage
+dato	data
+datos	data
+debil	weak
+decidir	decide
+decision	decision
+defecto	default
+definir	define
+dejar	leave stop
+demostrar	show prove
+dependencia	dependency
+depender	depend
+desactivar	disable
+desarrollo	development
+descargar	download
+describir	describe
+desatendido	unattended
+desempeno	performance
+desperdicio	waste
+despliegue	deploy deployment
+destino	target destination
+detalle	detail
+detener	stop
+devolver	return
+dia	day
+diario	daily
+dificil	hard difficult
+dificultad	difficulty
+dimension	dimension
+direccion	address
+directamente	directly
+directiva	directive
+directorio	directory folder
+disco	disk drive
+diseno	design
+disponible	available
+disponibilidad	availability
+dispositivo	device
+dividir	split
+documento	document
+dominio	domain
+dueno	owner
+duplicado	duplicate
+edicion	edit
+editar	edit
+ejecucion	run execution
+ejecutar	run execute
+elegir	choose select
+eliminacion	deletion removal
+eliminar	delete remove
+encabezado	header
+encender	start power on
+encontrar	find
+enlace	link
+enrutar	route
+ensayo	essay
+entorno	environment
+entrada	input entry
+entrega	delivery
+entregar	deliver
+entrenamiento	training
+entrenar	train
+enviar	send
+equipo	team machine
+error	error
+escalar	escalate scale
+escaneo	scan
+escribir	write
+escritorio	desktop
+esquema	schema
+estable	stable
+estado	status state
+estudiante	student
+etiqueta	label tag
+evento	event
+evidencia	evidence
+examen	exam
+explicar	explain
+extremidad	limb
+extremo	end
+facil	easy simple
+fallar	fail
+fallo	failure fault
+fecha	date
+fijar	pin set
+filtro	filter
+firma	signature
+firmar	sign
+flujo	flow workflow
+formato	format
+fuente	source
+funcion	function
+funcionar	work
+fusionar	merge
+ganar	win earn
+gastar	spend waste
+generador	generator
+generar	generate
+gestion	management
+grabacion	recording
+grabar	record
+grupal	group
+grupo	group
+guardar	save store
+guia	guide
+habilidad	skill
+hablar	talk speak
+hacer	do make
+herramienta	tool
+hermano	sibling
+hilo	thread
+historial	history
+hoja	sheet
+hora	hour time
+horario	schedule
+idea	idea
+identidad	identity
+idioma	language
+imagen	image
+implementar	implement
+importar	import
+incidente	incident
+incluir	include
+indice	index
+informar	report
+informe	report
+iniciar	start
+iniciativa	initiative
+inicio	start
+instalacion	install installation
+instalar	install
+instruccion	instruction
+interrumpir	interrupt
+inverso	reverse
+investigar	research investigate
+juego	game
+jugar	play
+lado	side
+lectura	read
+lector	reader
+leer	read
+lento	slow
+leccion	lesson
+licencia	license
+limite	limit
+limitar	limit
+limpiar	clean
+linea	line
+llamada	call
+llamar	call
+llave	key
+llegar	reach arrive
+lleno	full
+lograr	achieve
+lugar	place
+madrugada	night early morning
+manejar	handle manage
+maquina	machine
+materia	course subject
+maximo	maximum max
+medicion	measurement
+medir	measure
+memoria	memory
+mensaje	message
+mencion	mention
+migracion	migration
+minimo	minimum
+mismo	same
+modelo	model
+modificar	modify change
+modo	mode
+monitoreo	monitoring
+montar	mount
+motor	engine
+mover	move
+nivel	level
+nocturno	nightly
+nodo	node
+nombrar	name
+nombre	name
+nota	note
+notificacion	notification
+nube	cloud
+nucleo	core
+nuevo	new
+numero	number
+objetar	disagree object
+objetivo	goal objective target
+obsoleto	obsolete
+ofrecer	offer
+olvidar	forget
+orden	order
+organizador	organizer
+paquete	package
+paralelo	parallel
+pase	pass
+paso	step
+patron	pattern
+pedido	order request
+pedir	ask request
+perdida	loss
+perfil	profile
+permiso	permission
+permitir	allow
+personalidad	personality
+peticion	request
+plan	plan
+plantilla	template
+plataforma	platform
+politica	policy
+porcentaje	percentage
+predeterminado	default
+pregunta	question
+preguntar	ask
+preparar	prepare
+prestamo	loan
+primero	first
+principal	main
+prioridad	priority
+privado	private
+probar	test try
+problema	problem issue
+procedimiento	procedure
+proceso	process
+programa	program
+programar	schedule program
+propio	own
+propuesta	proposal
+proteger	protect
+proveedor	provider
+proyecto	project
+prueba	test
+publicar	publish
+puente	bridge
+puerto	port
+punto	point
+rama	branch
+rapido	fast quick
+rastreador	tracker
+razon	reason
+razonamiento	reasoning
+recibir	receive
+reconocimiento	recognition
+recordar	remember
+recuperar	recover restore
+recurso	resource
+red	network
+reemplazar	replace
+regla	rule
+registro	log record
+reiniciar	restart reboot
+rendimiento	performance
+reparar	repair fix
+repositorio	repository repo
+requerir	require
+rescatar	recover rescue
+resolucion	resolution
+resolver	resolve
+respaldar	back up backup
+responder	answer reply
+respuesta	answer response
+restaurar	restore
+resultado	result
+resumen	summary
+retencion	retention
+reunion	meeting
+revisar	review check
+revision	review
+riesgo	risk
+riesgoso	risky
+rol	role
+romper	break
+ruta	path route
+saber	know
+salida	output
+salir	exit leave
+saludar	greet
+saludo	greeting
+secreto	secret
+secuencia	order sequence
+seguridad	security
+seguro	safe
+semana	week
+senalar	flag point
+senal	signal
+servicio	service
+servidor	server
+sesion	session
+siguiente	next
+simple	simple
+sincronizar	sync
+sintaxis	syntax
+sintetico	synthetic
+sistema	system
+sitio	site
+solicitud	request
+sonda	probe
+subir	upload push
+sugerir	suggest
+tablero	board
+tamano	size
+tarea	task
+tardar	take long
+tarjeta	card
+tecla	key
+tema	topic
+temporal	temporary
+terminal	terminal
+terminar	finish end
+termino	term
+tiempo	time
+tienda	store
+tipo	type
+tocar	touch
+token	token
+tomar	take
+trabajo	work job
+traducir	translate
+trasero	back
+tutor	tutor
+ultimo	last
+umbral	threshold
+unidad	unit
+unico	single only
+unitario	unit
+usar	use
+usuario	user
+valor	value
+velocidad	speed
+ventana	window
+verde	green
+verificar	verify check
+version	version
+viejo	old
+vista	view
+vivir	live
+voz	voice

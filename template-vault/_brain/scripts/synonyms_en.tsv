@@ -1,0 +1,69 @@
+# English synonym groups for recall: a query word also searches the other words of its group, at reduced weight.
+# General software, operations and work vocabulary, one group per line. Written 2026-10-29.
+fix repair resolve patch correct remedy
+error bug failure fault defect issue problem mistake
+break broke broken crash fail outage
+start begin launch boot open initiate kick
+stop halt end terminate kill close shutdown
+run execute invoke
+machine host server node computer box device
+container lxc unit guest
+ticket task issue card job
+check verify validate confirm test inspect
+show display print list
+save store persist keep record
+delete remove erase drop purge
+copy duplicate clone
+move relocate transfer
+change modify edit alter update
+create make add new
+rule policy directive principle
+step procedure process routine recipe workflow
+answer reply respond response
+ask question query request
+owner proprietor
+limit cap budget quota maximum ceiling
+fast quick speed latency slow
+cost price spend waste
+memory vault cortex brain notes
+note node page
+backup dump snapshot archive
+restore recover recovery rescue
+password secret credential token key
+permission approval authorization consent allow
+grade score rate evaluate assess mark
+train teach coach adjust
+learn lesson
+mistake slip
+interrupt cut halt pause stop
+checkpoint resume progress state save
+disagree disagreement object objection push pushback candid
+greeting hello hi greet briefing
+easy simple trivial small tiny
+hard difficult complex
+size length words
+version release
+directory folder path
+file document
+message text
+link url reference
+connector integration mcp
+schedule cron timer nightly daily
+night nightly overnight
+log journal history
+idle inactive
+skill ability capability
+tool utility instrument
+browser chrome page
+shell terminal console bash powershell
+commit push merge branch
+review revision audit
+deadline cutoff due
+team crew staff
+person people contact
+study course class academic subject
+project initiative effort
+camera nvr cctv
+network lan wifi
+storage disk drive pool
+power electricity battery ups

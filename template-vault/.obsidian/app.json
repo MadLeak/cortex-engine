@@ -1,0 +1,15 @@
+{
+  "newFileLocation": "folder",
+  "newFileFolderPath": "_inbox",
+  "attachmentFolderPath": "_attachments",
+  "newLinkFormat": "shortest",
+  "useMarkdownLinks": false,
+  "alwaysUpdateLinks": true,
+  "showUnsupportedFiles": false,
+  "propertiesInDocument": "visible",
+  "userIgnoreFilters": [
+    "_brain/scripts/",
+    "_brain/state/"
+  ],
+  "promptDelete": false
+}

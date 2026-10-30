@@ -1,0 +1,5 @@
+{
+ "about": "Spanish to English keywords for recall, specific to this vault: the vault is English and its owner may ask in Spanish. The engine's lexicon_es.tsv already covers general vocabulary; this file wins over it. Extend it when a Spanish question misses for want of a word, never with a note's title.",
+ "stop": "",
+ "es": {}
+}

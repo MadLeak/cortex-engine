@@ -1,0 +1,20 @@
+# Bytecode
+__pycache__/
+*.pyc
+*.tmp
+
+# Runtime output if the engine is run inside the template or an example in place
+# (create a working copy with scripts/new_vault.py instead)
+template-vault/MAP.md
+template-vault/_brain/state/
+template-vault/_brain/generated/
+template-vault/_brain/Panel.*
+template-vault/_brain/proposals.md
+examples/*/_brain/state/
+examples/*/_brain/generated/
+examples/*/_brain/Panel.*
+examples/*/_brain/proposals.md
+
+# Operating system
+.DS_Store
+Thumbs.db

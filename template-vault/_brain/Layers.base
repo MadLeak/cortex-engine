@@ -1,0 +1,59 @@
+filters:
+  and:
+    - file.hasProperty("layer")
+    - file.ext == "md"
+    - not:
+        - file.inFolder("_templates")
+        - file.inFolder("_archive")
+views:
+  - type: table
+    name: L1 Domains
+    filters:
+      and:
+        - note.layer == 1
+    order:
+      - file.name
+      - summary
+      - status
+      - updated
+  - type: table
+    name: L2 Concepts
+    filters:
+      and:
+        - note.layer == 2
+    order:
+      - file.name
+      - up
+      - summary
+      - status
+      - updated
+  - type: table
+    name: L3 Details
+    filters:
+      and:
+        - note.layer == 3
+    order:
+      - file.name
+      - type
+      - up
+      - summary
+      - status
+  - type: table
+    name: Seeds to review
+    filters:
+      and:
+        - note.status == "seed"
+    order:
+      - file.name
+      - layer
+      - created
+      - summary
+  - type: table
+    name: Obsolete
+    filters:
+      and:
+        - note.status == "obsolete"
+    order:
+      - file.name
+      - layer
+      - updated

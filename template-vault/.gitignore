@@ -1,0 +1,19 @@
+# Obsidian: window state and cache (change whenever notes are opened)
+.obsidian/workspace*.json
+.obsidian/cache
+.trash/
+
+# Engine: ephemeral state and telemetry stay out of git (usage would otherwise rewrite every branch)
+_brain/state/sessions/
+_brain/state/usage.jsonl
+_brain/state/.lock
+_brain/state/cache.json
+_brain/state/activity.js
+_brain/state/*.pickle
+*.tmp
+__pycache__/
+
+# Operating system
+.DS_Store
+Thumbs.db
+desktop.ini

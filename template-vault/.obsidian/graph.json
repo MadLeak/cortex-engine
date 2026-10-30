@@ -1,0 +1,51 @@
+{
+  "collapse-filter": false,
+  "search": "-path:_brain -path:_templates -path:_log -path:_inbox -path:_sources -path:_archive",
+  "showTags": false,
+  "showAttachments": false,
+  "hideUnresolved": true,
+  "showOrphans": true,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    {
+      "query": "file:MAP",
+      "color": {
+        "a": 1,
+        "rgb": 15703847
+      }
+    },
+    {
+      "query": "[layer:1]",
+      "color": {
+        "a": 1,
+        "rgb": 2783446
+      }
+    },
+    {
+      "query": "[layer:2]",
+      "color": {
+        "a": 1,
+        "rgb": 15427636
+      }
+    },
+    {
+      "query": "[layer:3]",
+      "color": {
+        "a": 1,
+        "rgb": 1814394
+      }
+    }
+  ],
+  "collapse-display": true,
+  "showArrow": true,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": true,
+  "centerStrength": 0.5,
+  "repelStrength": 10,
+  "linkStrength": 1,
+  "linkDistance": 250,
+  "scale": 0.1634837056722048,
+  "close": true
+}

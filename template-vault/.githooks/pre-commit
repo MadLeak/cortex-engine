@@ -1,0 +1,17 @@
+#!/bin/sh
+# Validates the vault (blocks secrets and schema errors) and regenerates MAP, the panels (Panel.md, and Panel.html with its 2D and 3D views) and the index.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+PY=""
+for c in python py python3; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >/dev/null 2>&1; then
+    PY="$c"; break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "pre-commit: Python 3.10+ not found; cannot validate the vault" >&2
+  exit 1
+fi
+"$PY" _brain/scripts/brain.py precommit || exit 1
+git add -- MAP.md _brain/Panel.md _brain/Panel.html _brain/generated _brain/state/history.csv
+if [ -f _brain/proposals.md ]; then git add -- _brain/proposals.md; fi
+exit 0
