@@ -79,4 +79,6 @@ Engine version 2.5.3. Cortex comes from one person's working setup of several ag
 
 ## License
 
-**TODO:** the owner has not chosen a license yet. Until a `LICENSE` file is added, all rights are reserved by default.
+Copyright (c) 2026 Adhonys Diaz. Cortex is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md): you may use, study, modify and share it for any noncommercial purpose, including personal use, research, education and work by charities and public institutions.
+
+Any commercial use (in a product, a paid service, or inside a for-profit company's operations) needs a separate commercial license from the copyright holder. To ask for one, open an issue titled "Commercial license".
