@@ -248,6 +248,40 @@ class ReadTests(Base):
         self.assertIn("order", brain.translate_query(v, "¿Qué pasa con los pedidos atrasados?").split(),
                       "a Spanish word matches the base lexicon by its stem")
 
+    def test_snowball_stems_plurals_and_inflections(self):
+        self.assertEqual(brain.word_stem("deploys"), brain.word_stem("deploy"))
+        self.assertEqual(brain.word_stem("delegating"), brain.word_stem("delegated"))
+        self.assertEqual(brain.es_stem("configuraciones"), brain.es_stem("configuración".replace("ó", "o")))
+
+    def test_generated_questions_import_and_rank(self):
+        self.seed()
+        v = brain.Vault(self.v)
+        late = next(n for n in v.net.values() if n.title == "Late orders went to the wrong wave")
+        self.assertIn("0 of 4 nodes · 0 stale · 4 missing", self.ok("questions", "status"))
+        todo = self.ok("questions", "todo", "--limit", "2")
+        self.assertIn("### ID:", todo)
+        self.assertIn("2 of 4 nodes to do", todo)
+        answer = self.tmp / "answer.jsonl"
+        answer.write_text("\n".join([
+            json.dumps({"id": late.key, "en": ["why did parcels miss the truck"], "es": ["por qué los paquetes perdieron el camión"]}),
+            json.dumps({"id": "no-such-node", "en": ["x"]}),
+            json.dumps({"id": late.key, "en": ["key ghp_" + "a1" * 15]}),
+        ]) + "\n", encoding="utf-8")
+        out = self.ok("questions", "import", str(answer))
+        self.assertIn("unknown id", out)
+        self.assertIn("looks like a GitHub token", out)
+        self.assertIn("1 nodes imported", out)
+        self.assertIn("1 of 4 nodes", self.ok("questions", "status"))
+        v = brain.Vault(self.v)
+        self.assertEqual(brain.score(v, "parcels missed the truck", {})[0][1].title, late.title,
+                         "the generated questions are searched, and a new questions file rebuilds the cached index")
+        self.assertEqual(brain.score(v, "¿Por qué los paquetes perdieron el camión?", {})[0][1].title, late.title,
+                         "a Spanish query meets the Spanish questions untranslated")
+        path = self.v / "Orders" / "Order cutoff is at 2pm EST" / "Late orders went to the wrong wave.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("\n## Connections", "The clock now runs on EST.\n\n## Connections"),
+                        encoding="utf-8")
+        self.assertIn("1 stale", self.ok("questions", "status"), "an edited node's questions are marked stale")
+
     def test_detail_over_parent_on_equal_match(self):
         self.seed()
         ranked = [n.title for _, n in brain.score(brain.Vault(self.v), "late orders wrong wave", {})]

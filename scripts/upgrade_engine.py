@@ -3,7 +3,7 @@
 
     python3 scripts/upgrade_engine.py ~/vaults/agent-a-cortex ~/vaults/agent-b-cortex [--dry-run]
 
-Copies brain.py, brain_core.py, panel.html, lexicon_es.tsv, synonyms_en.tsv and tests/ into <vault>/_brain/scripts/.
+Copies brain.py, brain_core.py, snowball.py, panel.html, lexicon_es.tsv, synonyms_en.tsv and tests/ into <vault>/_brain/scripts/.
 Content, config, glossary, templates and state are left alone. Upgrade every sibling vault together: doctor fails
 when siblings run different engine versions. Commit each vault afterwards with `engine: vX.Y.Z`.
 """
@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "template-vault" / "_brain" / "scripts"
-FILES = ("brain.py", "brain_core.py", "panel.html", "lexicon_es.tsv", "synonyms_en.tsv")
+FILES = ("brain.py", "brain_core.py", "snowball.py", "panel.html", "lexicon_es.tsv", "synonyms_en.tsv")
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument("vaults", nargs="+")

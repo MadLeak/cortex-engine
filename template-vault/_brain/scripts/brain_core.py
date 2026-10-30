@@ -23,7 +23,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.5.3"
+VERSION = "2.7.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -139,18 +139,11 @@ def norm(s: str) -> str:
     return re.sub(r"\s+", " ", s.casefold()).strip()
 
 
-STEM_SUFFIXES = ("ations", "ation", "ings", "ing", "ies", "ed", "es", "s", "ly", "y")
-
-
 def word_stem(t: str) -> str:
-    # one English inflection off (delegating, delegated, delivery), then a final vowel (delegate, entrega)
-    for suf in STEM_SUFFIXES:
-        if t.endswith(suf) and len(t) - len(suf) >= 4:
-            t = t[: -len(suf)]
-            break
-    if len(t) > 3 and t[-1] in "aeiou":
-        t = t[:-1]
-    return t[:8]
+    # the Snowball English stemmer (snowball.py, vendored): on the 2026-10-30 bench (240 queries, 4 vaults, 5-fold CV
+    # grouped by question) it took hit@1 from 147 with the old suffix list to 152 at the same retuned weights
+    import snowball
+    return snowball.stem_en(t)
 
 
 def tokens(s: str) -> set:
@@ -1232,17 +1225,27 @@ def template_body(v: Vault, layer: int, title: str) -> str:
 
 
 # --------------------------------------------------------------------------- recall
-BM25_FIELDS = {"title": 5, "aliases": 4, "summary": 3, "tags": 2, "body": 1}
-BM25_K1, BM25_B = 1.2, 0.75
+# Field boosts, k1, b, FAMILY_LIFT, SYN_WEIGHT and USAGE_WEIGHT were fitted together by coordinate ascent on the
+# 2026-10-30 bench (240 queries, 4 vaults; 5-fold CV grouped by question, 3 repeats): out-of-fold hit@1 132 → 158.7,
+# frozen 38-question test 48 → 55 of 76, Holm-corrected permutation p < 0.001. "questions" and "questions_es" index
+# the generated questions of _brain/questions.jsonl (doc2query, `brain.py questions`); the Spanish ones keep their
+# own "es:" vocabulary. k1 and b moved between fits (a flat optimum); the title, body, tags and synonym weights did not.
+BM25_FIELDS = {"title": 6, "aliases": 4, "summary": 3, "tags": 0.5, "body": 0.25, "questions": 0.5, "questions_es": 1}
+BM25_K1, BM25_B = 2.0, 1.0
 # share of its best detail's match an L2 concept inherits: 0.5 gave the bench back 9/10 after atomizing
-# Infrastructure (2026-10-28); hiding details whose concept was listed cost two dated episodes, so they stay
-FAMILY_LIFT = 0.5
+# Infrastructure (2026-10-28); with the generated questions 0 fitted best, 0.25 cost no measurable hit@1 and keeps
+# concepts above their details where the details carry the match
+FAMILY_LIFT = 0.25
+# the usage weight enters the score as 1 + USAGE_WEIGHT·sqrt(w); a static bench cannot reward usage, so 0.25 (0 fitted
+# best, within 2 of 240 hit@1) keeps what agents credit in the ranking
+USAGE_WEIGHT = 0.25
+QUESTIONS_FILE = "questions.jsonl"
 # a word the vault never uses is read as the vault word sharing the most trigrams, at Jaccard ≥ TYPO_MIN; on the
 # 2026-10-29 bench 0.4, 0.5 and 0.6 scored within one question, and 0.5 corrects the fewest real words by mistake
 TYPO_MIN = 0.5
 # a query word the vault never uses searches its synonyms_en.tsv group at this weight (full expansion of known
-# words cost hit@1 on the 2026-10-29 bench, so only unknown words are bridged)
-SYN_WEIGHT = 0.5
+# words cost hit@1 on the 2026-10-29 bench, so only unknown words are bridged; the 2026-10-30 fit raised it from 0.5)
+SYN_WEIGHT = 1.0
 SURE_PRIMARIES = 5  # recall always shows this many answers before spending budget on their context
 LINK_SECTIONS = {"branches", "details", "connections", "more links"}
 
@@ -1263,15 +1266,49 @@ def own_text(body: str) -> str:
     return "\n".join(keep)
 
 
+def questions(v: Vault) -> dict:
+    """_brain/questions.jsonl: generated questions per node key, {"key": {"en": [...], "es": [...], "hash": ...}}."""
+    if getattr(v, "_questions", None) is None:
+        v._questions = {}
+        path = v.root / "_brain" / QUESTIONS_FILE
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(d, dict) and d.get("key"):
+                    v._questions[str(d["key"])] = d
+    return v._questions
+
+
+def questions_stamp(v: Vault) -> tuple:
+    path = v.root / "_brain" / QUESTIONS_FILE
+    st = path.stat() if path.exists() else None
+    return (st.st_mtime_ns, st.st_size) if st else (0, 0)
+
+
+def content_hash(n: Node) -> str:
+    """What the generated questions were written from: a changed hash marks them stale for `questions todo`."""
+    import hashlib
+    return hashlib.sha1(f"{n.title}\n{n.summary}\n{own_text(n.body)}".encode("utf-8")).hexdigest()[:12]
+
+
 def bm25_index(v: Vault) -> dict:
     """Field-boosted term frequencies per node. Each node's entry persists in state/bm25.pickle, keyed by its file's
-    mtime and size, so a call only tokenizes the nodes that changed (on Windows 0.49 s → ~0.02 s for 1,167 nodes)."""
+    mtime and size, so a call only tokenizes the nodes that changed (on Windows 0.49 s → ~0.02 s for 1,167 nodes).
+    Both pickles also carry the engine version, the field boosts and the questions file's stamp: a new stemmer,
+    weight or question set rebuilds them."""
     if getattr(v, "_bm25", None) is None:
+        tag = (VERSION, tuple(BM25_FIELDS.items()), questions_stamp(v))
         whole = load_state(v.state_dir / "bm25-index.pickle")
-        if whole.get("meta") == v._meta and whole.get("n") == len(v.net):
+        if whole.get("meta") == v._meta and whole.get("n") == len(v.net) and whole.get("tag") == tag:
             v._bm25 = whole["ix"]
             return v._bm25
-        saved, kept, docs = load_state(v.state_dir / "bm25.pickle"), {}, {}
+        saved, kept, docs = load_state(v.state_dir / "bm25.pickle"), {"__tag__": tag}, {}
+        if saved.get("__tag__") != tag:
+            saved = {}
+        qs = questions(v)
         for k, n in v.net.items():
             rel = getattr(n, "rel", None) or n.path.as_posix()
             meta, prev = v._meta.get(rel), saved.get(rel)
@@ -1279,19 +1316,21 @@ def bm25_index(v: Vault) -> dict:
                 docs[k] = kept[rel] = prev
                 continue
             tags = n.fm.get("tags")
+            gen = qs.get(n.key) or {}
             fields = {"title": n.title, "aliases": " ".join(n.aliases),
                       "summary": f"{n.summary} {n.fm.get('summary_long') or ''}",
                       "tags": " ".join(map(str, tags)) if isinstance(tags, list) else str(tags or ""),
-                      "body": own_text(n.body)}
+                      "body": own_text(n.body), "questions": " ".join(gen.get("en") or []),
+                      "questions_es": " ".join(gen.get("es") or [])}
             tf: dict[str, float] = {}
             length = 0.0
             for f, boost in BM25_FIELDS.items():
-                terms = term_list(fields[f])
+                terms = es_terms(fields[f]) if f == "questions_es" else term_list(fields[f])
                 length += boost * len(terms)
                 for t in terms:
                     tf[t] = tf.get(t, 0.0) + boost
             docs[k] = kept[rel] = (meta[0] if meta else 0, meta[1] if meta else 0, tf, length)
-        if kept.keys() != saved.keys() or any(kept[r] is not saved.get(r) for r in kept):
+        if kept.keys() != saved.keys() or any(kept[r] is not saved.get(r) for r in kept if r != "__tag__"):
             if (v.root / "_brain").is_dir():
                 save_state(v.state_dir / "bm25.pickle", kept)
         docs = {k: (d[2], d[3]) for k, d in docs.items()}
@@ -1302,28 +1341,30 @@ def bm25_index(v: Vault) -> dict:
         avg = sum(l for _, l in docs.values()) / max(len(docs), 1)
         tri: dict[str, list] = {}
         for t in df:
-            if len(t) >= 4:
+            if len(t) >= 4 and not t.startswith("es:"):
                 for g in trigrams(t):
                     tri.setdefault(g, []).append(t)
         v._bm25 = {"docs": docs, "df": df, "avg": avg or 1.0, "n": len(docs), "tri": tri}
         if (v.root / "_brain").is_dir():
-            save_state(v.state_dir / "bm25-index.pickle", {"meta": v._meta, "n": len(v.net), "ix": v._bm25})
+            save_state(v.state_dir / "bm25-index.pickle", {"meta": v._meta, "n": len(v.net), "ix": v._bm25, "tag": tag})
     return v._bm25
 
 
 MONTHS_ES = {m: i for i, m in enumerate("enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre".split(), 1)}
 
 
-ES_ENDINGS = sorted("""aciones iciones amiento imiento aciones ciones cion mente ando iendo adas idas ados idos ada ida
-ado ido aron ieron amos emos imos aste iste aba aban ia ian ar er ir as es os an en o a e s""".split(), key=len, reverse=True)
-
-
 def es_stem(word: str) -> str:
-    """A light Spanish stem, enough to meet a lemma: ejecuto, ejecutando and ejecución all give "ejecut"."""
-    for end in ES_ENDINGS:
-        if word.endswith(end) and len(word) - len(end) >= 4:
-            return word[: -len(end)]
-    return word
+    """The Snowball Spanish stem (snowball.py): ejecutando and ejecutar both give "ejecut"; it matches glossary
+    entries by stem and the Spanish generated questions to a Spanish query."""
+    import snowball
+    return snowball.stem_es(word)
+
+
+def es_terms(text: str) -> list:
+    """A Spanish text as "es:"-namespaced stems, the terms of the questions_es field: kept apart from the English
+    vocabulary, they meet only a Spanish query's own words."""
+    return ["es:" + es_stem(w) for w in re.findall(r"[a-z0-9]+", norm(text))
+            if w not in SPANISH_STOP and w not in STOPWORDS and len(w) > 1]
 
 
 def glossary(v) -> dict:
@@ -1413,13 +1454,17 @@ def correct_typos(ix: dict, terms: set) -> set:
 
 
 def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
-    """BM25 over title, aliases, summary, tags and the node's own body, times a damped weight.
-    The weight enters as 1 + 0.5·sqrt(w): on an earlier bench (2026-10-23) the full weight cost a correct answer."""
-    query = translate_query(v, query)
+    """BM25 over title, aliases, summary, tags, the node's own body and its generated questions, times a damped
+    weight. The weight enters as 1 + USAGE_WEIGHT·sqrt(w): on an earlier bench (2026-10-23) the full weight cost a
+    correct answer."""
+    raw_query, query = query, translate_query(v, query)
     ix, phrase = bm25_index(v), norm(query)
     # a word the vault never uses is searched through its synonyms the vault does use; failing that, it is
-    # taken for a typo of the closest vault word
+    # taken for a typo of the closest vault word. A Spanish query also searches its own words, untranslated,
+    # in the Spanish generated questions
     qw, unknown = {}, set()
+    if looks_spanish(raw_query):
+        qw.update({t: 1.0 for t in es_terms(raw_query) if t in ix["df"]})
     for t in set(term_list(query)):
         if t in ix["df"]:
             qw[t] = 1.0
@@ -1456,7 +1501,7 @@ def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
         n = v.net[k]
         s = raw.get(k, 0.0) + FAMILY_LIFT * lift.get(k, 0.0)
         w = 0.0 if n.status == "provisional" else weights.get(n.key, 0.0)  # use confirms a provisional node, never ranks it
-        res[k] = s * (1 + 0.5 * math.sqrt(w)) * STATUS_FACTOR.get(n.status, 0.8)
+        res[k] = s * (1 + USAGE_WEIGHT * math.sqrt(w)) * STATUS_FACTOR.get(n.status, 0.8)
     # a detail that matches on its own at least as well as its concept goes before it: the concept only led on the
     # detail's borrowed match, and the detail holds the fact (2026-10-29 bench: 11 of 18 misses in one vault were this)
     for k, s in raw.items():
@@ -2135,6 +2180,70 @@ def cmd_status(v: Vault, a) -> int:
         Telemetry(v).record("validated", [n.key])
     print(f'"{n.title}" → {a.status}')
     return 0
+
+
+QUESTIONS_MAX = 10  # per language and node
+QUESTIONS_PROMPT = """# For each note below, write 5 English and 5 Spanish questions that a person or an agent would type to
+# find it and that it specifically answers. Vary the wording (synonyms, everyday words; at most one question reuses
+# the title), include one 3-5 word keyword query, one question about a concrete fact (name, number, command, date)
+# and one how/why question. Spanish ones are natural Latin American Spanish written on their own, not translations;
+# names, commands and identifiers stay as they are. Output JSON Lines, one per note:
+# {"id": "<ID as given>", "en": [5 questions], "es": [5 questions]}
+# then: brain.py questions import <file.jsonl>"""
+
+
+def cmd_questions(v: Vault, a) -> int:
+    """Generated questions (doc2query): the engine writes none itself. `todo` prints the nodes whose questions are
+    missing or stale with the instructions for an LLM, `import` checks and stores its JSON Lines answer."""
+    qs = questions(v)
+    ranked = [n for n in v.net.values() if n.layer in (1, 2, 3) and STATUS_FACTOR.get(n.status, 0.8)]
+    missing = [n for n in ranked if n.key not in qs]
+    stale = [n for n in ranked if n.key in qs and qs[n.key].get("hash") != content_hash(n)]
+    if a.action == "status":
+        print(f"questions: {len(ranked) - len(missing)} of {len(ranked)} nodes · {len(stale)} stale · {len(missing)} missing")
+        return 0
+    if a.action == "todo":
+        batch = (missing + stale)[: max(a.limit, 1)]
+        if not batch:
+            print("# every node has current questions")
+            return 0
+        print(QUESTIONS_PROMPT + "\n")
+        for n in batch:
+            body = re.sub(r"\s+", " ", own_text(n.body)).strip()[:1100]
+            print(f"### ID: {n.key}\nTITLE: {n.title}\nSUMMARY: {n.summary}\nTEXT: {body}\n")
+        print(f"# {len(batch)} of {len(missing) + len(stale)} nodes to do")
+        return 0
+    if not a.file:
+        raise BrainError("questions import needs a JSON Lines file")
+    by_key = {n.key: n for n in v.net.values()}
+    allowed = {x.lower() for x in v.cfg.get("allowed_addresses", {})}
+    added, problems = 0, []
+    for i, line in enumerate(Path(a.file).read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            problems.append(f"line {i}: not JSON"); continue
+        n = by_key.get(str(d.get("id")))
+        if n is None:
+            problems.append(f"line {i}: unknown id {d.get('id')!r}"); continue
+        langs = {lang: [str(q).strip() for q in (d.get(lang) or []) if str(q).strip()][:QUESTIONS_MAX] for lang in ("en", "es")}
+        if not langs["en"] and not langs["es"]:
+            problems.append(f"line {i}: no questions"); continue
+        found = sensitive("\n".join(langs["en"] + langs["es"]), allowed)
+        if found:
+            problems.append(f"line {i}: looks like a {found}, skipped"); continue
+        qs[n.key] = {"key": n.key, "hash": content_hash(n), **langs}
+        added += 1
+    keep = {n.key for n in v.net.values()}
+    lines = [json.dumps(qs[k], ensure_ascii=False) for k in sorted(qs) if k in keep]
+    with v.lock():
+        write_atomic(v.root / "_brain" / QUESTIONS_FILE, "\n".join(lines) + "\n")
+    for p in problems:
+        print(f"✖ {p}")
+    print(f"questions: {added} nodes imported · {len(lines)} stored in _brain/{QUESTIONS_FILE}")
+    return 1 if problems and not added else 0
 
 
 def cmd_lint(v: Vault, a) -> int:
@@ -2928,6 +3037,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("title")
     p.add_argument("status", choices=list(STATUS_FACTOR))
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("questions", help="generated questions per node (doc2query): status, todo batch, import")
+    p.add_argument("action", choices=["status", "todo", "import"])
+    p.add_argument("file", nargs="?", help="import: a JSON Lines file of {id, en, es}")
+    p.add_argument("--limit", type=int, default=100, help="todo: nodes per batch")
+    p.set_defaults(func=cmd_questions)
 
     p = sub.add_parser("lint", help="validates the vault (blocks commits with errors)")
     p.add_argument("--fix", action="store_true", help="fills in id, dates and empty fields")
