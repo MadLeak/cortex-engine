@@ -208,7 +208,7 @@ Upgrade all siblings together:
 
 ```bash
 python3 scripts/upgrade_engine.py ~/vaults/fern-cortex ~/vaults/kitchen-cortex [--dry-run]
-cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.5.3"
+cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.6.0"
 ```
 
 The script copies `brain.py`, `brain_core.py`, `panel.html`, `lexicon_es.tsv`, `synonyms_en.tsv` and `tests/` into each vault's `_brain/scripts/` and runs `doctor` in each vault. It does not touch content, config, glossary or templates. Cached state is keyed by engine version, file mtime and size, and Python version, so caches rebuild automatically.
@@ -227,7 +227,8 @@ The script copies `brain.py`, `brain_core.py`, `panel.html`, `lexicon_es.tsv`, `
 | `learn` → `possible email address` | an address with a real TLD (anything but `.local`) | replace the person with a role. Keep a deliberate sender in `allowed_addresses` |
 | lint `possible secret (password)` blocks a commit | `password:`/`pwd=`/`contraseña:` followed by a value with a digit or symbol, or a token pattern (`sk-`, `ghp_`, `AKIA`, `xox`, private key) | remove it. Store where the secret lives, never its value |
 | `learn` → exit 2, `25 provisional nodes await confirmation` | backlog cap | write to `_inbox/`. The curator places it |
-| recall finds nothing for an obvious word | the light stemmer differs between forms ending in `-y` and `-ys` (for example "deploy" and "deploys") | try the other form, add an alias to the node, or add a line to `synonyms_en.tsv` |
+| recall finds nothing for an obvious word | the word is an irregular or derived form the light stemmer does not reduce | try another form, add an alias to the node, or add a line to `synonyms_en.tsv` |
+| recall answers with an outdated note | the old note is neither tagged `truth: superseded` nor the target of a `supersedes` synapse | tag it, or `B link "<new>" "<old>" --type supersedes --reason "<why>"`; the old note then ranks ×0.4 |
 | `could not acquire the vault lock` | another process is writing, or a stale `_brain/state/.lock` | wait. Locks older than 30 seconds are broken automatically |
 | `doctor`: `sibling vault "X" not found` | the relative path in `config.json` is wrong, or the sibling does not exist yet | fix the path or create the sibling |
 | `doctor`: `"X" runs vX with different files` | engine copies diverged | run `scripts/upgrade_engine.py` on every sibling |

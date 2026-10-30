@@ -253,6 +253,21 @@ class ReadTests(Base):
         ranked = [n.title for _, n in brain.score(brain.Vault(self.v), "late orders wrong wave", {})]
         self.assertEqual(ranked[0], "Late orders went to the wrong wave")
 
+    def test_singular_and_plural_share_a_stem(self):
+        for one, many in [("deploy", "deploys"), ("tuesday", "tuesdays"), ("policy", "policies"),
+                          ("delivery", "deliveries"), ("setting", "settings"), ("case", "cases")]:
+            self.assertEqual(brain.word_stem(one), brain.word_stem(many), f"{one} / {many}")
+
+    def test_superseded_detail_stays_below_its_concept(self):
+        self.seed()
+        self.ok("new", "--layer", "3", "--up", "Order cutoff is at 2pm EST", "--type", "fact",
+                "--title", "The cutoff was at noon EST", "--summary", "Until spring the order cutoff was at noon EST.")
+        self.ok("link", "--type", "supersedes", "--reason", "the cutoff moved to 2pm",
+                "Order cutoff is at 2pm EST", "The cutoff was at noon EST")
+        ranked = [n.title for _, n in brain.score(brain.Vault(self.v), "order cutoff EST", {})]
+        self.assertEqual(ranked[0], "Order cutoff is at 2pm EST", "the fact that holds today answers first")
+        self.assertLess(ranked.index("Order cutoff is at 2pm EST"), ranked.index("The cutoff was at noon EST"))
+
     def test_gate_hands_the_body_only_when_covered(self):
         self.seed()
         _, output, _ = run(self.v, "recall", "shipping window cutoff")
