@@ -291,8 +291,14 @@ class ReadTests(Base):
         self.seed()
         _, output, _ = run(self.v, "recall", "shipping window cutoff")
         self.assertIn("# answer: [L2] The shipping window limits the cutoff", output)
+        self.assertIn("likely the answer", output)
         _, output, _ = run(self.v, "recall", "dispatch")
         self.assertNotIn("# answer:", output, "one matched word is not enough to hand over a body")
+        v = brain.Vault(self.v)
+        sure, _ = brain.gate_probability(v, "shipping window cutoff", brain.score(v, "shipping window cutoff", {}))
+        unsure, _ = brain.gate_probability(v, "dispatch", brain.score(v, "dispatch", {}))
+        self.assertGreater(sure, unsure)
+        self.assertTrue(0 < unsure < brain.GATE["threshold"] <= sure < 1)
 
     def test_read_hands_over_the_matching_part(self):
         self.seed()

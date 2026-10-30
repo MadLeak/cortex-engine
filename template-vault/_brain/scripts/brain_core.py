@@ -50,11 +50,14 @@ MAX_BODY = 2000
 # lead sentence always stays, and an excerpt that would keep most of the body gives way to the whole body
 EXCERPT_MIN = 600
 EXCERPT_KEEP = 0.35
-# recall hands over the top body itself when that node's title, aliases and summary cover at least GATE_COVERAGE of the
-# query's idf mass, through at least two query words. On the 2026-10-29 bench (240 questions, 4 vaults) that fired on
-# 24 with 1 wrong (a sibling detail), and none once a runner-up covering as much withholds the body; the score
-# margin was a poor signal (≥1.7× still wrong 8 times in 14)
-GATE_COVERAGE = 0.7
+# recall hands over the top body itself when a logistic model gives the top answer a probability of being right of at
+# least GATE["threshold"]. Its inputs: the runner-up's score over the top's, the share of the query's idf mass the top
+# and the runner-up cover in title, aliases and summary (two query words at least), the number of query terms the
+# vault knows (log1p) and whether the query is Spanish. Fitted on the 2026-10-30 bench with engine v2.7.0 (240 queries,
+# 4 vaults), threshold set for 95% training precision: out of fold (5-fold CV grouped by question, 3 repeats) it
+# fired on 46 of 240 at 92.1% right, where the old rule (cover ≥ 0.7, runner-up below) fired on 21 at 100%.
+GATE = {"bias": 0.9537, "w": (-0.2875, 0.8957, -0.0917, 0.0454, 0.1065), "mu": (0.7825, 0.3733, 0.2288, 1.8907, 0.5),
+        "sd": (0.1797, 0.2641, 0.2178, 0.2798, 0.5), "threshold": 0.8678}
 # a recall or read without --session uses the automatic session; after AUTO_IDLE seconds idle the next call opens a
 # new one, and a session that read bodies but credited none credits the last body it read (the funnel stopped there)
 AUTO_IDLE = 600
@@ -1526,6 +1529,19 @@ def coverage(v: Vault, query: str, n: Node) -> float:
     return sum(idf[t] for t in hits) / sum(idf.values()) if len(hits) >= 2 else 0.0
 
 
+def gate_probability(v: Vault, query: str, ranked: list) -> tuple[float, float]:
+    """The answer gate's probability that the top of `ranked` is right (see GATE), and the top's coverage."""
+    s1 = ranked[0][0]
+    s2 = ranked[1][0] if len(ranked) > 1 else 0.0
+    ix = bm25_index(v)
+    known = {t for t in term_list(translate_query(v, query)) if t in ix["df"]}
+    cov = coverage(v, query, ranked[0][1])
+    x = (s2 / s1 if s1 else 1.0, cov, coverage(v, query, ranked[1][1]) if len(ranked) > 1 else 0.0,
+         math.log1p(len(known)), 1.0 if looks_spanish(query) else 0.0)
+    z = GATE["bias"] + sum(w * (xi - m) / s for w, xi, m, s in zip(GATE["w"], x, GATE["mu"], GATE["sd"]))
+    return 1 / (1 + math.exp(-max(min(z, 50), -50))), cov
+
+
 def signature(n: Node, weights: dict, extra: str = "") -> str:
     w = weights.get(n.key, 0.0)
     status = "PROVISIONAL, unconfirmed" if n.status == "provisional" else n.status
@@ -1645,12 +1661,11 @@ def cmd_recall(v: Vault, a) -> int:
     # the gate: a clear winner comes with its body, so the agent answers without a read call
     if ranked and not a.no_body and data["total_bodies"] < mode["session_bodies"]:
         n = ranked[0][1]
-        cov = coverage(v, a.query, n)
-        rival = coverage(v, a.query, ranked[1][1]) if len(ranked) > 1 else 0.0
+        p, cov = gate_probability(v, a.query, ranked)
         if (n.layer in (2, 3) and n.status in ("seed", "consolidated") and n.key not in data["visited"]
-                and cov >= GATE_COVERAGE and rival < cov):
+                and p >= GATE["threshold"]):
             print(f"# answer: [L{n.layer}] {n.title} ({n.path.as_posix()}) · {n.status} · "
-                  f"its title and summary cover {cov:.0%} of the question")
+                  f"{p:.0%} likely the answer; its title and summary cover {cov:.0%} of the question")
             print("\n".join(body_lines(n, v, a.query, data)))
             data["visited"].append(n.key)
             data["query_bodies"] += 1

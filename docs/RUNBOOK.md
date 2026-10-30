@@ -108,7 +108,7 @@ Run the installer yourself. An agent should not rewrite another agent's configur
 
 **Read: the budgeted funnel.**
 
-1. `B recall "<English keywords>"` returns signatures (`[L2] Title — summary (weight 0.42 · seed)`) with context lines (`↑` parent, `↳` typed neighbour). When the top node's title, aliases and summary cover at least 70% of the query's idf weight, through at least two query words, and no runner-up covers as much, recall also prints that body under `# answer:`.
+1. `B recall "<English keywords>"` returns signatures (`[L2] Title — summary (weight 0.42 · seed)`) with context lines (`↑` parent, `↳` typed neighbour). When a small logistic model (the runner-up's score ratio, how much of the query the top's and the runner-up's title, aliases and summary cover, the query length and language) gives the top node at least an 87% chance of being right, recall also prints that body under `# answer:`. Out of fold on the 2026-10-30 bench it fired on 46 of 240 queries and was right on 92%; when it is wrong, the signatures above still list the alternatives.
 2. Otherwise, `B read "<exact title>"`, at most two bodies. A long body (over 600 characters) is cut to the lines that match the last query (`# excerpt:`). `read --full` gives the rest once, at no budget cost.
 3. Stop when you can answer, after two useless reads, or on **exit code 2**.
 4. Cite `[[Title]]`.
