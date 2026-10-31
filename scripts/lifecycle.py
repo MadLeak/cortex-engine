@@ -7,10 +7,13 @@
                             regression alarm, a layer report (fan-out and traffic), and the one mechanical change
                             allowed without Adhonys: pruning dead synapses, only once the usage history spans
                             PRUNE_MIN_HISTORY_DAYS and at most PRUNE_MAX_PER_NIGHT per vault, committed on its own.
-  status                    last runs, history span and bench trend per vault.
-  install                   copies this script to ~/.local/lib/cortex-life and enables the two timers.
+  rem    (nightly, phase 4) dreams the questions each note answers (doc2query) with the local Strata model, hottest
+                            notes first, within a time budget; kept in ~/.local/share/cortex-life/rem for
+                            `brain.py questions import` (engine 2.7.0+). Skipped when Strata is off.
+  status                    last runs, history span, bench trend and REM progress per vault.
+  install                   copies this script to ~/.local/lib/cortex-life and enables the three timers.
 
-Nothing here calls an LLM, marks a node consolidated, or writes outside the vaults' own engine commands; data lives in
+Only REM calls a model (the local one); nothing here marks a node consolidated, or writes outside the vaults' own engine commands; data lives in
 ~/.local/share/cortex-life (usage mirror, bench history, nightly reports, log)."""
 import argparse, datetime as dt, fcntl, json, os, re, shutil, subprocess, sys, tempfile, time
 from collections import Counter, defaultdict
@@ -278,7 +281,7 @@ def layers(v, report):
 def write_report(report):
     d = DATA / "reports"
     d.mkdir(parents=True, exist_ok=True)
-    out = [f"# Cortex night {report['date']}", ""]
+    out = [f"# Cortex night {report['date']}", "", f"REM questions stored: {rem_summary()}", ""]
     out += ["## Alerts", *(f"- {a}" for a in report["alerts"])] if report["alerts"] else ["No alerts."]
     for name, r in report["vaults"].items():
         out += ["", f"## {name}"]
@@ -322,6 +325,129 @@ def night(state):
         notify("Cortex: night with alerts", "\n".join(report["alerts"][:5]) + f"\n{p}")
 
 
+# ---------------------------------------------------------------- phase 4: REM
+STRATA = os.environ.get("CORTEX_STRATA", "http://localhost:8080")
+REM_MINUTES = 120
+REM_BATCH = 3
+REM_PROMPT = """For each note below, write 5 English and 5 Spanish questions that a person or an agent would type to find it
+and that it specifically answers. Vary the wording (synonyms, everyday words; at most one question reuses the title),
+include one 3-5 word keyword query, one question about a concrete fact (name, number, command, date) and one how/why
+question. Spanish ones are natural Latin American Spanish written on their own, not translations; names, commands and
+identifiers stay as they are. Output only JSON Lines, one per note, nothing else:
+{"id": "<ID as given>", "en": [5 questions], "es": [5 questions]}"""
+REM_CHILD = r'''
+import hashlib, json, re, sys
+sys.path.insert(0, sys.argv[1] + "/_brain/scripts")
+import brain_core as bc
+v = bc.Vault(sys.argv[1]); w = bc.Telemetry(v).weights()
+own = getattr(bc, "own_text", None)
+out = []
+for n in v.net.values():
+    if n.layer not in (1, 2, 3) or n.status == "obsolete": continue
+    text = re.sub(r"\s+", " ", own(n.body) if own else re.sub(r"(?ms)^## Connections.*", "", n.body)).strip()[:1100]
+    h = hashlib.sha1(f"{n.title}\n{n.summary}\n{text}".encode()).hexdigest()[:12]
+    out.append({"id": n.key, "title": n.title, "summary": n.summary, "text": text, "hash": h, "w": w.get(n.key, 0.0)})
+print(json.dumps(out, ensure_ascii=False))
+'''
+
+
+def strata_up():
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{STRATA}/health", timeout=5) as r:
+            return json.load(r).get("status") == "ok"
+    except (OSError, ValueError):
+        return False
+
+
+def strata_questions(notes):
+    import urllib.request
+    text = REM_PROMPT + "\n\n" + "\n".join(f"### ID: {n['id']}\nTITLE: {n['title']}\nSUMMARY: {n['summary']}\nTEXT: {n['text']}\n" for n in notes)
+    body = {"messages": [{"role": "user", "content": text}], "temperature": 0.7, "max_tokens": 700 * len(notes),
+            "chat_template_kwargs": {"enable_thinking": False}}
+    req = urllib.request.Request(f"{STRATA}/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=900) as r:
+        reply = json.load(r)["choices"][0]["message"]["content"]
+    wanted, got = {n["id"] for n in notes}, {}
+    for m in re.finditer(r"\{[^{}]*\}", reply):
+        try:
+            d = json.loads(m.group(0))
+        except ValueError:
+            continue
+        if str(d.get("id")) in wanted:
+            langs = {}
+            for lang in ("en", "es"):
+                qs = [str(q).strip() for q in d.get(lang) or [] if len(str(q).strip()) > 3]
+                langs[lang] = list(dict.fromkeys(qs))[:5]
+            if langs["en"] or langs["es"]:
+                got[str(d["id"])] = langs
+    return got
+
+
+def rem(state, minutes=REM_MINUTES):
+    """Dream the questions each note answers (doc2query) with the local model, hottest notes first, within a time
+    budget. They are kept in DATA/rem/<vault>/questions.jsonl, ready for `brain.py questions import` (engine 2.7.0+);
+    nothing is written into a vault. Strata is never started here: when it is off, REM waits for another night."""
+    if not strata_up():
+        state["rem"] = {"t": now().isoformat(), "result": "Strata off, skipped"}
+        return log("rem: Strata is not answering, skipped")
+    todo, stores = [], {}
+    for v in vaults():
+        p = subprocess.run([sys.executable, "-I", "-c", REM_CHILD, str(v)], capture_output=True, text=True, timeout=600)
+        if p.returncode:
+            log(f"rem {v.name}: node listing failed")
+            continue
+        nodes = json.loads(p.stdout)
+        sp = DATA / "rem" / v.name / "questions.jsonl"
+        have = {}
+        if sp.exists():
+            for line in sp.read_text(encoding="utf-8").splitlines():
+                try:
+                    d = json.loads(line)
+                    have[d["id"]] = d
+                except (ValueError, KeyError):
+                    continue
+        live = {n["id"] for n in nodes}
+        stores[v.name] = (sp, {k: d for k, d in have.items() if k in live})
+        todo += [(v.name, n) for n in nodes if have.get(n["id"], {}).get("hash") != n["hash"]]
+    size = Counter(name for name, _ in todo)   # small vaults finish first; within one, the hottest notes go first
+    todo.sort(key=lambda x: (size[x[0]], x[0], -x[1]["w"]))
+    deadline, done, failed = time.time() + minutes * 60, Counter(), 0
+    i = 0
+    while i < len(todo) and time.time() < deadline:
+        name = todo[i][0]
+        batch = [n for vn, n in todo[i:i + REM_BATCH] if vn == name]
+        i += len(batch)
+        try:
+            got = strata_questions(batch)
+        except OSError as ex:
+            failed += len(batch)
+            log(f"rem {name}: Strata call failed ({ex}); stopping")
+            break
+        sp, have = stores[name]
+        for n in batch:
+            if n["id"] in got:
+                have[n["id"]] = {"id": n["id"], "hash": n["hash"], **got[n["id"]], "t": now().isoformat()}
+                done[name] += 1
+            else:
+                failed += 1
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        tmp = sp.with_suffix(".tmp")
+        tmp.write_text("".join(json.dumps(d, ensure_ascii=False) + "\n" for d in have.values()), encoding="utf-8")
+        os.replace(tmp, sp)
+    left = len(todo) - sum(done.values())
+    state["rem"] = {"t": now().isoformat(), "done": dict(done), "failed": failed, "left": left}
+    log(f"rem: {sum(done.values())} notes dreamed {dict(done)} · {failed} unparsed · {left} left for later nights")
+
+
+def rem_summary():
+    out = []
+    for v in vaults():
+        sp = DATA / "rem" / v.name / "questions.jsonl"
+        out.append(f"{v.name} {sum(1 for _ in open(sp, encoding='utf-8')) if sp.exists() else 0}")
+    return " · ".join(out)
+
+
 # ---------------------------------------------------------------- status / install
 def status(state):
     print(f"last nap {state.get('last_nap', '—')} · last night {state.get('last_night', '—')} · data {DATA}")
@@ -330,6 +456,7 @@ def status(state):
         hist = [json.loads(l) for l in hist_p.read_text().splitlines() if l.strip()] if hist_p.exists() else []
         trend = " → ".join(str(h["hit1"]) for h in hist[-5:]) or "—"
         print(f"  {v.name:16s} usage history {history_span_days(v):3d} d · bench hit@1 {trend}")
+    print(f"REM {load_json(DATA / 'rem-state.json', {}).get('rem', '—')} · stored: {rem_summary()}")
     reps = sorted((DATA / "reports").glob("*.md"))
     if reps:
         print(f"latest report: {reps[-1]}")
@@ -362,21 +489,35 @@ def install():
     shutil.copy2(Path(__file__).resolve(), LIB / "lifecycle.py")
     UNITS.mkdir(parents=True, exist_ok=True)
     for name, what, cmd, cal, jitter in (("cortex-nap", "nap: usage mirror, rebuild and lint (phase 1)", "nap", "hourly", "5min"),
-                                         ("cortex-night", "night: proposals, bench, layers, safe prune (phase 2)", "night", "*-*-* 03:00", "10min")):
+                                         ("cortex-night", "night: proposals, bench, layers, safe prune (phase 2)", "night", "*-*-* 03:00", "10min"),
+                                         ("cortex-rem", "REM: doc2query questions with the local model (phase 4)", "rem", "*-*-* 01:00", "10min")):
         (UNITS / f"{name}.service").write_text(UNIT.format(what=what, lib=LIB, cmd=cmd))
         (UNITS / f"{name}.timer").write_text(TIMER.format(what=what, cal=cal, jitter=jitter))
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "--now", "cortex-nap.timer", "cortex-night.timer"], check=True)
-    print(f"installed {LIB / 'lifecycle.py'} · timers cortex-nap (hourly) and cortex-night (03:00) enabled")
+    subprocess.run(["systemctl", "--user", "enable", "--now", "cortex-nap.timer", "cortex-night.timer", "cortex-rem.timer"], check=True)
+    print(f"installed {LIB / 'lifecycle.py'} · timers cortex-nap (hourly), cortex-rem (01:00) and cortex-night (03:00) enabled")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=["nap", "night", "status", "install"])
+    ap.add_argument("cmd", choices=["nap", "night", "rem", "status", "install"])
+    ap.add_argument("--minutes", type=float, default=REM_MINUTES, help="REM time budget")
     a = ap.parse_args()
     if a.cmd == "install":
         return install()
     DATA.mkdir(parents=True, exist_ok=True)
+    if a.cmd == "rem":   # reads the vaults only, so it has its own lock and never holds up a nap
+        with open(DATA / ".rem.lock", "w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return log("rem: already running, skipped")
+            state = load_json(DATA / "rem-state.json", {})
+            try:
+                rem(state, a.minutes)
+            finally:
+                save_json(DATA / "rem-state.json", state)
+        return
     with open(DATA / ".lock", "w") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | (fcntl.LOCK_NB if a.cmd == "nap" else 0))
