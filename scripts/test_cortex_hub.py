@@ -127,6 +127,78 @@ class HubTest(unittest.TestCase):
                          "an existing folder is never overwritten")
 
 
+class ScopeTest(unittest.TestCase):
+    """A vault marked lan shows on the LAN listener; a local one never leaves this machine."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        for name in ("Fern Cortex", "Kale Cortex"):
+            v = root / name / "_brain"
+            (v / "scripts").mkdir(parents=True)
+            (v / "scripts" / "brain.py").write_text("")
+            (v / "Panel.html").write_text(f"<html>{name}</html>")
+        data = root / ".cortex-hub"
+        data.mkdir()
+        cortex_hub.save_scope(data, "Kale Cortex", "lan")
+        self.lan = type("LanHub", (cortex_hub.Hub,), {"root": root, "data": data, "scope": "lan", "domain": "cortex.home",
+                                                      "allowed": {"cortex.home", "127.0.0.1"}, "lan_domain": "cortex.home"})
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.lan)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.tmp.cleanup()
+
+    def get(self, path, host):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(self.base + path, headers={"Host": host})) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            e.close()
+            return e.code, ""
+
+    def test_lan_listener_shows_only_lan_vaults(self):
+        self.assertEqual(self.get("/", "kale.cortex.home"), (200, "<html>Kale Cortex</html>"))
+        self.assertEqual(self.get("/", "fern.cortex.home")[0], 421, "a local vault has no LAN host")
+        (v,) = json.loads(self.get("/api/vaults", "cortex.home")[1])["vaults"]
+        self.assertEqual((v["name"], v["scope"]), ("Kale Cortex", "lan"))
+        self.assertEqual(self.get("/v/Fern%20Cortex/Panel.html", "cortex.home")[0], 404)
+        self.assertEqual(self.get("/v/kale/", "127.0.0.1"), (200, "<html>Kale Cortex</html>"), "by IP, by agent label")
+        self.assertEqual(self.get("/v/fern/", "127.0.0.1")[0], 404)
+
+    def test_connect_records_the_scope_and_refuses_lan_without_a_lan_listener(self):
+        root, data, lock = self.lan.root, self.lan.data, threading.Lock()
+        out = cortex_hub.connect(root, str(root), {"agent": "Fern", "kind": "codex", "vault": "Fern Cortex", "scope": "lan"},
+                                 "o", lock, data, lan=True)
+        self.assertEqual(out["scope"], "lan")
+        self.assertEqual(cortex_hub.load_scopes(data)["Fern Cortex"], "lan")
+        with self.assertRaises(ValueError):
+            cortex_hub.connect(root, str(root), {"agent": "Fern", "kind": "codex", "vault": "Fern Cortex", "scope": "lan"},
+                               "o", lock, data, lan=False)
+
+
+class DnsTest(unittest.TestCase):
+    def test_answers_its_domain_only(self):
+        import hub_dns
+        import struct
+
+        def ask(name, qtype):
+            q = b"".join(bytes([len(x)]) + x.encode() for x in name.split(".")) + b"\0"
+            r = hub_dns.answer(struct.pack("!HHHHHH", 9, 0x0100, 1, 0, 0, 0) + q + struct.pack("!HH", qtype, 1),
+                               {"cortex.local": "127.0.0.1", "alastor.cortex.home": "10.0.0.100"})
+            return r[3] & 15, struct.unpack("!H", r[6:8])[0], r[-4:]
+        self.assertEqual(ask("claude.cortex.local", 1), (0, 1, bytes([127, 0, 0, 1])))
+        self.assertEqual(ask("Cortex.Local", 1)[:2], (0, 1))
+        self.assertEqual(ask("claude.cortex.local", 28)[:2], (0, 0), "no IPv6 record, but the name exists")
+        self.assertEqual(ask("evilcortex.local", 1)[:2], (5, 0), "refused")
+        self.assertEqual(ask("example.com", 1)[:2], (5, 0))
+        self.assertEqual(ask("claude.alastor.cortex.home", 1), (0, 1, bytes([10, 0, 0, 100])))
+        self.assertEqual(ask("claude.other.cortex.home", 1)[:2], (5, 0), "another machine's hub answers for itself")
+
+
 class LanTest(unittest.TestCase):
     """The LAN scope: everything but the sign-in page needs the access key."""
 
