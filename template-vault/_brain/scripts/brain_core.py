@@ -23,7 +23,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.9.0"
+VERSION = "2.10.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -867,12 +867,14 @@ class Telemetry:
 
 
 ACTIVITY_MAX = 400
+PHASE_TITLES = 60   # titles one life-cycle event carries to the panel
 ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
 
 
-def log_activity(v: Vault, event: str, keys, session: str | None, query: str | None = None) -> None:
+def log_activity(v: Vault, event: str, keys, session: str | None, query: str | None = None, phase: dict | None = None) -> None:
     """Ephemeral feed for the live query signals of Panel.html: _brain/state/activity.js (gitignored).
-    A script file (not JSON) because a page opened from disk can load scripts but not fetch files."""
+    A script file (not JSON) because a page opened from disk can load scripts but not fetch files.
+    A phase of the life cycle (`brain.py activity`) is one event that carries its own fields and the titles it touched."""
     path = v.state_dir / "activity.js"
     try:
         events = json.loads(path.read_text(encoding="utf-8")[len(ACTIVITY_PREFIX):].rstrip().rstrip(";"))["events"]
@@ -884,10 +886,14 @@ def log_activity(v: Vault, event: str, keys, session: str | None, query: str | N
     if query is not None:
         new.append({"t": t, "s": session, "e": "recall", "q": query[:160], "n": len(keys)})
     by_key = v.by_key()
-    for k in keys:
-        n = by_key.get(k)
-        if n:
-            new.append({"t": t, "s": session, "e": event, "title": n.title, "layer": n.layer})
+    if phase is not None:
+        titles = [by_key[k].title for k in keys if k in by_key]
+        new.append({"t": t, "s": session, "e": event, **phase, **({"titles": titles[:PHASE_TITLES], "n": len(titles)} if titles else {})})
+    else:
+        for k in keys:
+            n = by_key.get(k)
+            if n:
+                new.append({"t": t, "s": session, "e": event, "title": n.title, "layer": n.layer})
     for e in new:
         seq += 1
         e["i"] = seq
@@ -2224,6 +2230,28 @@ def cmd_status(v: Vault, a) -> int:
     return 0
 
 
+PHASES = ("dreamed", "rested", "measured")
+
+
+def cmd_activity(v: Vault, a) -> int:
+    """A life-cycle phase for the panel's live feed only (no telemetry): REM dreamed these nodes' questions, a nap
+    rested the vault, the night measured it. Nodes are given by id, title or alias, one per line, from --nodes."""
+    keys = []
+    if a.nodes:
+        text = sys.stdin.read() if a.nodes == "-" else Path(a.nodes).read_text(encoding="utf-8")
+        by_key = v.by_key()
+        for line in text.splitlines():
+            if line.strip():
+                n = by_key.get(line.strip()) or v.net.get(norm(line))
+                if n:
+                    keys.append(n.key)
+    phase = {k: x for k, x in (("note", (a.note or "")[:160] or None), ("alarm", a.alarm or None)) if x}
+    with v.lock():
+        log_activity(v, a.event, keys, None, phase=phase)
+    print(f"activity {a.event}" + (f" · {len(keys)} nodes" if keys else ""))
+    return 0
+
+
 QUESTIONS_MAX = 10  # per language and node
 QUESTIONS_PROMPT = """# For each note below, write 5 English and 5 Spanish questions that a person or an agent would type to
 # find it and that it specifically answers. Vary the wording (synonyms, everyday words; at most one question reuses
@@ -3081,6 +3109,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("title")
     p.add_argument("status", choices=list(STATUS_FACTOR))
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("activity", help="a life-cycle phase for the panel's live feed (dreamed, rested, measured)")
+    p.add_argument("event", choices=PHASES)
+    p.add_argument("--nodes", help="a file (or - for stdin) with one node id, title or alias per line")
+    p.add_argument("--note", help="a short line for the panel's ticker")
+    p.add_argument("--alarm", action="store_true", help="measured: the bench fell")
+    p.set_defaults(func=cmd_activity)
 
     p = sub.add_parser("questions", help="generated questions per node (doc2query): status, todo batch, import")
     p.add_argument("action", choices=["status", "todo", "import"])

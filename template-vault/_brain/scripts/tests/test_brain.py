@@ -483,6 +483,21 @@ class VisualizationTests(Base):
         self.assertNotIn("Orders", planted(), "its status changed, so it is no longer drawn as planted")
         self.assertIn("Friday cutoff moves to noon", planted())
 
+    def test_life_cycle_phases_reach_the_panel_feed_only(self):
+        self.seed()
+        nodes = self.v / "dreamed.txt"
+        nodes.write_text("Order cutoff is at 2pm EST\nNo such node\n", encoding="utf-8")
+        self.ok("activity", "dreamed", "--nodes", str(nodes), "--note", "REM 1 note")
+        self.ok("activity", "measured", "--note", "hit@1 9/10", "--alarm")
+        raw = (self.v / "_brain" / "state" / "activity.js").read_text(encoding="utf-8")
+        events = json.loads(raw[len(brain.ACTIVITY_PREFIX):].rstrip().rstrip(";"))["events"]
+        dreamed, measured = events[-2], events[-1]
+        self.assertEqual((dreamed["e"], dreamed["titles"], dreamed["n"], dreamed["note"]), ("dreamed", ["Order cutoff is at 2pm EST"], 1, "REM 1 note"))
+        self.assertEqual((measured["e"], measured["alarm"]), ("measured", True))
+        self.assertNotIn("titles", measured)
+        usage = self.v / "_brain" / "state" / "usage.jsonl"
+        self.assertFalse(usage.exists() and "dreamed" in usage.read_text(encoding="utf-8"), "a phase is not telemetry")
+
     def test_activity_feed_for_live_signals(self):
         self.seed()
         sid = run(self.v, "session", "new")[1].splitlines()[0]
