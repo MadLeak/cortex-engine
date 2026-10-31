@@ -756,7 +756,7 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
       row(lineSvg('var(--critical)', '6 4'), 'Contradicts — check before trusting');
       row(lineSvg('var(--axis)'), 'Hierarchy (up → parent)');
       row(sigSvg('var(--l3)'), 'Feed signal — flows from what feeds to what is fed: detail → concept → domain → MAP, cause → effect, dependency → dependent');
-      row(sigSvg('var(--ink)'), 'Query signal — an agent recall or read, descending from MAP through the layers to the node');
+      row(sigSvg('var(--ink)'), 'Query signal — an agent recall pulses at MAP; each node it reaches or reads sends its information up through the layers to MAP');
       row(sigSvg('var(--l2)'), 'Used — a credited node sends its knowledge back up to MAP (the agent)');
       el('p', { class: 'muted' }, '3D sphere: the same layers as nested spheres, L1 inside and L3 outside; each domain is a region of the spheres. Drag to rotate, double-click a node to bring it to the front.', box);
       el('p', { class: 'muted' }, 'Drag to pan, scroll to zoom. The panel is rebuilt on every commit.', box);
@@ -965,6 +965,14 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
     while (ticker.children.length > 4) ticker.lastChild.remove();
     ticker.hidden = false;
   }
+  // information travels inward node by node: one leg per hierarchy link (L3 → L2 → L1 → MAP), each node pulsing as it is passed
+  function climb(n, cls, { r, delay, grow }) {
+    const path = chainTo(n).reverse();
+    for (let i = 1, t = delay; i < path.length; i++, t += LEG) {
+      const a = path[i - 1], b = path[i];
+      launch(polyline(() => [a, b]), cls, { r, dur: LEG, delay: t, ends: [n], onArrive: () => ripple(b, cls, b === ROOT ? { grow } : { grow: 10, dur: 500 }) });
+    }
+  }
   function flash(n) { n.flash = performance.now() + 4000; applyFocus(); setTimeout(applyFocus, 4100); }
   function playEvent(e, delay) {
     const n = e.title ? byTitle.get(norm(e.title)) : null;
@@ -980,12 +988,12 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
     }, delay);
     if (view === 'sphere') { sphere.play(e, n, delay); return; }
     if (!n) return;
-    const down = polyline(() => chainTo(n));
-    if (e.e === 'activated') launch(down, 'query', { r: 3.5, dur: 900, delay, ends: [n], onArrive: () => ripple(n, 'query', { grow: 12, dur: 600 }) });
-    else if (e.e === 'read') launch(down, 'query', { r: 6, dur: 1400, delay, ends: [n], onArrive: () => { ripple(n, 'query', { grow: 24 }); flash(n); } });
-    else if (e.e === 'used') launch(polyline(() => chainTo(n).reverse()), `L${n.layer}`, { r: 6, dur: 1400, delay, ends: [n], onArrive: () => ripple(ROOT, `L${n.layer}`, { grow: 26 }) });
+    if (e.e === 'activated') { ripple(n, 'query', { delay, grow: 12, dur: 600 }); climb(n, 'query', { r: 3.5, delay, grow: 8 }); }
+    else if (e.e === 'read') { ripple(n, 'query', { delay, grow: 24 }); setTimeout(() => flash(n), delay); climb(n, 'query', { r: 6, delay, grow: 20 }); }
+    else if (e.e === 'used') climb(n, `L${n.layer}`, { r: 6, delay, grow: 26 });
     else if (e.e === 'validated') ripple(n, 'validated', { delay, grow: 30, dur: 1400 });
   }
+  const LEG = 420;   // ms per hop of a query signal
   const STEP = { recall: 450, activated: 80, read: 650, used: 500, validated: 400 };
   function playEvents(list) {
     let d = 0;
@@ -1394,9 +1402,16 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
       play(e, n, delay) {
         if (!n || !n.p3) return;
         const lit = () => { n.flash = performance.now() + 4000; flashUntil = Math.max(flashUntil, n.flash); };
-        if (e.e === 'activated') launch3(path3(chain(n)), 'query', { dur: 900, delay, ends: [n], onArrive: () => ripple3(n, 'query', { grow: 12, dur: 600 }) });
-        else if (e.e === 'read') launch3(path3(chain(n)), 'query', { r: 6, dur: 1400, delay, ends: [n], onArrive: () => { ripple3(n, 'query', { grow: 24 }); lit(); } });
-        else if (e.e === 'used') launch3(path3(chain(n).reverse()), `L${n.layer}`, { r: 6, dur: 1400, delay, ends: [n], onArrive: () => ripple3(ROOT, `L${n.layer}`, { grow: 26 }) });
+        const climb3 = (cls, { r, grow }) => {   // node by node inward, as in the 2D orbit
+          const path = chain(n).reverse();
+          for (let i = 1, t = delay; i < path.length; i++, t += LEG) {
+            const a = path[i - 1], b = path[i];
+            launch3(path3([a, b]), cls, { r, dur: LEG, delay: t, ends: [n], onArrive: () => ripple3(b, cls, b === ROOT ? { grow } : { grow: 10, dur: 500 }) });
+          }
+        };
+        if (e.e === 'activated') { ripple3(n, 'query', { delay, grow: 12, dur: 600 }); climb3('query', { r: 3.5, grow: 8 }); }
+        else if (e.e === 'read') { ripple3(n, 'query', { delay, grow: 24 }); setTimeout(lit, delay); climb3('query', { r: 6, grow: 20 }); }
+        else if (e.e === 'used') climb3(`L${n.layer}`, { r: 6, grow: 26 });
         else if (e.e === 'validated') ripple3(n, 'validated', { delay, grow: 30, dur: 1400 });
       },
     };
