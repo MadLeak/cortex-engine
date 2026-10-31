@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 """Wires an agent to a Cortex vault: one marked block in the agent's global instruction file (and, for Hermes Agent,
 a skill). Idempotent: re-running replaces the block; --remove takes it out. Every changed file is backed up first.
 

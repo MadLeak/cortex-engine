@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 # The LAN listener, published only on this machine's LAN address: add it with COMPOSE_FILE=compose.yaml:compose.lan.yaml
 # in .env (Windows: COMPOSE_PATH_SEPARATOR=; and compose.yaml;compose.lan.yaml). It serves the cortexes marked LAN at
 # https://<agent>.<CORTEX_LAN_HOST>.cortex.home behind the access key, and https://<address>/v/<agent>/ by IP.

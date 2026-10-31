@@ -1,9 +1,11 @@
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 """The Cortex hub's own certificate authority, made with the openssl command on first start.
 
-The CA can sign only the names the hub answers to (an X.509 name constraint): the domain and address chosen for it,
-and localhost when it is the localhost scope. Trusting its ca.crt therefore trusts nothing else, even if its key leaked.
-Changing the domain or the address makes a new CA, which has to be trusted again. The server certificate lasts 397
-days and is renewed on start when fewer than 30 remain.
+The CA can sign only the hub's own domains and private addresses (an X.509 name constraint): cortex.local,
+cortex.home, localhost and their subdomains, loopback and the RFC 1918 ranges. Trusting its ca.crt therefore trusts no
+public site, even if its key leaked. Because the constraint does not name this machine's address or name, changing
+them only renews the server certificate: the CA, and the trust each machine gave it, stay. The server certificate
+lasts 397 days and is renewed on start when fewer than 30 remain, or at once when the names it needs change.
 """
 import ipaddress
 import json
@@ -14,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 CA_DAYS = 3650
+PRIVATE = ("127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")   # the CA may sign these only
 LEAF_DAYS = 397
 RENEW_DAYS = 30
 HOSTNAME = re.compile(r"(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*")
@@ -50,18 +53,12 @@ def _openssl(*args: str) -> str:
     return r.stdout
 
 
-def _host_mask(ip: str) -> str:
-    a = ipaddress.ip_address(ip)
-    return f"{a}/{ipaddress.ip_network(a).netmask}"
-
-
-def ensure(tls: Path, dns: list[str], ips: list[str]) -> tuple[Path, Path, list[str]]:
+def ensure(tls: Path, dns: list[str], ips: list[str], zones: list[str]) -> tuple[Path, Path, list[str]]:
     """The server certificate chain and key under tls/, made or renewed as needed; returns what was done."""
     tls.mkdir(parents=True, exist_ok=True)
     os.chmod(tls, 0o700)
     ca_key, ca_crt, key, crt = tls / "ca.key", tls / "ca.crt", tls / "hub.key", tls / "hub.crt"
-    want = {"dns": dns, "ips": ips}
-    roots = [d for d in dns if not d.startswith("*.")]   # what the CA's name constraint names
+    want = {"dns": dns, "ips": ips, "ca": {"dns": zones, "nets": list(PRIVATE)}}   # zones: what the CA may sign
     try:
         have = json.loads((tls / "names.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -69,20 +66,20 @@ def ensure(tls: Path, dns: list[str], ips: list[str]) -> tuple[Path, Path, list[
     done = []
     old = os.umask(0o077)
     try:
-        same_ca = have is not None and [d for d in have.get("dns", []) if not d.startswith("*.")] == roots \
-            and have.get("ips") == ips
+        same_ca = have is not None and have.get("ca") == want["ca"]
         if not same_ca or not (ca_key.is_file() and ca_crt.is_file()):
-            constraints = ",".join([f"permitted;DNS:{d}" for d in roots] +
-                                   [f"permitted;IP:{_host_mask(i)}" for i in ips])
+            nets = [ipaddress.ip_network(n) for n in PRIVATE]
+            constraints = ",".join([f"permitted;DNS:{d}" for d in zones] +
+                                   [f"permitted;IP:{n.network_address}/{n.netmask}" for n in nets])
             _openssl("req", "-x509", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
                      "-keyout", str(ca_key), "-out", str(ca_crt), "-days", str(CA_DAYS), "-sha256",
-                     "-subj", f"/O=Cortex hub/CN=Cortex hub local CA ({dns[0]})",
+                     "-subj", "/O=Cortex hub/CN=Cortex hub local CA",
                      "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
                      "-addext", "keyUsage=critical,keyCertSign,cRLSign",
                      "-addext", f"nameConstraints=critical,{constraints}")
             os.chmod(ca_crt, 0o644)
             crt.unlink(missing_ok=True)
-            done.append(f"new local CA for {', '.join(dns + ips)}: trust its ca.crt once in each browser or system")
+            done.append(f"new local CA for {', '.join(zones)} and private addresses: trust its ca.crt once on each machine")
         fresh = have == want and crt.is_file() and key.is_file() and subprocess.run(
             ["openssl", "x509", "-checkend", str(RENEW_DAYS * 86400), "-noout", "-in", str(crt)], capture_output=True).returncode == 0
         if not fresh:

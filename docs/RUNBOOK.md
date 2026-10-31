@@ -229,7 +229,7 @@ WantedBy=default.target
 
 **Connect an agent.** *Connect an agent* on the hub creates a vault under the root with `scripts/new_vault.py` (or picks an existing one, to share it) and returns a prompt to paste to the agent. The prompt carries the vault's path as the agent's machine writes it, the agent's `wire_agent.py` block (and, for Hermes Agent, its skill), and three steps: run `doctor`, put the block between its markers in the agent's own global instruction file, try one `recall`. The agent wires itself; the hub never touches an agent's files. `custom` agents are told to use the instruction file they load at every start. New vaults get `CORTEX_OWNER` in AGENTS.md and their first commit from `CORTEX_GIT_NAME`/`CORTEX_GIT_EMAIL`; without them the prompt asks the agent to make that commit. The form is a same-origin JSON request carrying the page's token.
 
-**HTTPS and scope.** `--data DIR` turns on HTTPS with the hub's own certificate authority (`scripts/hub_tls.py`, made with `openssl` on first start in `DIR/tls`). The CA carries an X.509 name constraint: it can sign only the names the hub answers to, so trusting its `ca.crt` trusts nothing else even if its key leaked. The server certificate lasts 397 days and is renewed on start; a new name or address makes a new CA, to be trusted again. Each cortex has a scope, chosen in *Connect an agent* (and changed there for an existing one), kept in `DIR/scopes.json`:
+**HTTPS and scope.** `--data DIR` turns on HTTPS with the hub's own certificate authority (`scripts/hub_tls.py`, made with `openssl` on first start in `DIR/tls`). The CA carries an X.509 name constraint: it can sign only `cortex.local`, `cortex.home`, `localhost`, their subdomains, loopback and the RFC 1918 ranges, so trusting its `ca.crt` trusts no public site even if its key leaked. The server certificate lasts 397 days and is renewed on start, or at once when the names it needs change; the CA stays. Each cortex has a scope, chosen in *Connect an agent* (and changed there for an existing one), kept in `DIR/scopes.json`:
 
 | Scope | Where | Panel |
 |---|---|---|
@@ -250,10 +250,10 @@ The machine's name in the LAN host tells several hubs apart and shows whether th
 **In Docker, the same on Linux, macOS and Windows.** At the repository root:
 
 ```bash
-cp .env.example .env          # scope, domain, port, owner, git identity, Linux uid/gid
-mkdir -p ~/Vaults             # Windows: mkdir $env:USERPROFILE\Vaults
-docker compose up -d --build  # then once: sudo installers/setup_host.sh → https://cortex.local
+./install.sh                  # Linux, macOS; Windows (admin PowerShell): install.ps1
 ```
+
+One command, one password prompt, then nothing else on this machine: it writes `.env` from what it finds (your ids and git identity; this machine's name and private address for the LAN listener, unless `--no-lan`), creates the vault folder, starts the container and runs `installers/setup_host.sh` (DNS route and CA trust). Run it again at any time; it keeps `.env` and the CA. From then on a new agent is the hub's form alone: its host (`<agent>.cortex.local` or `<agent>.<machine>.cortex.home`) resolves and has a valid certificate the moment its cortex exists, and the person only pastes the prompt. The CA's name constraint names the hub's domains and private address ranges, not this machine, so a new address or machine name renews only the server certificate and every machine keeps trusting the CA. `install.ps1` and the macOS branch are written but not yet tried on those systems.
 
 The container mounts `~/Vaults` (`%USERPROFILE%\Vaults` on Windows; `CORTEX_VAULTS` moves it) at `/vaults` and keeps its own data beside the vaults in `.cortex-hub/` (`tls/ca.crt`, `access.key`). It publishes 443 (HTTPS), 80 (redirect only) and the DNS on `CORTEX_ADDRESS` and `CORTEX_DNS_ADDRESS` alone, so no port shows in the address bar; the LAN listener is published only when `COMPOSE_FILE` adds `compose.lan.yaml`, on `CORTEX_LAN_ADDRESS` alone. It runs as `CORTEX_UID:CORTEX_GID` with a read-only root, no capabilities and no new privileges. The engine runs with each agent, on its machine: the agents still need Python 3.10+ and git there. The life cycle (nap, REM, night) stays a host service for now.
 

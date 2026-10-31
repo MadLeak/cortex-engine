@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 # -*- coding: utf-8 -*-
 """brain.py — engine of the orbital second brain. Standard library only.
 

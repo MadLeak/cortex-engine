@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 """Installs this repository's engine into existing vaults, then runs each vault's doctor.
 
     python3 scripts/upgrade_engine.py ~/vaults/agent-a-cortex ~/vaults/agent-b-cortex [--dry-run]

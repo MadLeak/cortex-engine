@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 # Cortex hub. Settings come from .env (copy .env.example); `docker compose up -d --build` starts it.
 # One folder on the host holds every agent's cortex and the hub's own data (.cortex-hub: local CA, access key).
 name: cortex
