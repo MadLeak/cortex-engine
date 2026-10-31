@@ -122,6 +122,13 @@ label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6
 .colreg .node.obsolete .dot { fill: var(--muted); stroke: var(--surface); }
 .colreg .sector, .colreg .sector.odd { fill: var(--c); opacity: .11; }
 .colreg .area-label { fill: var(--c); }
+/* planted: a node an agent just created, in the colour of the signal that planted it, hollow and pulsing until its status changes */
+.node .plant { display: none; fill: var(--ink); pointer-events: none; }
+.node.planted .plant { display: inline; transform-box: fill-box; transform-origin: center; animation: plant 1.6s ease-in-out infinite; }
+.node.planted.L1 .dot, .node.planted.L2 .dot, .node.planted.L3 .dot, .node.planted.limb .dot, .colreg .node.planted .dot {
+  fill: var(--surface); stroke: var(--ink); stroke-width: 2.5; stroke-dasharray: none; }
+@keyframes plant { 0%, 100% { opacity: .1; transform: scale(1); } 50% { opacity: .38; transform: scale(1.4); } }
+@media (prefers-reduced-motion: reduce) { .node.planted .plant { animation: none; opacity: .25; } }
 .node .halo { fill: none; stroke: var(--ink); stroke-width: 2; display: none; }
 .node.sel .halo, .node.match .halo { display: inline; }
 .node.match:not(.sel) .halo { stroke-dasharray: 3 3; }
@@ -444,10 +451,11 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
   svgEl('text', { x: C, y: C }, center).textContent = 'MAP';
 
   for (const n of nodes) {
-    const g = svgEl('g', { class: `node L${n.layer} ${n.status || 'seed'}${n.limb ? ' limb' : ''}${cooling(n) ? ' cool' : ''}`, 'data-id': n.id }, gNodes);
+    const g = svgEl('g', { class: `node L${n.layer} ${n.status || 'seed'}${n.limb ? ' limb' : ''}${cooling(n) ? ' cool' : ''}${n.planted ? ' planted' : ''}`, 'data-id': n.id }, gNodes);
     const r = radius(n);
     svgEl('circle', { class: 'hit', r: r + 8 }, g);
     svgEl('circle', { class: 'halo', r: r + 5 }, g);
+    if (n.planted) svgEl('circle', { class: 'plant', r: r + 5 }, g);
     svgEl('circle', { class: 'dot', r }, g);
     n.el = g; n.r = r;
     g.style.setProperty('--c', regionCss(n.region));
@@ -724,6 +732,12 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
     c.setAttribute('stroke-width', hollow ? '2.5' : '1');
     return s;
   }
+  function plantSvg() {
+    const s = svgEl('svg', { width: 14, height: 14, viewBox: '0 0 14 14', 'aria-hidden': 'true' });
+    svgEl('circle', { cx: 7, cy: 7, r: 6.5, fill: 'var(--ink)', opacity: .2 }, s);
+    svgEl('circle', { cx: 7, cy: 7, r: 4.5, fill: 'var(--surface)', stroke: 'var(--ink)', 'stroke-width': 2 }, s);
+    return s;
+  }
   function sigSvg(color) {
     const s = svgEl('svg', { width: 22, height: 14, viewBox: '0 0 22 14', 'aria-hidden': 'true' });
     svgEl('line', { x1: 1, y1: 7, x2: 21, y2: 7, stroke: 'var(--axis)', 'stroke-width': 1 }, s);
@@ -758,6 +772,8 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
       row(sigSvg('var(--l3)'), 'Feed signal — flows from what feeds to what is fed: detail → concept → domain → MAP, cause → effect, dependency → dependent');
       row(sigSvg('var(--ink)'), 'Query signal — an agent recall pulses at MAP; each node it reaches or reads sends its information up through the layers to MAP');
       row(sigSvg('var(--l2)'), 'Used — a credited node sends its knowledge back up to MAP (the agent)');
+      row(sigSvg('var(--ink)'), 'Planting signal — when an agent creates a node, MAP sends a signal out to each node it relates to; they converge where the new node is born');
+      row(plantSvg(), 'Planted — a node just created by an agent, in the signal\'s colour and pulsing until its status changes');
       el('p', { class: 'muted' }, '3D sphere: the same layers as nested spheres, L1 inside and L3 outside; each domain is a region of the spheres. Drag to rotate, double-click a node to bring it to the front.', box);
       el('p', { class: 'muted' }, 'Drag to pan, scroll to zoom. The panel is rebuilt on every commit.', box);
       return;
@@ -973,6 +989,26 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
       launch(polyline(() => [a, b]), cls, { r, dur: LEG, delay: t, ends: [n], onArrive: () => ripple(b, cls, b === ROOT ? { grow } : { grow: 10, dur: 500 }) });
     }
   }
+  // a planted node: MAP sends a signal out to every node it relates to (its parent and its synapses), hop by hop
+  // through the layers, then those nodes send theirs to where the new node is born; it stays hidden until they meet
+  const relatives = n => [...new Set([n.parent, ...n.syn.map(o => (o.a === n ? o.b : o.a))])].filter(m => m && m !== n);
+  function plant(n, delay = 0) {
+    if (!signalsOn) return;
+    const rel = relatives(n), parts = [n.el, n.lbl, n.spoke, ...n.syn.map(o => o.el)].filter(Boolean);
+    const meet = delay + 300 + Math.max(0, ...rel.map(m => (chainTo(m).length - 1) * LEG));
+    parts.forEach(e => { e.style.visibility = 'hidden'; });
+    ripple(ROOT, 'query', { delay, grow: 30, dur: 1000 });
+    for (const m of rel) {
+      const path = m === ROOT ? [ROOT] : chainTo(m);
+      for (let i = 1, t = delay; i < path.length; i++, t += LEG) {
+        const a = path[i - 1], b = path[i];
+        launch(polyline(() => [a, b]), 'query', { r: 3.5, dur: LEG, delay: t, ends: [n, m],
+          onArrive: () => ripple(b, 'query', b === m ? { grow: 16, dur: 700 } : { grow: 8, dur: 450 }) });
+      }
+      launch(m === n.parent ? polyline(() => [m, n]) : curve(m, n), 'query', { r: 3, dur: 900, delay: meet, ends: [n, m] });
+    }
+    setTimeout(() => { parts.forEach(e => { e.style.visibility = ''; }); ripple(n, 'query', { grow: 30, dur: 1300 }); }, meet + 900);
+  }
   function flash(n) { n.flash = performance.now() + 4000; applyFocus(); setTimeout(applyFocus, 4100); }
   function playEvent(e, delay) {
     const n = e.title ? byTitle.get(norm(e.title)) : null;
@@ -1127,7 +1163,7 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
     const fog = z => 0.22 + 0.78 * Math.max(0, Math.min(1, (z + RS[3]) / (2 * RS[3])));
     const lc = l => COL['l' + l];
     const nc = n => (n.limb ? COL.tool : colorBy === 'region' ? n.region.color : lc(n.layer));
-    const visible = n => shown(n) && n.p3;
+    const visible = n => shown(n) && n.p3 && !(n.unborn > performance.now());
     const focusSet = () => (selected ? neighborhood(selected) : groupFocus());
     const dimmed = (n, focus) => (focus ? !focus.has(n) : query ? !matches.has(n) : false);
     const synCtrl = (a, b) => {
@@ -1229,6 +1265,14 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
         const n = d.n, on = n === selected || n === hovered || n.flash > now;
         const hollow = (n.status === 'seed' && n.layer < 3) || n.status === 'provisional', gray = n.status === 'obsolete';
         ctx.globalAlpha = on ? 1 : fog(d.z) * (dimmed(n, focus) ? 0.18 : 1) * (cooling(n) ? 0.45 : 1);
+        if (n.planted) {   // hollow, in the colour of the signal that planted it, pulsing until its status changes
+          const k = reduced ? 0.5 : 0.5 + 0.5 * Math.sin(now / 255), a = ctx.globalAlpha;
+          ctx.globalAlpha = a * (0.1 + 0.28 * k); ctx.fillStyle = COL.ink;
+          ctx.beginPath(); ctx.arc(d.x, d.y, (d.r + 3) * (1 + 0.4 * k), 0, 2 * Math.PI); ctx.fill();
+          ctx.globalAlpha = a; ctx.beginPath(); ctx.arc(d.x, d.y, on ? d.r + 2 : d.r, 0, 2 * Math.PI);
+          ctx.fillStyle = COL.page; ctx.fill(); ctx.strokeStyle = COL.ink; ctx.lineWidth = 2; ctx.stroke();
+          continue;
+        }
         ctx.beginPath(); ctx.arc(d.x, d.y, on ? d.r + 2 : d.r, 0, 2 * Math.PI);
         ctx.fillStyle = gray ? COL.muted : hollow ? COL.page : nc(n); ctx.fill();
         if (n.layer < 3 || on || hollow) {
@@ -1333,7 +1377,8 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
       if (signalsOn) drawSignals(now, focus);
       ctx.globalAlpha = 1;
     };
-    let last = performance.now();
+    let last = performance.now(), lastPulse = 0;
+    const pulsing = nodes.some(n => n.planted);
     const frame = now => {
       const dt = Math.min(64, now - last); last = now;
       if (active) {
@@ -1347,6 +1392,7 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
         for (let i = sigs.length - 1; i >= 0; i--) if (now - sigs[i].t0 >= sigs[i].dur) { const s = sigs.splice(i, 1)[0]; if (s.onArrive) s.onArrive(); }
         for (let i = rips.length - 1; i >= 0; i--) if (now - rips[i].t0 >= rips[i].dur) rips.splice(i, 1);
         if (sigs.length || rips.length || now < qUntil || now < flashUntil + 100) dirty = true;
+        if (pulsing && !reduced && now - lastPulse > 66) { lastPulse = now; dirty = true; }   // planted nodes pulse at ~15 fps
         if (dirty && W) { draw(now); dirty = false; }
       }
       requestAnimationFrame(frame);
@@ -1399,6 +1445,22 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
       toggle(k) { show[k] = !show[k]; store.set(k, show[k]); dirty = true; return show[k]; },
       shown: k => show[k],
       query(text) { qText = text; qUntil = performance.now() + 5000; ripple3(ROOT, 'query', { grow: 30, dur: 1100 }); },
+      plant(n, delay = 0) {   // the 2D orbit's planting, on 3D routes
+        if (!signalsOn || !n.p3) return;
+        const rel = relatives(n), meet = delay + 300 + Math.max(0, ...rel.map(m => (chain(m).length - 1) * LEG));
+        n.unborn = performance.now() + meet + 900;
+        ripple3(ROOT, 'query', { delay, grow: 30, dur: 1000 });
+        for (const m of rel) {
+          const path = m === ROOT ? [ROOT] : chain(m);
+          for (let i = 1, t = delay; i < path.length; i++, t += LEG) {
+            const a = path[i - 1], b = path[i];
+            launch3(path3([a, b]), 'query', { dur: LEG, delay: t, ends: [n, m],
+              onArrive: () => ripple3(b, 'query', b === m ? { grow: 16, dur: 700 } : { grow: 8, dur: 450 }) });
+          }
+          launch3(m === n.parent ? path3([m, n]) : arc3(posOf(m), posOf(n)), 'query', { r: 3, dur: 900, delay: meet, ends: [n, m] });
+        }
+        ripple3(n, 'query', { delay: meet + 900, grow: 30, dur: 1300 });
+      },
       play(e, n, delay) {
         if (!n || !n.p3) return;
         const lit = () => { n.flash = performance.now() + 4000; flashUntil = Math.max(flashUntil, n.flash); };
@@ -1675,6 +1737,12 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 
   const saved = store.get('sel', null);
   select(saved ? nodes.find(n => n.id === saved) || null : null);
   renderQueries(null);
+  {
+    const seen = new Set(store.get('planted-seen', [])), day = Date.now() - 86400000;
+    const fresh = nodes.filter(n => n.planted && !seen.has(n.id) && Date.parse(n.planted) > day);
+    fresh.forEach((n, i) => setTimeout(() => (view === 'sphere' ? sphere.plant(n) : plant(n)), 800 + i * 2600));
+    if (fresh.length) store.set('planted-seen', [...seen, ...fresh.map(n => n.id)].slice(-400));
+  }
   poll();
   setInterval(poll, 3000);
   requestAnimationFrame(tick);
