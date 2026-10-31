@@ -43,6 +43,8 @@ $B credit --used "Deploys happen on Tuesdays"
 xdg-open _brain/Panel.html                  # macOS: open · Windows: start
 ```
 
+Several agents? `python3 scripts/cortex_hub.py` serves every vault under `~/Vaults` on one page: a card per agent and a live wall of their panels (see the runbook, section 8).
+
 Try the demo instead: `python3 scripts/new_vault.py /tmp/demo/kitchen-cortex --from examples/kitchen-cortex` and then `python3 scripts/new_vault.py /tmp/demo/fern-cortex --from examples/fern-cortex`. That gives a 16-node gardening vault with a sibling vault, typed links, truth tags and one provisional learning. Then `cd /tmp/demo/fern-cortex && python3 _brain/scripts/brain.py recall "when should the beds be watered"`.
 
 ## Wire an agent
@@ -75,7 +77,7 @@ The suite has 31 tests, including a 1,000-node performance check, and runs in ab
 
 ## Status
 
-Engine version 2.10.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.11.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 

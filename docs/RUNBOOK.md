@@ -204,6 +204,29 @@ Point at a sibling's node; never copy it. Create siblings before or alongside ea
 - `_brain/Panel.md`: the same summary for Obsidian, with `generated/orbit.svg`.
 - `_brain/generated/index.tsv` (one row per node; the only file agents may grep), `graph.json` and `hot.md`.
 
+`Panel.html?embed` shows the orbit alone, filling its frame, and `?theme=dark` or `?theme=light` overrides the saved theme.
+
+**The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
+
+```bash
+python3 scripts/cortex_hub.py --port 8790            # http://127.0.0.1:8790
+```
+
+*Agents* shows one card per vault: its orbit, its size by layer, the seeds waiting for review, today's recalls and its latest activity. A card flashes when its agent acts. *Wall* embeds every panel at once (`?embed`), live, in one theme. The hub only serves `Panel.html`, `state/activity.js` and `generated/orbit.svg` of each vault; everything else answers 404. It listens on localhost: the panels carry the vaults' summaries, so put an authenticated proxy in front before you give it a wider `--host`. As a systemd user service:
+
+```ini
+# ~/.config/systemd/user/cortex-hub.service
+[Unit]
+Description=Cortex hub (every agent's brain panel)
+
+[Service]
+ExecStart=/usr/bin/python3 %h/.local/lib/cortex-hub/cortex_hub.py --port 8790
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
 ## 9. Backups
 
 A vault is a git repository with no remote by default. Choose one:
@@ -218,7 +241,7 @@ Upgrade all siblings together:
 
 ```bash
 python3 scripts/upgrade_engine.py ~/vaults/fern-cortex ~/vaults/kitchen-cortex [--dry-run]
-cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.10.0"
+cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.11.0"
 ```
 
 The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lexicon_es.tsv`, `synonyms_en.tsv` and `tests/` into each vault's `_brain/scripts/` and runs `doctor` in each vault. It does not touch content, config, glossary or templates. Cached state is keyed by engine version, file mtime and size, and Python version, so caches rebuild automatically.
