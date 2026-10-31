@@ -191,6 +191,12 @@ human decides on the hub's Review page:
    skip per node, or take the model's verdicts for a domain, then **Apply**. `scripts/review_apply.py` changes the statuses
    in one `consolidation:` commit through the hook. Fix and skip are only recorded.
 
+**The mechanical phases run on their own** (Linux, systemd user timers): `python3 scripts/lifecycle.py install` sets up
+- `cortex-nap`, hourly: mirrors each vault's gitignored `usage.jsonl` into `~/.local/share/cortex-life/usage/` (a fresh clone starts the log empty, so the history lives outside the vault), then rebuilds and lints any vault whose notes or usage changed;
+- `cortex-night`, 03:00: `B consolidate`, the vault's bench on a throwaway copy with an alarm when hit@1 or MRR falls, a layer report (fan-out, empty concepts, traffic per domain) in `~/.local/share/cortex-life/reports/`, and a desktop notification when anything needs a look. The only change it makes on its own is pruning: at most 10 synapses per night, only once the usage history spans 90 days (the prune rule reads "no joint use in 90 days") and only with a clean index, committed `consolidation: nightly prune`.
+
+Every directory under `~/Vaults` with `_brain/scripts/brain.py` are covered (`CORTEX_VAULTS` changes the root). `lifecycle.py status` shows the last runs, the history span and the bench trend. The curator's week above stays a curator's job.
+
 Writing tools for the curator: `new`, `link`/`unlink` (typed: `depends_on`, `contradicts`, `supersedes`, `causes`, `example_of`, `related`; at most 7, each with a reason), `move --up`, `rename` (updates every link, including references in sibling vaults), `promote`, `demote`, and `lint --fix` (fills ids, dates and empty fields). Never move or rename files by hand.
 
 ## 7. Sibling vaults and external references
