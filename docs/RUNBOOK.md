@@ -233,20 +233,20 @@ WantedBy=default.target
 
 | Scope | Address | Domain (`--domain`) | Access |
 |---|---|---|---|
-| localhost | 127.0.0.1 | `localhost` or a `*.localhost` name | this machine only, no sign-in |
-| local network | this machine's private LAN address | a name your router's DNS or hosts files point at it (`cortex.lan`, `cortex.home.arpa`) | sign in with `DIR/access.key` (cookie: HttpOnly, Secure, SameSite=Strict, 30 days) |
+| localhost | 127.0.0.1 | `cortex.localhost`: it and every subdomain resolve to this machine by themselves | this machine only, no sign-in |
+| local network | this machine's private LAN address | a name your router's DNS points at it with a wildcard for its subdomains (`cortex.lan`, `cortex.home.arpa`) | sign in with `DIR/access.key` (cookie: HttpOnly, Secure, SameSite=Strict, 30 days) |
 
-Public addresses are refused, and the LAN scope refuses to start without `--data`. Changing the domain or the address makes a new CA, which has to be trusted again.
+Each agent also has its own host, `<agent>.<domain>`: `https://claude.cortex.localhost` opens Claude Cortex's panel at its root (the label is the vault name without "Cortex"; a new vault answers as soon as it exists). The certificate covers `*.<domain>` when the domain has a dot, and the CA's name constraint on the domain already covers its subdomains, so adding them needs no new CA. Prefer `.localhost` to `.local`: `.local` belongs to mDNS and resolves only through one hosts entry per agent, while `*.localhost` resolves to the machine itself on every system with no setup. `--public-port` gives the port browsers use (443: none in the links) and `--redirect-port` adds a plain-HTTP listener that only redirects to HTTPS. Public addresses are refused, and the LAN scope refuses to start without `--data`. Changing the domain or the address makes a new CA, which has to be trusted again.
 
 **In Docker, the same on Linux, macOS and Windows.** At the repository root:
 
 ```bash
 cp .env.example .env          # scope, domain, port, owner, git identity, Linux uid/gid
 mkdir -p ~/Vaults             # Windows: mkdir $env:USERPROFILE\Vaults
-docker compose up -d --build  # https://localhost:8443
+docker compose up -d --build  # https://cortex.localhost
 ```
 
-The container mounts `~/Vaults` (`%USERPROFILE%\Vaults` on Windows; `CORTEX_VAULTS` moves it) at `/vaults` and keeps its own data beside the vaults in `.cortex-hub/` (`tls/ca.crt`, `access.key`). It publishes the port only on `CORTEX_ADDRESS`, runs as `CORTEX_UID:CORTEX_GID` with a read-only root, no capabilities and no new privileges. The engine runs with each agent, on its machine: the agents still need Python 3.10+ and git there. The life cycle (nap, REM, night) stays a host service for now.
+The container mounts `~/Vaults` (`%USERPROFILE%\Vaults` on Windows; `CORTEX_VAULTS` moves it) at `/vaults` and keeps its own data beside the vaults in `.cortex-hub/` (`tls/ca.crt`, `access.key`). It publishes 443 (HTTPS) and 80 (redirect only) on `CORTEX_ADDRESS` alone, so no port shows in the address bar (`CORTEX_PORT` and `CORTEX_HTTP_PORT` change them), runs as `CORTEX_UID:CORTEX_GID` with a read-only root, no capabilities and no new privileges. The engine runs with each agent, on its machine: the agents still need Python 3.10+ and git there. The life cycle (nap, REM, night) stays a host service for now.
 
 Trust the CA once (download it from the hub's footer, or take `~/Vaults/.cortex-hub/tls/ca.crt`):
 

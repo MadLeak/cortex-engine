@@ -77,6 +77,19 @@ class HubTest(unittest.TestCase):
         self.assertEqual(self.get("/api/vaults", {"Host": "evil.example:80"})[0], 421, "DNS rebinding")
         self.assertEqual(self.get("/api/vaults", {"Host": "localhost:8790"})[0], 200)
 
+    def test_each_agent_answers_at_its_own_host(self):
+        cortex_hub.Hub.domain = "cortex.localhost"
+        try:
+            self.assertEqual(self.get("/", {"Host": "fern.cortex.localhost"}), (200, "<html>panel</html>"))
+            self.assertEqual(self.get("/state/activity.js", {"Host": "fern.cortex.localhost"})[0], 200)
+            self.assertEqual(self.get("/config.json", {"Host": "fern.cortex.localhost"})[0], 404)
+            self.assertEqual(self.get("/", {"Host": "kale.cortex.localhost"})[0], 421, "no such agent")
+            (v,) = json.loads(self.get("/api/vaults")[1])["vaults"]
+            self.assertEqual(v["url"], "http://fern.cortex.localhost:443/")
+        finally:
+            cortex_hub.Hub.domain = None
+        self.assertEqual(cortex_hub.subdomain("OpenCode Cortex"), "opencode")
+
     def test_connect_needs_same_origin_and_the_page_token(self):
         body = json.dumps({"agent": "Fern", "kind": "codex", "vault": "Fern Cortex", "role": "reader"}).encode()
         self.assertEqual(self.post("/api/connect", body, {"Origin": "https://evil.example"})[0], 403)
