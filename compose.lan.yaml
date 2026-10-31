@@ -1,0 +1,9 @@
+# The LAN listener, published only on this machine's LAN address: add it with COMPOSE_FILE=compose.yaml:compose.lan.yaml
+# in .env (Windows: COMPOSE_PATH_SEPARATOR=; and compose.yaml;compose.lan.yaml). It serves the cortexes marked LAN at
+# https://<agent>.<CORTEX_LAN_HOST>.cortex.home behind the access key, and https://<address>/v/<agent>/ by IP.
+services:
+  hub:
+    ports:
+      - "${CORTEX_LAN_ADDRESS:?set CORTEX_LAN_ADDRESS}:443:9443"
+      - "${CORTEX_LAN_ADDRESS}:80:9080"        # HTTPS redirect, and /ca.crt for devices that do not trust the CA yet
+      - "${CORTEX_LAN_ADDRESS}:53:5354/udp"    # DNS for <host>.cortex.home alone: point the router's DNS here for it

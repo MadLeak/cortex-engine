@@ -16,6 +16,9 @@ services:
       CORTEX_OWNER: ${CORTEX_OWNER:-the owner}
       CORTEX_GIT_NAME: ${CORTEX_GIT_NAME:-}
       CORTEX_GIT_EMAIL: ${CORTEX_GIT_EMAIL:-}
+      CORTEX_LAN_ADDRESS: ${CORTEX_LAN_ADDRESS:-}   # the LAN listener; compose.lan.yaml publishes it
+      CORTEX_LAN_HOST: ${CORTEX_LAN_HOST:-}
+      CORTEX_LAN_DOMAIN: ${CORTEX_LAN_DOMAIN:-cortex.home}
     volumes:
       - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
     # published only on the chosen address: 127.0.0.1 = this machine, a private LAN address = the local network
@@ -30,3 +33,6 @@ services:
       - --public-port=${CORTEX_PORT:-443}
       - --redirect-port=8080
       - --dns-port=5353
+      - --lan-port=9443
+      - --lan-redirect-port=9080
+      - --lan-dns-port=5354

@@ -26,8 +26,8 @@ def _qname(packet: bytes, i: int) -> tuple[str, int]:
         i += 1 + n
 
 
-def answer(query: bytes, domain: str, address: str) -> bytes | None:
-    """The reply to one query packet, or None for a packet that is not a standard query."""
+def answer(query: bytes, zones: dict[str, str]) -> bytes | None:
+    """The reply to one query packet ({domain: address}), or None for a packet that is not a standard query."""
     if len(query) < 12:
         return None
     qid, flags, qd = struct.unpack("!HHH", query[:6])
@@ -40,9 +40,10 @@ def answer(query: bytes, domain: str, address: str) -> bytes | None:
         return None
     question = query[12:end + 4]
     rd = flags & 0x0100
-    if not (name == domain or name.endswith("." + domain)):
+    zone = next((d for d in sorted(zones, key=len, reverse=True) if name == d or name.endswith("." + d)), None)
+    if zone is None:
         return struct.pack("!HHHHHH", qid, 0x8000 | rd | 5, 1, 0, 0, 0) + question   # REFUSED
-    ip = ipaddress.ip_address(address)
+    ip = ipaddress.ip_address(zones[zone])
     want = {A: 4, AAAA: 6, ANY: ip.version}.get(qtype)
     records = b""
     if qclass == 1 and want == ip.version:
@@ -51,14 +52,14 @@ def answer(query: bytes, domain: str, address: str) -> bytes | None:
     return struct.pack("!HHHHHH", qid, 0x8400 | rd, 1, 1 if records else 0, 0, 0) + question + records
 
 
-def serve(host: str, port: int, domain: str, address: str) -> threading.Thread:
+def serve(host: str, port: int, zones: dict[str, str]) -> threading.Thread:
     sock = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((host, port))
 
     def loop():
         while True:
             data, peer = sock.recvfrom(512)
-            reply = answer(data, domain, address)
+            reply = answer(data, zones)
             if reply:
                 sock.sendto(reply, peer)
 

@@ -229,34 +229,35 @@ WantedBy=default.target
 
 **Connect an agent.** *Connect an agent* on the hub creates a vault under the root with `scripts/new_vault.py` (or picks an existing one, to share it) and returns a prompt to paste to the agent. The prompt carries the vault's path as the agent's machine writes it, the agent's `wire_agent.py` block (and, for Hermes Agent, its skill), and three steps: run `doctor`, put the block between its markers in the agent's own global instruction file, try one `recall`. The agent wires itself; the hub never touches an agent's files. `custom` agents are told to use the instruction file they load at every start. New vaults get `CORTEX_OWNER` in AGENTS.md and their first commit from `CORTEX_GIT_NAME`/`CORTEX_GIT_EMAIL`; without them the prompt asks the agent to make that commit. The form is a same-origin JSON request carrying the page's token.
 
-**HTTPS and scope.** `--data DIR` turns on HTTPS with the hub's own certificate authority (`scripts/hub_tls.py`, made with `openssl` on first start in `DIR/tls`). The CA carries an X.509 name constraint: it can sign only the names the hub answers to, so trusting its `ca.crt` trusts nothing else even if its key leaked. The server certificate lasts 397 days and is renewed on start. The scope is chosen by the address browsers reach the hub at (`--address`, default `--host`):
+**HTTPS and scope.** `--data DIR` turns on HTTPS with the hub's own certificate authority (`scripts/hub_tls.py`, made with `openssl` on first start in `DIR/tls`). The CA carries an X.509 name constraint: it can sign only the names the hub answers to, so trusting its `ca.crt` trusts nothing else even if its key leaked. The server certificate lasts 397 days and is renewed on start; a new name or address makes a new CA, to be trusted again. Each cortex has a scope, chosen in *Connect an agent* (and changed there for an existing one), kept in `DIR/scopes.json`:
 
-| Scope | Address | Domain (`--domain`) | Access |
-|---|---|---|---|
-| localhost | 127.0.0.1 | `cortex.local` with the DNS route below, or `cortex.localhost`, which resolves to this machine with no route | this machine only, no sign-in |
-| local network | this machine's private LAN address | a name your router's DNS points at it with a wildcard for its subdomains (`cortex.lan`, `cortex.home.arpa`) | sign in with `DIR/access.key` (cookie: HttpOnly, Secure, SameSite=Strict, 30 days) |
+| Scope | Where | Panel |
+|---|---|---|
+| Local (default) | this machine only: listener on 127.0.0.1 | `https://claude.cortex.local`; the hub at `https://cortex.local` |
+| LAN | the local network, behind the access key in `DIR/access.key` (cookie: HttpOnly, Secure, SameSite=Strict, 30 days) | `https://claude.alastor.cortex.home` (agent, then the machine that hosts it), and `https://10.0.0.100/v/claude/` when the network does not resolve the name |
 
-Each agent also has its own host, `<agent>.<domain>`: `https://claude.cortex.local` opens Claude Cortex's panel at its root (the label is the vault name without "Cortex"; a new vault answers as soon as it exists). The certificate covers `*.<domain>` when the domain has a dot, and the CA's name constraint on the domain already covers its subdomains, so adding them needs no new CA. `--dns-port` makes the hub answer DNS for its domain and subdomains alone (A record: the hub's address; every other name REFUSED). Compose publishes it on `CORTEX_DNS_ADDRESS` (127.0.0.153, beside systemd-resolved's 127.0.0.53), and each machine routes the domain there once, so a new agent's host resolves with no hosts entry:
+The machine's name in the LAN host tells several hubs apart and shows whether the network resolves it; the address link always works. The LAN listener (`--lan-address`, `--lan-host`, `--lan-domain cortex.home`) shows only the cortexes marked LAN and never offers the connect form: vaults live on this machine, so only its owner connects agents. Public addresses are refused. `/v/<vault name or agent>/` serves any visible panel by address; `/ca.crt` is also served on the plain-HTTP port, so a phone can fetch the CA before it trusts it.
 
-| System | Route `cortex.local` to the hub's DNS |
+**DNS.** The hub answers DNS for its own names alone (A records; every other name REFUSED): on `CORTEX_DNS_ADDRESS` (127.0.0.153) for `*.cortex.local` → 127.0.0.1 and `*.<machine>.cortex.home` → the LAN address, and on the LAN address, port 53, for `*.<machine>.cortex.home` only. A more specific route wins, so an existing `~local` route (to a Pi-hole, say) keeps every other `.local` name.
+
+| Where | Route |
 |---|---|
-| Linux (NetworkManager + systemd-resolved) | `sudo installers/local_dns.sh cortex.local 127.0.0.153` (a dummy link `cortex-dns` with routing domain `~cortex.local`; `--remove` undoes it) |
-| macOS | `sudo mkdir -p /etc/resolver && echo 'nameserver 127.0.0.153' \| sudo tee /etc/resolver/cortex.local` |
-| Windows (admin PowerShell) | `Add-DnsClientNrptRule -Namespace '.cortex.local','cortex.local' -NameServers 127.0.0.153` |
-
-A more specific route wins, so an existing `~local` route (to a Pi-hole, say) keeps every other `.local` name. `*.localhost` needs no route at all, if you do not mind the name. `--public-port` gives the port browsers use (443: none in the links) and `--redirect-port` adds a plain-HTTP listener that only redirects to HTTPS. Public addresses are refused, and the LAN scope refuses to start without `--data`. Changing the domain or the address makes a new CA, which has to be trusted again.
+| This machine, Linux | `sudo installers/setup_host.sh`: routes both domains to the hub's DNS through a dummy NetworkManager link (`cortex-dns`) and trusts the CA in the system store and the user's Chrome/Chromium store (`--remove` undoes both) |
+| This machine, macOS | `/etc/resolver/cortex.local` (and `/etc/resolver/<machine>.cortex.home`) with `nameserver 127.0.0.153`; trust: `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt` |
+| This machine, Windows (admin) | `Add-DnsClientNrptRule -Namespace '.cortex.local','cortex.local' -NameServers 127.0.0.153`; trust: `Import-Certificate -FilePath ca.crt -CertStoreLocation Cert:\LocalMachine\Root` |
+| Other devices on the LAN | the router's DNS forwards `<machine>.cortex.home` to the machine (Pi-hole / dnsmasq: `server=/alastor.cortex.home/10.0.0.100`); each device trusts `http://<address>/ca.crt` once |
 
 **In Docker, the same on Linux, macOS and Windows.** At the repository root:
 
 ```bash
 cp .env.example .env          # scope, domain, port, owner, git identity, Linux uid/gid
 mkdir -p ~/Vaults             # Windows: mkdir $env:USERPROFILE\Vaults
-docker compose up -d --build  # https://cortex.local once the DNS route is in place
+docker compose up -d --build  # then once: sudo installers/setup_host.sh → https://cortex.local
 ```
 
-The container mounts `~/Vaults` (`%USERPROFILE%\Vaults` on Windows; `CORTEX_VAULTS` moves it) at `/vaults` and keeps its own data beside the vaults in `.cortex-hub/` (`tls/ca.crt`, `access.key`). It publishes 443 (HTTPS) and 80 (redirect only) on `CORTEX_ADDRESS` alone, so no port shows in the address bar (`CORTEX_PORT` and `CORTEX_HTTP_PORT` change them), runs as `CORTEX_UID:CORTEX_GID` with a read-only root, no capabilities and no new privileges. The engine runs with each agent, on its machine: the agents still need Python 3.10+ and git there. The life cycle (nap, REM, night) stays a host service for now.
+The container mounts `~/Vaults` (`%USERPROFILE%\Vaults` on Windows; `CORTEX_VAULTS` moves it) at `/vaults` and keeps its own data beside the vaults in `.cortex-hub/` (`tls/ca.crt`, `access.key`). It publishes 443 (HTTPS), 80 (redirect only) and the DNS on `CORTEX_ADDRESS` and `CORTEX_DNS_ADDRESS` alone, so no port shows in the address bar; the LAN listener is published only when `COMPOSE_FILE` adds `compose.lan.yaml`, on `CORTEX_LAN_ADDRESS` alone. It runs as `CORTEX_UID:CORTEX_GID` with a read-only root, no capabilities and no new privileges. The engine runs with each agent, on its machine: the agents still need Python 3.10+ and git there. The life cycle (nap, REM, night) stays a host service for now.
 
-Trust the CA once (download it from the hub's footer, or take `~/Vaults/.cortex-hub/tls/ca.crt`):
+Trust the CA by hand, where `setup_host.sh` does not reach (download it from the hub's footer, or take `~/Vaults/.cortex-hub/tls/ca.crt`):
 
 | System | Command |
 |---|---|
