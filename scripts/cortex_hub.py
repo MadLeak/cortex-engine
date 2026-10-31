@@ -569,9 +569,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
   </form>
   <div id="c-out" hidden>
     <h2>Paste this to <span id="c-who"></span></h2>
-    <div class="sub" id="c-what"></div>
     <textarea id="c-text" readonly aria-label="Prompt for the agent"></textarea>
-    <details id="c-logbox"><summary class="sub">Creation log</summary><pre id="c-log"></pre></details>
     <div class="row"><button type="button" id="c-copy" class="primary">Copy</button><button type="button" id="c-done">Done</button></div>
   </div>
 </dialog>
@@ -720,10 +718,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
       const out = await r.json().catch(() => ({ error: `The hub answered ${r.status}` }));
       if (!r.ok) throw new Error(out.error || r.status);
       $('#c-who').textContent = body.agent;
-      $('#c-what').textContent = out.created ? `New cortex "${out.vault}" created. The agent checks it, adds its memory block and tries one recall.`
-                                             : `It joins "${out.vault}". The agent checks it, adds its memory block and tries one recall.`;
-      if (out.url) { const a = el('a', { href: out.url, target: '_blank', rel: 'noopener' }, new URL(out.url).host); $('#c-what').append(' Panel: ', a); }
-      $('#c-text').value = out.prompt; $('#c-log').textContent = out.log; $('#c-logbox').hidden = !out.log;
+      $('#c-text').value = out.prompt;
       cform.hidden = true; $('#c-out').hidden = false; $('#c-copy').textContent = 'Copy';
       poll();
     } catch (e) { $('#c-err').textContent = String(e.message || e); }
@@ -846,8 +841,9 @@ def main() -> None:
     ctx, scheme = None, "http"
     if Hub.data:
         names = dns + (lan_dns if a.lan_address else [])
+        zones = list(dict.fromkeys([dns[0], a.lan_domain, "localhost"]))   # the LAN zone even before a LAN listener
         crt, crt_key, done = hub_tls.ensure(Hub.data / "tls", list(dict.fromkeys(names)),
-                                        list(dict.fromkeys(ips + (lan_ips if a.lan_address else []))))
+                                            list(dict.fromkeys(ips + (lan_ips if a.lan_address else []))), zones)
         for line in done:
             print(line, flush=True)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

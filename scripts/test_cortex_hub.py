@@ -180,6 +180,35 @@ class ScopeTest(unittest.TestCase):
                                "o", lock, data, lan=False)
 
 
+class TlsTest(unittest.TestCase):
+    """A new machine name or address renews the server certificate under the same CA; nothing public can be signed."""
+
+    def test_the_ca_outlives_a_new_address(self):
+        import shutil
+        import subprocess
+        import hub_tls
+        if not shutil.which("openssl"):
+            self.skipTest("no openssl")
+        with tempfile.TemporaryDirectory() as d:
+            tls, zones = Path(d), ["cortex.local", "cortex.home", "localhost"]
+            hub_tls.ensure(tls, ["cortex.local", "*.cortex.local", "alastor.cortex.home"], ["127.0.0.1", "10.0.0.100"], zones)
+            ca = (tls / "ca.crt").read_bytes()
+            done = hub_tls.ensure(tls, ["cortex.local", "*.cortex.local", "zeus.cortex.home"], ["127.0.0.1", "192.168.1.9"], zones)[2]
+            self.assertEqual((tls / "ca.crt").read_bytes(), ca, "same CA")
+            self.assertEqual(len(done), 1, "only the server certificate")
+            ok = subprocess.run(["openssl", "verify", "-CAfile", str(tls / "ca.crt"), str(tls / "hub.crt")], capture_output=True)
+            self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+            # a certificate for a public name, signed with the CA's own key, does not verify
+            subprocess.run(["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                            "-keyout", f"{d}/x.key", "-out", f"{d}/x.csr", "-subj", "/CN=bank.example"], check=True, capture_output=True)
+            Path(d, "x.ext").write_text("subjectAltName=DNS:bank.example\n")
+            subprocess.run(["openssl", "x509", "-req", "-in", f"{d}/x.csr", "-CA", str(tls / "ca.crt"), "-CAkey", str(tls / "ca.key"),
+                            "-set_serial", "1", "-days", "1", "-extfile", f"{d}/x.ext", "-out", f"{d}/x.crt"], check=True, capture_output=True)
+            bad = subprocess.run(["openssl", "verify", "-CAfile", str(tls / "ca.crt"), f"{d}/x.crt"], capture_output=True, text=True)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn("permitted subtree violation", bad.stdout + bad.stderr)
+
+
 class DnsTest(unittest.TestCase):
     def test_answers_its_domain_only(self):
         import hub_dns

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Makes this Linux machine use its Cortex hub with no port and no certificate warning (NetworkManager +
+# Makes this machine (Linux or macOS) use its Cortex hub with no port and no certificate warning (NetworkManager +
 # systemd-resolved). Run once, and again after the CA changes (a new domain, address or machine name):
 #   sudo installers/setup_host.sh            # reads the repository's .env
 #   sudo installers/setup_host.sh --remove
@@ -10,7 +10,7 @@
 set -eu
 [ "$(id -u)" -eq 0 ] || { echo "run it with sudo"; exit 1; }
 USR=${SUDO_USER:-root}
-UHOME=$(getent passwd "$USR" | cut -d: -f6)
+UHOME=$(getent passwd "$USR" 2>/dev/null | cut -d: -f6 || true); [ -n "$UHOME" ] || UHOME=$(eval echo "~$USR")
 ENV="$(dirname "$0")/../.env"
 val() { [ -f "$ENV" ] && sed -n "s/^$1=//p" "$ENV" | tail -1; }
 DOMAIN=$(val CORTEX_DOMAIN); DOMAIN=${DOMAIN:-cortex.local}
@@ -19,6 +19,22 @@ VAULTS=$(val CORTEX_VAULTS); VAULTS=${VAULTS:-$UHOME/Vaults}
 LANHOST=$(val CORTEX_LAN_HOST); LANDOMAIN=$(val CORTEX_LAN_DOMAIN); LANDOMAIN=${LANDOMAIN:-cortex.home}
 CA="$VAULTS/.cortex-hub/tls/ca.crt"
 NSS="sql:$UHOME/.pki/nssdb"
+
+
+if [ "$(uname)" = Darwin ]; then   # macOS: one resolver file per domain, and the System keychain
+  mkdir -p /etc/resolver
+  for d in "$DOMAIN" ${LANHOST:+"$LANHOST.$LANDOMAIN"}; do
+    if [ "${1:-}" = "--remove" ]; then rm -f "/etc/resolver/$d"; else printf 'nameserver %s\n' "$DNS" > "/etc/resolver/$d"; fi
+  done
+  if [ "${1:-}" = "--remove" ]; then
+    security delete-certificate -c "Cortex hub local CA" /Library/Keychains/System.keychain 2>/dev/null || true
+    echo "removed"; exit 0
+  fi
+  [ -f "$CA" ] || { echo "no $CA yet: start the hub and run this again"; exit 1; }
+  security delete-certificate -c "Cortex hub local CA" /Library/Keychains/System.keychain 2>/dev/null || true
+  security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA"
+  echo "DNS and CA set. Restart the browser, then open https://$DOMAIN"; exit 0
+fi
 
 if [ "${1:-}" = "--remove" ]; then
   nmcli connection delete cortex-dns >/dev/null 2>&1 && echo "DNS route removed" || true

@@ -43,7 +43,7 @@ $B credit --used "Deploys happen on Tuesdays"
 xdg-open _brain/Panel.html                  # macOS: open · Windows: start
 ```
 
-Several agents? `docker compose up -d --build` serves every vault under `~/Vaults` on one HTTPS page, localhost or local network only, with its own constrained CA: a card per agent, a live wall of their panels, and a form that creates a cortex for a new agent and gives you the prompt that wires it (see the runbook, section 8).
+Several agents? `./install.sh` (one command, one password) serves every vault under `~/Vaults` on one HTTPS page, localhost or local network only, with its own constrained CA: a card per agent, a live wall of their panels, and a form that creates a cortex for a new agent and gives you the prompt that wires it (see the runbook, section 8).
 
 Try the demo instead: `python3 scripts/new_vault.py /tmp/demo/kitchen-cortex --from examples/kitchen-cortex` and then `python3 scripts/new_vault.py /tmp/demo/fern-cortex --from examples/fern-cortex`. That gives a 16-node gardening vault with a sibling vault, typed links, truth tags and one provisional learning. Then `cd /tmp/demo/fern-cortex && python3 _brain/scripts/brain.py recall "when should the beds be watered"`.
 
