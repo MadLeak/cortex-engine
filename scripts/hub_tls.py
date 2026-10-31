@@ -35,6 +35,8 @@ def names(domain: str, address: str) -> tuple[list[str], list[str]]:
     if not HOSTNAME.fullmatch(domain):
         raise ValueError(f"{domain!r} is not a host name")
     dns, ips = [domain], [str(ipaddress.ip_address(address))]
+    if "." in domain:   # every agent's panel at <agent>.<domain>; the name constraint on the domain covers them
+        dns.append(f"*.{domain}")
     if scope(address) == "localhost":
         dns += [d for d in ("localhost",) if d not in dns]
         ips += [i for i in ("127.0.0.1", "::1") if i not in ips]
@@ -59,6 +61,7 @@ def ensure(tls: Path, dns: list[str], ips: list[str]) -> tuple[Path, Path, list[
     os.chmod(tls, 0o700)
     ca_key, ca_crt, key, crt = tls / "ca.key", tls / "ca.crt", tls / "hub.key", tls / "hub.crt"
     want = {"dns": dns, "ips": ips}
+    roots = [d for d in dns if not d.startswith("*.")]   # what the CA's name constraint names
     try:
         have = json.loads((tls / "names.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -66,8 +69,11 @@ def ensure(tls: Path, dns: list[str], ips: list[str]) -> tuple[Path, Path, list[
     done = []
     old = os.umask(0o077)
     try:
-        if have != want or not (ca_key.is_file() and ca_crt.is_file()):
-            constraints = ",".join([f"permitted;DNS:{d}" for d in dns] + [f"permitted;IP:{_host_mask(i)}" for i in ips])
+        same_ca = have is not None and [d for d in have.get("dns", []) if not d.startswith("*.")] == roots \
+            and have.get("ips") == ips
+        if not same_ca or not (ca_key.is_file() and ca_crt.is_file()):
+            constraints = ",".join([f"permitted;DNS:{d}" for d in roots] +
+                                   [f"permitted;IP:{_host_mask(i)}" for i in ips])
             _openssl("req", "-x509", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
                      "-keyout", str(ca_key), "-out", str(ca_crt), "-days", str(CA_DAYS), "-sha256",
                      "-subj", f"/O=Cortex hub/CN=Cortex hub local CA ({dns[0]})",
@@ -77,7 +83,7 @@ def ensure(tls: Path, dns: list[str], ips: list[str]) -> tuple[Path, Path, list[
             os.chmod(ca_crt, 0o644)
             crt.unlink(missing_ok=True)
             done.append(f"new local CA for {', '.join(dns + ips)}: trust its ca.crt once in each browser or system")
-        fresh = crt.is_file() and key.is_file() and subprocess.run(
+        fresh = have == want and crt.is_file() and key.is_file() and subprocess.run(
             ["openssl", "x509", "-checkend", str(RENEW_DAYS * 86400), "-noout", "-in", str(crt)], capture_output=True).returncode == 0
         if not fresh:
             csr, ext = tls / "hub.csr", tls / "hub.ext"

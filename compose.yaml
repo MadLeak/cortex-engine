@@ -20,8 +20,11 @@ services:
       - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
     # published only on the chosen address: 127.0.0.1 = this machine, a private LAN address = the local network
     ports:
-      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_PORT:-8443}:8443"
+      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_PORT:-443}:8443"
+      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_HTTP_PORT:-80}:8080"   # plain HTTP, only to send browsers to HTTPS
     command:
       - --address=${CORTEX_ADDRESS:-127.0.0.1}
       - --domain=${CORTEX_DOMAIN:-localhost}
       - --host-root=${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}
+      - --public-port=${CORTEX_PORT:-443}
+      - --redirect-port=8080

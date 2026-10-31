@@ -117,6 +117,11 @@ def summary(name: str, v: Path) -> dict:
     }
 
 
+def subdomain(name: str) -> str:
+    """The label of a vault's own host: Claude Cortex -> claude (claude.cortex.localhost)."""
+    return re.sub(r"[^a-z0-9]+", "-", re.sub(r"\s+cortex$", "", name.strip(), flags=re.I).lower()).strip("-") or "cortex"
+
+
 def host_path(base: str, *parts: str) -> str:
     """A path on the agents' machine, in its own style: C:\\Users\\me\\Vaults or /home/me/Vaults."""
     if re.match(r"[A-Za-z]:|\\\\", base) or ("\\" in base and "/" not in base):
@@ -218,6 +223,8 @@ class Hub(BaseHTTPRequestHandler):
     root: Path = Path.home() / "Vaults"
     host_root: str | None = None   # the root as the agents' machine writes it (the container sees /vaults)
     allowed: set[str] = {"localhost", "127.0.0.1", "::1"}   # Host header names the hub answers to
+    domain: str | None = None       # with a dot in it, each vault also answers at <agent>.<domain>
+    public_port = 443               # the port browsers use, for the links between hosts
     key: str | None = None          # LAN scope: the access key browsers sign in with
     tls: Path | None = None         # directory with ca.crt, when the hub speaks HTTPS
     scope = "localhost"
@@ -262,9 +269,21 @@ class Hub(BaseHTTPRequestHandler):
         tok = c.get("cortex_hub")
         return tok is not None and self.sessions.get(tok.value, 0) > time.time()
 
+    def vault_host(self) -> Path | None:
+        """The vault whose own host this request names (claude.cortex.localhost), if any."""
+        h, d = self.hostname(), self.domain
+        if not d or "." not in d or not h.endswith("." + d):
+            return None
+        label = h[:-len(d) - 1]
+        return next((v for n, v in vaults(self.root).items() if subdomain(n) == label), None)
+
+    def url(self, host: str) -> str:
+        return f"https://{host}" + ("" if self.public_port == 443 else f":{self.public_port}") if self.tls else \
+            f"http://{host}:{self.public_port}"
+
     def gate(self, path: str) -> bool:
         """Refuses foreign Host names and, in the LAN scope, anyone not signed in. True when it answered."""
-        if self.hostname() not in self.allowed:
+        if self.hostname() not in self.allowed and self.vault_host() is None:
             self.send(HTTPStatus.MISDIRECTED_REQUEST, b"this hub does not answer to that host name", TEXT)
             return True
         if self.key and path not in ("/login", "/ca.crt") and not self.signed_in():
@@ -300,8 +319,9 @@ class Hub(BaseHTTPRequestHandler):
             if self.key and hmac.compare_digest(key.encode(), self.key.encode()):
                 tok = secrets.token_urlsafe(32)
                 self.sessions[tok] = time.time() + SESSION_DAYS * 86400
-                return self.redirect("/", {"Set-Cookie": f"cortex_hub={tok}; Path=/; HttpOnly; Secure; SameSite=Strict; "
-                                                         f"Max-Age={SESSION_DAYS * 86400}"})
+                shared = f"Domain={self.domain}; " if self.domain and "." in self.domain else ""   # the agents' hosts too
+                return self.redirect("/", {"Set-Cookie": f"cortex_hub={tok}; {shared}Path=/; HttpOnly; Secure; "
+                                                         f"SameSite=Strict; Max-Age={SESSION_DAYS * 86400}"})
             time.sleep(1)   # slows guessing
             return self.send(HTTPStatus.UNAUTHORIZED, LOGIN.replace("<!--err-->", "<p class=err>Wrong key.</p>").encode(),
                              "text/html; charset=utf-8")
@@ -324,6 +344,18 @@ class Hub(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if self.gate(path):
             return
+        own = self.vault_host()
+        if own is not None:   # an agent's own host: its panel at the root
+            rel = "Panel.html" if path in ("/", "/Panel.html") else path.lstrip("/")
+            if rel in SERVED:
+                f = own / "_brain" / rel
+                if f.is_file():
+                    return self.send(200, f.read_bytes(), SERVED[rel])
+                if rel == "state/activity.js":
+                    return self.send(200, b"", SERVED[rel])
+            if path == "/login" and self.key:
+                return self.redirect(self.url(self.domain) + "/login")
+            return self.send(404, b"not found", TEXT)
         if path == "/login":
             return self.send(200, LOGIN.encode(), "text/html; charset=utf-8") if self.key else self.redirect("/")
         if path == "/ca.crt" and self.tls:
@@ -333,6 +365,9 @@ class Hub(BaseHTTPRequestHandler):
             return self.send(200, PAGE.replace("__CSRF__", self.csrf).encode("utf-8"), "text/html; charset=utf-8")
         if path == "/api/vaults":
             data = [summary(n, v) for n, v in vaults(self.root).items()]
+            if self.domain and "." in self.domain:
+                for d in data:
+                    d["url"] = self.url(f"{subdomain(d['name'])}.{self.domain}") + "/"
             hub = {"scope": self.scope, "tls": self.tls is not None, "login": self.key is not None,
                    "connect": wire_agent is not None and (ENGINE / "scripts/new_vault.py").is_file()}
             return self.send(200, json.dumps({"vaults": data, "hub": hub, "t": datetime.now().isoformat(timespec="seconds")}).encode(),
@@ -414,7 +449,8 @@ button[aria-pressed="true"] { background: var(--ink); color: var(--surface); bor
 .feed li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 0; border-top: 1px solid var(--border); }
 .feed li:first-child { border-top: 0; color: var(--ink); }
 .feed .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
-.actions { display: flex; gap: 6px; margin-top: auto; }
+.actions { display: flex; gap: 6px; margin-top: auto; align-items: center; }
+.host { margin-left: auto; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { color: var(--muted); font-size: 13px; }
 /* the wall: every agent's panel at once, orbit only */
 .wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 12px; }
@@ -514,7 +550,8 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     const m = Math.round((Date.now() - Date.parse(t)) / 60000);
     return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
   };
-  const panelUrl = (v, extra = '') => `/v/${v.slug}/Panel.html${extra}`;
+  const panelUrl = (v, extra = '') => `/v/${v.slug}/Panel.html${extra}`;   // same origin: the wall embeds these
+  const openUrl = (v, extra = '') => v.url ? v.url + extra : panelUrl(v, extra);   // the agent's own host
   let vaults = [], mode = store.get('mode', 'grid');
   const seq = {}, cards = {};
 
@@ -524,13 +561,14 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     el('span', { class: 'pulse', 'aria-hidden': 'true' }, null, h);
     el('span', { class: 'n' }, v.name.replace(/ Cortex$/, ''), h);
     el('span', { class: 'v' }, null, h);
-    const a = el('a', { href: panelUrl(v), target: '_blank', rel: 'noopener', 'aria-label': `Open the ${v.name} panel` }, null, c);
+    const a = el('a', { href: openUrl(v), target: '_blank', rel: 'noopener', 'aria-label': `Open the ${v.name} panel` }, null, c);
     el('img', { class: 'thumb', alt: `Orbit of ${v.name}`, loading: 'lazy', src: `/v/${v.slug}/generated/orbit.svg` }, null, a);
     el('div', { class: 'stats' }, null, c);
     el('ul', { class: 'feed', 'aria-label': 'Latest activity' }, null, c);
     const act = el('div', { class: 'actions' }, null, c);
-    el('a', { class: 'btn', href: panelUrl(v), target: '_blank', rel: 'noopener' }, 'Open panel', act);
-    el('a', { class: 'btn', href: panelUrl(v, '#3d'), target: '_blank', rel: 'noopener' }, '3D', act);
+    el('a', { class: 'btn', href: openUrl(v), target: '_blank', rel: 'noopener' }, 'Open panel', act);
+    el('a', { class: 'btn', href: openUrl(v, '#3d'), target: '_blank', rel: 'noopener' }, '3D', act);
+    if (v.url) el('span', { class: 'host' }, new URL(v.url).host, act);
     return c;
   }
   function fill(c, v) {
@@ -567,7 +605,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
       const f = el('section', { class: 'frame' }, null, w);
       const bar = el('div', { class: 'bar' }, null, f);
       el('span', {}, v.name.replace(/ Cortex$/, ''), bar);
-      el('a', { class: 'btn', href: panelUrl(v), target: '_blank', rel: 'noopener' }, 'Open', bar);
+      el('a', { class: 'btn', href: openUrl(v), target: '_blank', rel: 'noopener' }, 'Open', bar);
       el('iframe', { title: `${v.name} panel`, loading: 'lazy', src: panelUrl(v, `?embed&theme=${wallTheme}`) }, null, f);
     }
   }
@@ -645,6 +683,19 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
 </html>
 """
 
+class ToHttps(Hub):
+    """Plain HTTP: sends browsers that typed the bare name to the same host over HTTPS, nothing else."""
+
+    def do_GET(self):
+        if self.hostname() not in self.allowed and self.vault_host() is None:
+            return self.send(HTTPStatus.MISDIRECTED_REQUEST, b"this hub does not answer to that host name", TEXT)
+        host = self.hostname()
+        self.send(HTTPStatus.MOVED_PERMANENTLY, b"", TEXT, {"Location": self.url(f"[{host}]" if ":" in host else host) + self.path})
+
+    def do_POST(self):
+        self.send(HTTPStatus.FORBIDDEN, b"use HTTPS", TEXT)
+
+
 LOGIN = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -685,6 +736,8 @@ def main() -> None:
     ap.add_argument("--domain", default="localhost", help="host name browsers use; the certificate covers it")
     ap.add_argument("--data", help="folder for the local CA and the access key; turns HTTPS on")
     ap.add_argument("--host-root", help="the vault root as the agents' machine writes it, for the prompts")
+    ap.add_argument("--public-port", type=int, help="port browsers use, when it differs from --port (443: none in the links)")
+    ap.add_argument("--redirect-port", type=int, help="also listen here in plain HTTP and send browsers to HTTPS")
     a = ap.parse_args()
     import hub_tls
     address = a.address or a.host
@@ -697,7 +750,8 @@ def main() -> None:
         sys.exit("the LAN scope needs --data: HTTPS and an access key")
     Hub.root, Hub.scope = Path(a.root).expanduser(), scope
     Hub.host_root = a.host_root or str(Hub.root)
-    Hub.allowed = set(dns) | set(ips)
+    Hub.allowed = {d for d in dns if not d.startswith("*.")} | set(ips)
+    Hub.domain, Hub.public_port = dns[0], a.public_port or a.port
     httpd = Server((a.host, a.port), Hub)
     scheme = "http"
     if a.data:
@@ -720,6 +774,10 @@ def main() -> None:
             Hub.key = kf.read_text(encoding="utf-8").strip()
     print(f"cortex hub, {scope} scope, {scheme} for {', '.join(dns + ips)} · listening on {a.host}:{a.port} · "
           f"{len(vaults(Hub.root))} vaults under {Hub.root}", flush=True)
+    if a.redirect_port and a.data:
+        plain = ThreadingHTTPServer((a.host, a.redirect_port), ToHttps)
+        threading.Thread(target=plain.serve_forever, daemon=True).start()
+        print(f"plain HTTP on {a.host}:{a.redirect_port} redirects to HTTPS", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
