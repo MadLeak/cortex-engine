@@ -345,7 +345,9 @@ out = []
 for n in v.net.values():
     if n.layer not in (1, 2, 3) or n.status == "obsolete": continue
     text = re.sub(r"\s+", " ", own(n.body) if own else re.sub(r"(?ms)^## Connections.*", "", n.body)).strip()[:1100]
-    h = hashlib.sha1(f"{n.title}\n{n.summary}\n{text}".encode()).hexdigest()[:12]
+    # the staleness hash must not depend on the engine version: a port to an engine with own_text would redo every note
+    plain = re.sub(r"\s+", " ", re.sub(r"(?ms)^## Connections.*", "", n.body)).strip()
+    h = hashlib.sha1(f"{n.title}\n{n.summary}\n{plain}".encode()).hexdigest()[:12]
     out.append({"id": n.key, "title": n.title, "summary": n.summary, "text": text, "hash": h, "w": w.get(n.key, 0.0)})
 print(json.dumps(out, ensure_ascii=False))
 '''
