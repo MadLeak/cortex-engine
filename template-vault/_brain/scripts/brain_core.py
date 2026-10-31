@@ -723,13 +723,15 @@ class Telemetry:
         self._events = None
 
     def record(self, event: str, keys, session: str | None = None, group: str | None = None,
-               query: str | None = None) -> None:
+               query: str | None = None, extra: dict | None = None) -> None:
         t = now().isoformat()
         lines = []
         for k in keys:
             e = {"t": t, "s": session, "e": event, "k": k}
             if group:
                 e["g"] = group
+            if extra:
+                e.update(extra)
             lines.append(json.dumps(e, ensure_ascii=False))
         if not lines and query is None:
             return
@@ -848,6 +850,13 @@ class Telemetry:
             if w and age >= 0:
                 acc[e["k"]] = acc.get(e["k"], 0.0) + w * max(age, 1.0) ** -HOT_DECAY
         return {k: math.log(x) for k, x in acc.items()}
+
+    def planted(self) -> dict[str, dict]:
+        """Nodes an agent planted and that still hold the status they were born with: key → the planting event.
+        The panel draws them in the signal's colour until their status changes (seed, consolidated, obsolete)."""
+        born = {e["k"]: e for e in self.events() if e.get("e") == "planted"}
+        net = self.v.by_key()
+        return {k: e for k, e in born.items() if k in net and net[k].status == e.get("st")}
 
     def count(self, event: str) -> dict[str, int]:
         c: dict[str, int] = {}
@@ -1945,6 +1954,7 @@ def cmd_learn(v: Vault, a) -> int:
         save_node(v.root, n, touch=False)
         parent.body = add_to_section(parent.body, CHILD_SECTION[2], f"- [[{a.title}]] — {a.summary.strip()}")
         save_node(v.root, parent, touch=False)
+    Telemetry(v).record("planted", [n.key], extra={"st": "provisional"})
     need = int(v.cfg.get("confirm_sessions", CONFIRM_SESSIONS))
     print(f"learned {rel.as_posix()} (L3 {typ}, provisional): it becomes a seed once it helps in {need} sessions"
           + (f"; it contradicts \"{target.title}\", so the curator decides" if target else ""))
@@ -1976,6 +1986,7 @@ def cmd_new(v: Vault, a) -> int:
         if parent:
             parent.body = add_to_section(parent.body, CHILD_SECTION[parent.layer], f"- [[{a.title}]] — {a.summary.strip()}")
             save_node(v.root, parent)
+    Telemetry(v).record("planted", [n.key], extra={"st": "seed"})
     print(f"created {rel.as_posix()} (L{layer} {typ}, seed)")
     return 0
 
@@ -2862,6 +2873,7 @@ def render_panel_html(v: Vault, weights: dict, history: list[dict], findings: li
             return 0
 
     cold = {k: len(x) for k, x in v.cold.items()}
+    planted = Telemetry(v).planted()
     strongest = sorted(((val, a, b) for (a, b), val in co.items() if a in keys and b in keys), reverse=True)[:5]
     data = {
         "vault": v.name, "version": VERSION, "generated": now().isoformat(" ", "seconds"),
@@ -2869,7 +2881,8 @@ def render_panel_html(v: Vault, weights: dict, history: list[dict], findings: li
         "nodes": [{"id": n.fm.get("id"), "title": n.title, "layer": n.layer, "type": n.type, "status": n.status,
                    "weight": round(weights.get(n.key, 0.0), 3), "summary": n.summary, "up": n.up,
                    "path": n.path.with_suffix("").as_posix(), "updated": str(n.fm.get("updated") or ""),
-                   "aliases": n.aliases, "external": n.external} for n in net],
+                   "aliases": n.aliases, "external": n.external,
+                   **({"planted": planted[n.key]["t"][:19]} if n.key in planted else {})} for n in net],
         "synapses": [{"source": n.title, "target": s.target, "type": s.type, "reason": s.reason}
                      for n in net for s in n.synapses],
         "history": [{k: (x if k == "date" else number(x)) for k, x in f.items()} for f in history[-180:]],

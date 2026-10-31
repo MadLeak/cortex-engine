@@ -465,6 +465,24 @@ class VisualizationTests(Base):
         self.ok("build")
         self.assertEqual(first, (self.v / "_brain" / "generated" / "orbit.svg").read_text(encoding="utf-8"), "deterministic positions")
 
+    def test_planted_nodes_glow_until_their_status_changes(self):
+        self.seed()
+        self.ok("learn", "--up", "Order cutoff is at 2pm EST", "--title", "Friday cutoff moves to noon",
+                "--summary", "On Fridays the cutoff is at noon EST.", "--content", "The Friday wave leaves early.",
+                "--evidence", "Seen in the dispatch log.", "--by", "tester")
+
+        def planted():
+            self.ok("build")
+            html = (self.v / "_brain" / "Panel.html").read_text(encoding="utf-8")
+            start = html.index('type="application/json">') + len('type="application/json">')
+            return {n["title"] for n in json.loads(html[start:html.index("</script>", start)])["nodes"] if n.get("planted")}
+
+        self.assertIn("Orders", planted(), "a node created with new is planted as a seed")
+        self.assertIn("Friday cutoff moves to noon", planted(), "a learning is planted as provisional")
+        self.ok("status", "Orders", "consolidated")
+        self.assertNotIn("Orders", planted(), "its status changed, so it is no longer drawn as planted")
+        self.assertIn("Friday cutoff moves to noon", planted())
+
     def test_activity_feed_for_live_signals(self):
         self.seed()
         sid = run(self.v, "session", "new")[1].splitlines()[0]
