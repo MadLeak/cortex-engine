@@ -75,7 +75,7 @@ The suite has 31 tests, including a 1,000-node performance check, and runs in ab
 
 ## Status
 
-Engine version 2.8.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.9.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 
