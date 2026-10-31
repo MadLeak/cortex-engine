@@ -127,6 +127,18 @@ class HubTest(unittest.TestCase):
         self.assertEqual(self.post("/api/connect", json.dumps({"agent": "Kale", "kind": "codex"}).encode())[0], 400,
                          "an existing folder is never overwritten")
 
+    def test_every_view_serves_the_same_shell(self):
+        for path in ("/", "/agents", "/wall", "/review", "/connect", "/panel/Fern%20Cortex", "/panel/fern-cortex"):
+            with urllib.request.urlopen(self.base + path) as r:
+                body = r.read().decode()
+                self.assertEqual(r.status, 200, path)
+                self.assertTrue(r.headers["Content-Type"].startswith("text/html"), path)
+            self.assertIn('id="review"', body, path)
+            self.assertIn("data-link", body, path)
+            self.assertNotIn("__CSRF__", body)
+        self.assertEqual(self.get("/nope")[0], 404)
+        self.assertEqual(self.get("/panel")[0], 404)
+
     def test_review_lists_verdicts_and_applies_only_the_owners_decisions(self):
         status, out = self.post("/api/connect", json.dumps({"agent": "Kale", "kind": "codex", "role": "curator"}).encode())
         self.assertEqual(status, 200, out)

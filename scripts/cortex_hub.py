@@ -10,12 +10,13 @@ Every directory under the root with _brain/scripts/brain.py is a vault (CORTEX_V
 life cycle). The views serve only what the panels need: each vault's Panel.html, its live feed
 _brain/state/activity.js and the orbit.svg thumbnail. No note, config or usage log leaves the vault.
 
-Routes: / the overview (one card per agent, or the wall: every panel embedded at once) · /api/vaults the figures the
-overview polls · /v/<vault>/Panel.html, /v/<vault>/state/activity.js, /v/<vault>/generated/orbit.svg ·
+Routes: the hub is a single-page app: /, /agents (one card per agent), /wall (every panel embedded at once), /review
+(the local model's verdicts on the seeds, this machine only), /connect (the connect dialog over Agents) and /panel/<slug>
+(one cortex's panel) all answer the same page, and its navigation bar switches the view in place with the History API ·
+/api/vaults the figures the page polls · /v/<vault>/Panel.html, /v/<vault>/state/activity.js, /v/<vault>/generated/orbit.svg ·
 POST /api/connect creates a vault (scripts/new_vault.py) or picks one, and returns the prompt that has the agent wire
-itself · /review and /api/review the local model's verdicts on the seeds (scripts/review_prep.py), POST /api/review/apply
-the owner's decisions (scripts/review_apply.py), both on this machine only · /ca.crt the local CA to trust · /login in
-the LAN scope. Every page shares one navigation bar: Agents, Wall, Review, the panels, Connect.
+itself · /api/review the verdicts (scripts/review_prep.py), POST /api/review/apply the owner's decisions
+(scripts/review_apply.py), both on this machine only · /ca.crt the local CA to trust · /login in the LAN scope.
 
 Scope, chosen by the address browsers reach it at (--address, default --host): a loopback address is the localhost
 scope; a private one is the LAN scope, which needs --data and signs browsers in with the access key in
@@ -54,6 +55,7 @@ SERVED = {"Panel.html": "text/html; charset=utf-8", "state/activity.js": "text/j
           "generated/orbit.svg": "image/svg+xml"}
 LIVE_MINUTES = 10   # a vault with activity this recent shows as live
 TEXT = "text/plain; charset=utf-8"
+VIEWS = ("/", "/agents", "/wall", "/review", "/connect")
 VAULT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,47}")
 AGENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}")
 KINDS = ("claude-code", "codex", "gemini", "opencode", "hermes", "custom")
@@ -452,14 +454,11 @@ class Hub(BaseHTTPRequestHandler):
         if path == "/ca.crt" and self.tls:
             return self.send(200, (self.tls / "ca.crt").read_bytes(), "application/x-x509-ca-cert",
                              {"Content-Disposition": 'attachment; filename="cortex-hub-ca.crt"'})
-        if path == "/":
+        if path in VIEWS or path.startswith("/panel/"):   # one shell; the client picks the view
             return self.send(200, PAGE.replace("__CSRF__", self.csrf).replace("__CREDIT__", CREDIT).encode("utf-8"),
                              "text/html; charset=utf-8")
-        if path in ("/review", "/api/review") and self.scope != "localhost":
+        if path == "/api/review" and self.scope != "localhost":
             return self.send(HTTPStatus.FORBIDDEN, b"review from the hub on this machine", TEXT)
-        if path == "/review":
-            return self.send(200, REVIEW.replace("__CSRF__", self.csrf).replace("__CREDIT__", CREDIT).encode("utf-8"),
-                             "text/html; charset=utf-8")
         if path == "/api/review":
             name = (parse_qs(urlsplit(self.path).query).get("vault") or [""])[0]
             if not name:
@@ -501,53 +500,21 @@ class Hub(BaseHTTPRequestHandler):
 
 
 # the bar every hub page shares: each route one click away, the cortexes' panels in a menu
+# the hub's bar: each view one click away, the cortexes' panels in a menu; the page's script fills it
 NAV = r"""<nav class="topnav" aria-label="Hub">
-  <a class="home" href="/">Cortex hub <span class="brand">By MadLeak</span></a>
+  <a class="home" href="/" data-link>Cortex hub <span class="brand">By MadLeak</span></a>
   <div class="links">
-    <a href="/#agents" id="m-grid" data-nav="agents">Agents</a>
-    <a href="/#wall" id="m-wall" data-nav="wall">Wall</a>
-    <a href="/review" data-nav="review" id="nav-review" hidden>Review <span class="count" id="nav-review-n"></span></a>
-    <details class="menu" id="nav-menu"><summary>Panels</summary><div class="drop" id="nav-vaults"></div></details>
+    <a href="/agents" id="m-grid" data-nav="agents" data-link>Agents</a>
+    <a href="/wall" id="m-wall" data-nav="wall" data-link>Wall</a>
+    <a href="/review" data-nav="review" id="nav-review" data-link hidden>Review <span class="count" id="nav-review-n"></span></a>
+    <details class="menu" id="nav-menu" data-nav="panel"><summary>Panels</summary><div class="drop" id="nav-vaults"></div></details>
     <a href="/ca.crt" id="nav-ca" hidden title="The hub's local CA, to trust it on another device">CA</a>
   </div>
   <div class="tools">
-    <a class="btn primary" href="/#connect" id="nav-connect" hidden>Connect an agent</a>
+    <a class="btn primary" href="/connect" id="nav-connect" data-link hidden>Connect an agent</a>
     <button type="button" id="theme">Theme</button>
   </div>
-</nav>
-<script>
-(() => {
-  const here = location.pathname === '/review' ? 'review' : (location.hash === '#wall' ? 'wall' : 'agents');
-  const mark = cur => document.querySelectorAll('.topnav [data-nav]').forEach(a => a.toggleAttribute('aria-current', a.dataset.nav === cur));
-  mark(here); addEventListener('hashchange', () => location.pathname === '/' && mark(location.hash === '#wall' ? 'wall' : 'agents'));
-  const menu = document.getElementById('nav-menu');
-  document.addEventListener('click', e => { if (!menu.contains(e.target)) menu.open = false; });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') menu.open = false; });
-  async function fill() {
-    try {
-      const j = await (await fetch('/api/vaults', { cache: 'no-store' })).json(), box = document.getElementById('nav-vaults');
-      box.replaceChildren();
-      for (const v of j.vaults) {
-        const a = document.createElement('a');
-        a.href = v.url || `/v/${v.slug}/`; a.target = '_blank'; a.rel = 'noopener';
-        a.textContent = v.name.replace(/ Cortex$/, ''); a.title = `${v.name} · ${v.nodes} nodes`;
-        if (v.live) a.className = 'live';
-        box.appendChild(a);
-      }
-      const local = j.hub.scope === 'localhost';
-      document.getElementById('nav-review').hidden = !local;
-      document.getElementById('nav-connect').hidden = !j.hub.connect;
-      document.getElementById('nav-ca').hidden = !j.hub.tls;
-      if (local) {
-        const r = await (await fetch('/api/review', { cache: 'no-store' })).json();
-        const n = r.vaults.reduce((s, v) => s + v.open, 0);
-        document.getElementById('nav-review-n').textContent = n ? String(n) : '';
-      }
-    } catch (e) { /* the page itself reports a hub that does not answer */ }
-  }
-  fill(); setInterval(() => document.hidden || fill(), 30000);
-})();
-</script>"""
+</nav>"""
 
 
 PAGE = r"""<!doctype html>
@@ -660,6 +627,36 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
 .menu .drop a { padding: 6px 10px; border-radius: 6px; font-size: 13px; color: var(--ink); }
 .menu .drop a:hover { background: var(--wash); }
 .menu .drop a.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--good); margin-right: 6px; }
+.menu .drop .pv { display: flex; align-items: center; }
+.menu .drop .pv a:first-child { flex: 1; }
+.menu .drop .pv .ext { padding: 6px 8px; font-size: 11px; color: var(--muted); }
+#panel iframe { height: max(480px, calc(100vh - 120px)); }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.intro { color: var(--ink2); font-size: 13px; max-width: 80ch; margin: 0 0 6px; }
+.prog { font-size: 12px; color: var(--ink2); display: flex; gap: 8px; align-items: center; }
+.prog meter { width: 160px; }
+.dom { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin: 12px 0; overflow: hidden; }
+.dom > header { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--border); gap: 8px; }
+.dom h2 { font-size: 14px; margin: 0; }
+.item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.item:first-of-type { border-top: 0; }
+.item .t { font-weight: 600; }
+.item .meta { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.item .sum { color: var(--ink2); font-size: 12px; }
+.item .why { font-size: 12px; }
+.chip { display: inline-block; font-size: 11px; border-radius: 999px; padding: 1px 7px; border: 1px solid var(--border); margin-right: 4px; }
+.a-consolidate { color: var(--good); border-color: currentColor; }
+.a-fix, .a-merge { color: #b07a00; border-color: currentColor; }
+.a-obsolete { color: #d03b3b; border-color: currentColor; }
+.fail { color: var(--muted); }
+.pick { display: flex; gap: 4px; align-items: start; flex-wrap: wrap; justify-content: flex-end; }
+.pick button[aria-pressed="true"].d-consolidated { background: var(--good); border-color: var(--good); color: #fff; }
+.pick button[aria-pressed="true"].d-obsolete { background: #d03b3b; border-color: #d03b3b; color: #fff; }
+.done { color: var(--muted); font-size: 12px; }
+.rbar { position: sticky; bottom: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 10px 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.rbar .n { margin-right: auto; font-size: 13px; }
+@media (max-width: 640px) { .item { grid-template-columns: 1fr; } .pick { justify-content: flex-start; } }
 @media (max-width: 640px) { .topnav .tools { margin-left: 0; } .topnav { position: static; } }
 </style>
 </head>
@@ -670,6 +667,22 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
   <main>
     <section class="grid" id="grid" aria-label="One card per agent"></section>
     <section class="wall" id="wall" aria-label="Every agent's panel" hidden></section>
+    <section id="review" aria-label="Review" hidden>
+      <div class="prog" id="prog"></div>
+      <p class="intro">Strata, the local model, judged each seed with its parent and siblings in view. Its verdict is only a
+      suggestion: nothing in the cortex changes until you press <b>Apply</b>. Consolidated and obsolete change the node's
+      status in one commit; fix and skip are only recorded, and the node is judged again once its text changes.</p>
+      <nav class="tabs" id="vaults" aria-label="Cortexes"></nav>
+      <nav class="tabs" id="filters" aria-label="Strata's verdict"></nav>
+      <div id="list"><p class="empty">Loading…</p></div>
+      <div class="rbar" id="bar" hidden>
+        <span class="n" id="count"></span>
+        <button type="button" id="clear">Clear</button>
+        <button type="button" class="primary" id="apply">Apply</button>
+      </div>
+      <p class="err" id="msg" role="status"></p>
+    </section>
+    <section id="panel" aria-label="One agent's panel" hidden></section>
   </main>
   <p class="foot" id="foot"></p>
   <p class="foot credit">__CREDIT__</p>
@@ -727,7 +740,10 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
   const root = document.documentElement;
   const theme = () => root.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   if (store.get('theme', null)) root.dataset.theme = store.get('theme');
-  $('#theme').addEventListener('click', () => { root.dataset.theme = theme() === 'dark' ? 'light' : 'dark'; store.set('theme', root.dataset.theme); if (mode === 'wall') renderWall(true); });
+  $('#theme').addEventListener('click', () => {
+    root.dataset.theme = theme() === 'dark' ? 'light' : 'dark'; store.set('theme', root.dataset.theme);
+    if (view === 'wall') renderWall(true); else if (view === 'panel') renderPanel(true);
+  });
   const hhmm = t => String(t || '').slice(11, 16);
   const ago = t => {
     if (!t) return 'no activity yet';
@@ -736,7 +752,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
   };
   const panelUrl = (v, extra = '') => `/v/${v.slug}/Panel.html${extra}`;   // same origin: the wall embeds these
   const openUrl = (v, extra = '') => v.url ? v.url + extra : panelUrl(v, extra);   // the agent's own host
-  let hubInfo = {}, vaults = [], mode = store.get('mode', 'grid');
+  let hubInfo = {}, vaults = [], loaded = false, view = 'agents', slug = '';
   const seq = {}, cards = {};
 
   function card(v) {
@@ -799,33 +815,96 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
       el('iframe', { title: `${v.name} panel`, loading: 'lazy', src: panelUrl(v, `?embed&theme=${wallTheme}`) }, null, f);
     }
   }
-  function setMode(m) {
-    mode = m; store.set('mode', m);
-    $('#grid').hidden = m !== 'grid'; $('#wall').hidden = m !== 'wall';
-    $('#m-grid').toggleAttribute('aria-current', m === 'grid'); $('#m-wall').toggleAttribute('aria-current', m === 'wall');
-    if (m === 'wall') renderWall(); else $('#wall').replaceChildren();   // a hidden wall would keep seven panels animating
-    wallTheme = m === 'wall' ? wallTheme : null;
+  const short = v => v.name.replace(/ Cortex$/, '');
+  const dec = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
+  const findVault = s => vaults.find(v => dec(v.slug) === dec(s));
+  let panelSlug = null, reviewApi = null;
+  function renderPanel(force) {
+    if (!loaded) return;
+    const p = $('#panel'), v = findVault(slug);
+    if (!v) { panelSlug = null; p.replaceChildren(); el('p', { class: 'empty' }, 'No such cortex', p); return; }
+    const src = panelUrl(v, `?embed&theme=${theme()}`), cur = p.querySelector('iframe');
+    if (cur && panelSlug === slug) { if (force) cur.src = src; return; }
+    panelSlug = slug; p.replaceChildren();
+    const f = el('section', { class: 'frame' }, null, p);
+    const bar = el('div', { class: 'bar' }, null, f);
+    el('span', {}, short(v), bar);
+    el('a', { class: 'btn', href: openUrl(v), target: '_blank', rel: 'noopener' }, 'Open in a new tab', bar);
+    el('iframe', { title: `${v.name} panel`, src }, null, f);
   }
-  // the bar's links set the hash: #agents, #wall, #connect
-  function route() {
-    if (location.hash === '#connect') { if (hubInfo.connect) openConnect(); else pendingConnect = true; return; }
-    setMode(location.hash === '#wall' ? 'wall' : location.hash === '#agents' ? 'grid' : mode);
+  function leavePanel() {
+    const f = $('#panel iframe');
+    if (f) f.src = 'about:blank';   // a hidden panel would keep animating
+    panelSlug = null;
   }
-  let pendingConnect = false;
-  addEventListener('hashchange', route);
+  function go(path, push = true) {
+    if (path === '/review' && loaded && hubInfo.scope !== 'localhost') path = '/agents';
+    if (path !== location.pathname) history[push ? 'pushState' : 'replaceState'](null, '', path);
+    const m = path.match(/^\/panel\/([^/]*)\/?$/);
+    const next = m ? 'panel' : path === '/wall' ? 'wall' : path === '/review' ? 'review' : 'agents';
+    if (view === 'panel' && next !== 'panel') leavePanel();
+    view = next; slug = m ? m[1] : '';
+    $('#grid').hidden = next !== 'agents'; $('#wall').hidden = next !== 'wall';
+    $('#review').hidden = next !== 'review'; $('#panel').hidden = next !== 'panel';
+    $('#sub').hidden = next === 'review' || next === 'panel';
+    document.querySelectorAll('.topnav [data-nav]').forEach(a => a.toggleAttribute('aria-current', a.dataset.nav === next));
+    const found = findVault(slug);
+    document.title = 'Cortex hub · ' + (next === 'panel' ? (found ? short(found) : dec(slug).replace(/ Cortex$/, '')) :
+      { agents: 'Agents', wall: 'Wall', review: 'Review' }[next]);
+    if (next === 'wall') renderWall(); else { $('#wall').replaceChildren(); wallTheme = null; }   // a hidden wall would keep seven panels animating
+    if (next === 'panel') renderPanel();
+    if (next === 'review' && loaded) { if (reviewApi) reviewApi.refresh(); else reviewApi = initReview(); }
+    if (path === '/connect' && loaded) { if (!hubInfo.connect) history.replaceState(null, '', '/agents'); else if (!dlg.open) openConnect(); }
+    else if (dlg.open) dlg.close();
+  }
+  const menu = $('#nav-menu');
+  document.addEventListener('click', e => {
+    if (!menu.contains(e.target) || e.target.closest('a')) menu.open = false;
+    const a = e.target.closest('a[data-link]');
+    if (!a || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault(); go(a.getAttribute('href'));
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') menu.open = false; });
+  addEventListener('popstate', () => go(location.pathname, false));
+  let navKey = '';
+  function fillNav() {
+    const key = JSON.stringify(vaults.map(v => [v.slug, v.name, v.url, v.live, v.nodes]));
+    if (key !== navKey) {
+      navKey = key;
+      const box = $('#nav-vaults'); box.replaceChildren();
+      for (const v of vaults) {
+        const pv = el('div', { class: 'pv' }, null, box);
+        el('a', { class: v.live ? 'live' : '', href: `/panel/${v.slug}`, 'data-link': '', title: `${v.name} · ${v.nodes} nodes` }, short(v), pv);
+        el('a', { class: 'ext', href: v.url || `/v/${v.slug}/`, target: '_blank', rel: 'noopener', title: `Open ${v.name} on its own host`, 'aria-label': `Open ${v.name} in a new tab` }, '↗', pv);
+      }
+    }
+    $('#nav-review').hidden = hubInfo.scope !== 'localhost';
+    $('#nav-connect').hidden = !hubInfo.connect;
+    $('#nav-ca').hidden = !hubInfo.tls;
+  }
+  async function reviewCount() {
+    if (hubInfo.scope !== 'localhost') return;
+    try {
+      const r = await (await fetch('/api/review', { cache: 'no-store' })).json();
+      const n = r.vaults.reduce((s, v) => s + v.open, 0);
+      $('#nav-review-n').textContent = n ? String(n) : '';
+    } catch (e) { /* the page itself reports a hub that does not answer */ }
+  }
   async function poll() {
     if (document.hidden) return;
     try {
       const r = await fetch('/api/vaults', { cache: 'no-store' });
       if (r.status === 401) { location.href = '/login'; return; }
       const j = await r.json(); vaults = j.vaults; hubInfo = j.hub;
-      if (pendingConnect && j.hub.connect) { pendingConnect = false; openConnect(); }
+      const first = !loaded; loaded = true;
       $('#foot').replaceChildren(`${j.hub.scope === 'lan' ? 'Local network: the cortexes marked LAN' : 'This machine: every cortex'} · ${j.hub.tls ? 'HTTPS by the hub\'s own CA · ' : 'plain HTTP'}`);
       if (j.hub.tls) el('a', { href: '/ca.crt' }, 'download ca.crt to trust it', $('#foot'));
       const live = vaults.filter(v => v.live).length;
       $('#sub').textContent = `${vaults.length} agents · ${live} active in the last 10 minutes · ${vaults.reduce((s, v) => s + v.nodes, 0)} nodes`;
-      renderGrid();
-      if (mode === 'wall') renderWall();
+      renderGrid(); fillNav();
+      if (first) { go(location.pathname, false); reviewCount(); }
+      else if (view === 'wall') renderWall();
+      else if (view === 'panel') renderPanel();
     } catch (e) { $('#sub').textContent = 'The hub is not answering'; }
   }
   const csrf = document.querySelector('meta[name="cortex-csrf"]').content;
@@ -870,10 +949,119 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     try { await navigator.clipboard.writeText($('#c-text').value); $('#c-copy').textContent = 'Copied'; }
     catch (e) { $('#c-text').select(); $('#c-copy').textContent = 'Press Ctrl+C'; }
   });
-  dlg.addEventListener('close', () => { if (location.hash === '#connect') history.replaceState(null, '', mode === 'wall' ? '#wall' : '#agents'); });
+  dlg.addEventListener('close', () => { if (location.pathname === '/connect') history.replaceState(null, '', '/agents'); });
   $('#c-cancel').addEventListener('click', () => dlg.close());
   $('#c-done').addEventListener('click', () => { dlg.close(); cform.reset(); delete cform.dataset.touched; });
-  setMode(mode); route();
+
+  function initReview() {
+    const SUGGEST = { consolidate: 'consolidated', obsolete: 'obsolete', fix: 'fix', merge: 'fix' };
+    const CHOICES = [['consolidated', 'Consolidate'], ['obsolete', 'Obsolete'], ['fix', 'Fix later'], ['skip', 'Skip']];
+    const FILTERS = [['open', 'To review'], ['consolidate', 'Strata: consolidate'], ['fix', 'Strata: fix'], ['merge', 'Strata: merge'],
+                     ['obsolete', 'Strata: obsolete'], ['decided', 'Decided']];
+    let vault = store.get('review-vault', ''), filter = 'open', items = [];
+    const picks = new Map();   // node id -> decision, until applied
+
+    function tabs(parent, list, current, onPick) {
+      parent.replaceChildren();
+      for (const [k, label] of list) {
+        const b = el('button', { type: 'button', 'aria-pressed': String(k === current) }, label, parent);
+        b.addEventListener('click', () => onPick(k));
+      }
+    }
+    function count() {
+      const n = {}; for (const d of picks.values()) n[d] = (n[d] || 0) + 1;
+      $('#bar').hidden = !picks.size;
+      $('#count').textContent = `${picks.size} decisions: ` + CHOICES.filter(([k]) => n[k]).map(([k, l]) => `${n[k]} ${l.toLowerCase()}`).join(', ');
+    }
+    function shown() {
+      if (filter === 'decided') return items.filter(i => i.decided);
+      const open = items.filter(i => !i.decided);
+      return filter === 'open' ? open : open.filter(i => i.action === filter);
+    }
+    function row(i, parent) {
+      const r = el('div', { class: 'item' }, null, parent);
+      const info = el('div', {}, null, r);
+      el('div', { class: 't' }, i.title, info);
+      el('div', { class: 'meta' }, `L${i.layer} · ${i.truth || 'no truth'} · ${i.reads} reads · ${i.used} credited`, info);
+      if (i.summary) el('div', { class: 'sum' }, i.summary, info);
+      const why = el('div', { class: 'why' }, null, info);
+      el('span', { class: `chip a-${i.action}` }, `Strata: ${i.action}${i.target ? ' into ' + i.target : ''}`, why);
+      why.append(i.reason || '');
+      const failed = Object.entries(i.checks || {}).filter(([, ok]) => !ok).map(([k]) => k.replace(/_/g, ' '));
+      if (failed.length) el('div', { class: 'meta fail' }, 'fails: ' + failed.join(', '), info);
+      const pick = el('div', { class: 'pick' }, null, r);
+      if (i.decided) { el('span', { class: 'done' }, `${i.decided} · ${String(i.decided_t || '').replace('T', ' ')}`, pick); return; }
+      for (const [k, label] of CHOICES) {
+        const b = el('button', { type: 'button', class: `d-${k}`, 'aria-pressed': String(picks.get(i.id) === k) }, label, pick);
+        b.addEventListener('click', () => {
+          picks.get(i.id) === k ? picks.delete(i.id) : picks.set(i.id, k);
+          for (const x of pick.children) x.setAttribute('aria-pressed', String(picks.get(i.id) === x.className.slice(2)));
+          count();
+        });
+      }
+    }
+    function render() {
+      tabs($('#filters'), FILTERS.map(([k, l]) => [k, `${l} (${k === 'decided' ? items.filter(i => i.decided).length :
+        items.filter(i => !i.decided && (k === 'open' || i.action === k)).length})`]), filter, k => { filter = k; render(); });
+      const list = $('#list'); list.replaceChildren();
+      const rows = shown();
+      if (!rows.length) { el('p', { class: 'empty' }, vault ? 'Nothing here.' : 'Strata has not judged any cortex yet: run scripts/review_prep.py.', list); return; }
+      const groups = {};
+      for (const i of rows) (groups[i.domain || '(top)'] ||= []).push(i);
+      for (const [dom, its] of Object.entries(groups).sort((a, b) => b[1].length - a[1].length)) {
+        const sec = el('section', { class: 'dom' }, null, list);
+        const h = el('header', {}, null, sec);
+        el('h2', {}, `${dom} · ${its.length}`, h);
+        if (filter !== 'decided') {
+          const all = el('button', { type: 'button', title: "Consolidate, obsolete or fix each one as Strata says; you can still change any" },
+                         "Take Strata's verdicts", h);
+          all.addEventListener('click', () => { for (const i of its) picks.set(i.id, SUGGEST[i.action] || 'fix'); render(); count(); });
+        }
+        const body = el('div', {}, null, sec);
+        for (const i of its) row(i, body);
+      }
+    }
+    async function load() {
+      const j = await (await fetch('/api/review', { cache: 'no-store' })).json();
+      const p = j.progress || {};
+      const prog = $('#prog'); prog.replaceChildren();
+      if (p.task && p.total) {
+        prog.append(`Strata (subcontracted): ${p.task} ${p.done}/${p.total}`);
+        el('meter', { min: 0, max: p.total, value: p.done }, null, prog);
+      } else prog.append('Strata is idle');
+      if (!j.vaults.find(v => v.name === vault)) vault = (j.vaults[0] || {}).name || '';
+      tabs($('#vaults'), j.vaults.map(v => [v.name, `${v.name} · ${v.open} open`]), vault, k => { vault = k; store.set('review-vault', k); picks.clear(); count(); load(); });
+      if (!vault) { items = []; return render(); }
+      items = (await (await fetch('/api/review?vault=' + encodeURIComponent(vault), { cache: 'no-store' })).json()).items || [];
+      const order = { consolidate: 0, merge: 1, fix: 2, obsolete: 3 };
+      items.sort((a, b) => (order[a.action] - order[b.action]) || (b.used * 3 + b.reads) - (a.used * 3 + a.reads));
+      render();
+    }
+    $('#clear').addEventListener('click', () => { picks.clear(); count(); render(); });
+    $('#apply').addEventListener('click', async () => {
+      const decisions = Object.fromEntries(picks);
+      const n = Object.values(decisions).filter(d => d === 'consolidated' || d === 'obsolete').length;
+      if (n && !confirm(`Change the status of ${n} nodes in ${vault} and commit it?`)) return;
+      $('#apply').disabled = true; $('#msg').textContent = 'Applying…';
+      try {
+        const r = await fetch('/api/review/apply', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Cortex-Csrf': csrf },
+                                                       body: JSON.stringify({ vault, decisions }) });
+        const out = await r.json().catch(() => ({ error: `The hub answered ${r.status}` }));
+        if (!r.ok) throw new Error(out.error || r.status);
+        $('#msg').textContent = `${out.decided} decisions recorded, ${out.changed} nodes changed` + (out.commit ? ` in commit ${out.commit}` : '') + '.';
+        picks.clear(); count(); await load();
+      } catch (e) { $('#msg').textContent = String(e.message || e); }
+      finally { $('#apply').disabled = false; }
+    });
+    load();
+    return { refresh() { if (!document.hidden && !picks.size) load(); } };
+  }
+  setInterval(() => { if (view === 'review' && reviewApi) reviewApi.refresh(); }, 30000);
+  setInterval(() => document.hidden || reviewCount(), 30000);
+  if (location.hash === '#wall') history.replaceState(null, '', '/wall');
+  else if (location.hash === '#agents') history.replaceState(null, '', '/agents');
+  else if (location.hash === '#connect') history.replaceState(null, '', '/connect');
+  go(location.pathname, false);
   poll(); setInterval(poll, 5000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 })();
@@ -883,188 +1071,6 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
 """
 
 PAGE = PAGE.replace("__NAV__", NAV)
-STYLE = PAGE[PAGE.index("<style>"):PAGE.index("</style>") + len("</style>")]
-REVIEW = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cortex review</title>
-<meta name="cortex-csrf" content="__CSRF__">
-__STYLE__
-<style>
-.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
-.intro { color: var(--ink2); font-size: 13px; max-width: 80ch; margin: 0 0 6px; }
-.prog { font-size: 12px; color: var(--ink2); display: flex; gap: 8px; align-items: center; }
-.prog meter { width: 160px; }
-.dom { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin: 12px 0; overflow: hidden; }
-.dom > header { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--border); gap: 8px; }
-.dom h2 { font-size: 14px; margin: 0; }
-.item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; padding: 10px 12px; border-top: 1px solid var(--border); }
-.item:first-of-type { border-top: 0; }
-.item .t { font-weight: 600; }
-.item .meta { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.item .sum { color: var(--ink2); font-size: 12px; }
-.item .why { font-size: 12px; }
-.chip { display: inline-block; font-size: 11px; border-radius: 999px; padding: 1px 7px; border: 1px solid var(--border); margin-right: 4px; }
-.a-consolidate { color: var(--good); border-color: currentColor; }
-.a-fix, .a-merge { color: #b07a00; border-color: currentColor; }
-.a-obsolete { color: #d03b3b; border-color: currentColor; }
-.fail { color: var(--muted); }
-.pick { display: flex; gap: 4px; align-items: start; flex-wrap: wrap; justify-content: flex-end; }
-.pick button[aria-pressed="true"].d-consolidated { background: var(--good); border-color: var(--good); color: #fff; }
-.pick button[aria-pressed="true"].d-obsolete { background: #d03b3b; border-color: #d03b3b; color: #fff; }
-.done { color: var(--muted); font-size: 12px; }
-.bar { position: sticky; bottom: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-  box-shadow: var(--shadow); padding: 10px 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
-.bar .n { margin-right: auto; font-size: 13px; }
-@media (max-width: 640px) { .item { grid-template-columns: 1fr; } .pick { justify-content: flex-start; } }
-</style>
-</head>
-<body>
-<div class="wrap">
-  __NAV__
-  <div class="prog" id="prog"></div>
-  <p class="intro">Strata, the local model, judged each seed with its parent and siblings in view. Its verdict is only a
-  suggestion: nothing in the cortex changes until you press <b>Apply</b>. Consolidated and obsolete change the node's
-  status in one commit; fix and skip are only recorded, and the node is judged again once its text changes.</p>
-  <nav class="tabs" id="vaults" aria-label="Cortexes"></nav>
-  <nav class="tabs" id="filters" aria-label="Strata's verdict"></nav>
-  <main id="list"><p class="empty">Loading…</p></main>
-  <div class="bar" id="bar" hidden>
-    <span class="n" id="count"></span>
-    <button type="button" id="clear">Clear</button>
-    <button type="button" class="primary" id="apply">Apply</button>
-  </div>
-  <p class="err" id="msg" role="status"></p>
-  <p class="foot credit">__CREDIT__</p>
-</div>
-<script>
-(() => {
-  const $ = s => document.querySelector(s);
-  const el = (tag, attrs = {}, text, parent) => {
-    const e = document.createElement(tag);
-    for (const k in attrs) k === 'class' ? (e.className = attrs[k]) : e.setAttribute(k, attrs[k]);
-    if (text != null) e.textContent = text;
-    if (parent) parent.appendChild(e);
-    return e;
-  };
-  const store = {
-    get(k, d) { try { const v = localStorage.getItem('cortex-hub:' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-    set(k, v) { try { localStorage.setItem('cortex-hub:' + k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
-  };
-  const root = document.documentElement;
-  if (store.get('theme', null)) root.dataset.theme = store.get('theme');
-  $('#theme').addEventListener('click', () => {
-    const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
-    root.dataset.theme = dark ? 'light' : 'dark'; store.set('theme', root.dataset.theme);
-  });
-  const csrf = document.querySelector('meta[name="cortex-csrf"]').content;
-  const SUGGEST = { consolidate: 'consolidated', obsolete: 'obsolete', fix: 'fix', merge: 'fix' };
-  const CHOICES = [['consolidated', 'Consolidate'], ['obsolete', 'Obsolete'], ['fix', 'Fix later'], ['skip', 'Skip']];
-  const FILTERS = [['open', 'To review'], ['consolidate', 'Strata: consolidate'], ['fix', 'Strata: fix'], ['merge', 'Strata: merge'],
-                   ['obsolete', 'Strata: obsolete'], ['decided', 'Decided']];
-  let vault = store.get('review-vault', ''), filter = 'open', items = [];
-  const picks = new Map();   // node id -> decision, until applied
-
-  function tabs(parent, list, current, onPick) {
-    parent.replaceChildren();
-    for (const [k, label] of list) {
-      const b = el('button', { type: 'button', 'aria-pressed': String(k === current) }, label, parent);
-      b.addEventListener('click', () => onPick(k));
-    }
-  }
-  function count() {
-    const n = {}; for (const d of picks.values()) n[d] = (n[d] || 0) + 1;
-    $('#bar').hidden = !picks.size;
-    $('#count').textContent = `${picks.size} decisions: ` + CHOICES.filter(([k]) => n[k]).map(([k, l]) => `${n[k]} ${l.toLowerCase()}`).join(', ');
-  }
-  function shown() {
-    if (filter === 'decided') return items.filter(i => i.decided);
-    const open = items.filter(i => !i.decided);
-    return filter === 'open' ? open : open.filter(i => i.action === filter);
-  }
-  function row(i, parent) {
-    const r = el('div', { class: 'item' }, null, parent);
-    const info = el('div', {}, null, r);
-    el('div', { class: 't' }, i.title, info);
-    el('div', { class: 'meta' }, `L${i.layer} · ${i.truth || 'no truth'} · ${i.reads} reads · ${i.used} credited`, info);
-    if (i.summary) el('div', { class: 'sum' }, i.summary, info);
-    const why = el('div', { class: 'why' }, null, info);
-    el('span', { class: `chip a-${i.action}` }, `Strata: ${i.action}${i.target ? ' into ' + i.target : ''}`, why);
-    why.append(i.reason || '');
-    const failed = Object.entries(i.checks || {}).filter(([, ok]) => !ok).map(([k]) => k.replace(/_/g, ' '));
-    if (failed.length) el('div', { class: 'meta fail' }, 'fails: ' + failed.join(', '), info);
-    const pick = el('div', { class: 'pick' }, null, r);
-    if (i.decided) { el('span', { class: 'done' }, `${i.decided} · ${String(i.decided_t || '').replace('T', ' ')}`, pick); return; }
-    for (const [k, label] of CHOICES) {
-      const b = el('button', { type: 'button', class: `d-${k}`, 'aria-pressed': String(picks.get(i.id) === k) }, label, pick);
-      b.addEventListener('click', () => {
-        picks.get(i.id) === k ? picks.delete(i.id) : picks.set(i.id, k);
-        for (const x of pick.children) x.setAttribute('aria-pressed', String(picks.get(i.id) === x.className.slice(2)));
-        count();
-      });
-    }
-  }
-  function render() {
-    tabs($('#filters'), FILTERS.map(([k, l]) => [k, `${l} (${k === 'decided' ? items.filter(i => i.decided).length :
-      items.filter(i => !i.decided && (k === 'open' || i.action === k)).length})`]), filter, k => { filter = k; render(); });
-    const list = $('#list'); list.replaceChildren();
-    const rows = shown();
-    if (!rows.length) { el('p', { class: 'empty' }, vault ? 'Nothing here.' : 'Strata has not judged any cortex yet: run scripts/review_prep.py.', list); return; }
-    const groups = {};
-    for (const i of rows) (groups[i.domain || '(top)'] ||= []).push(i);
-    for (const [dom, its] of Object.entries(groups).sort((a, b) => b[1].length - a[1].length)) {
-      const sec = el('section', { class: 'dom' }, null, list);
-      const h = el('header', {}, null, sec);
-      el('h2', {}, `${dom} · ${its.length}`, h);
-      if (filter !== 'decided') {
-        const all = el('button', { type: 'button', title: "Consolidate, obsolete or fix each one as Strata says; you can still change any" },
-                       "Take Strata's verdicts", h);
-        all.addEventListener('click', () => { for (const i of its) picks.set(i.id, SUGGEST[i.action] || 'fix'); render(); count(); });
-      }
-      const body = el('div', {}, null, sec);
-      for (const i of its) row(i, body);
-    }
-  }
-  async function load() {
-    const j = await (await fetch('/api/review', { cache: 'no-store' })).json();
-    const p = j.progress || {};
-    const prog = $('#prog'); prog.replaceChildren();
-    if (p.task && p.total) {
-      prog.append(`Strata (subcontracted): ${p.task} ${p.done}/${p.total}`);
-      el('meter', { min: 0, max: p.total, value: p.done }, null, prog);
-    } else prog.append('Strata is idle');
-    if (!j.vaults.find(v => v.name === vault)) vault = (j.vaults[0] || {}).name || '';
-    tabs($('#vaults'), j.vaults.map(v => [v.name, `${v.name} · ${v.open} open`]), vault, k => { vault = k; store.set('review-vault', k); picks.clear(); count(); load(); });
-    if (!vault) { items = []; return render(); }
-    items = (await (await fetch('/api/review?vault=' + encodeURIComponent(vault), { cache: 'no-store' })).json()).items || [];
-    const order = { consolidate: 0, merge: 1, fix: 2, obsolete: 3 };
-    items.sort((a, b) => (order[a.action] - order[b.action]) || (b.used * 3 + b.reads) - (a.used * 3 + a.reads));
-    render();
-  }
-  $('#clear').addEventListener('click', () => { picks.clear(); count(); render(); });
-  $('#apply').addEventListener('click', async () => {
-    const decisions = Object.fromEntries(picks);
-    const n = Object.values(decisions).filter(d => d === 'consolidated' || d === 'obsolete').length;
-    if (n && !confirm(`Change the status of ${n} nodes in ${vault} and commit it?`)) return;
-    $('#apply').disabled = true; $('#msg').textContent = 'Applying…';
-    try {
-      const r = await fetch('/api/review/apply', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Cortex-Csrf': csrf },
-                                                     body: JSON.stringify({ vault, decisions }) });
-      const out = await r.json().catch(() => ({ error: `The hub answered ${r.status}` }));
-      if (!r.ok) throw new Error(out.error || r.status);
-      $('#msg').textContent = `${out.decided} decisions recorded, ${out.changed} nodes changed` + (out.commit ? ` in commit ${out.commit}` : '') + '.';
-      picks.clear(); count(); await load();
-    } catch (e) { $('#msg').textContent = String(e.message || e); }
-    finally { $('#apply').disabled = false; }
-  });
-  load(); setInterval(() => { if (!document.hidden && !picks.size) load(); }, 30000);
-})();
-</script>
-</body>
-</html>
-""".replace("__STYLE__", STYLE).replace("__NAV__", NAV)
 
 
 class ToHttps(Hub):
