@@ -65,7 +65,7 @@ The limits serve the budget. A signature is a title and a summary of at most 140
 - **Unknown words.** A query term absent from the vault is replaced by its `synonyms_en.tsv` group at weight 0.5 (`bc:1245`). Failing that, it becomes the vault term with the highest trigram Jaccard similarity, if that is at least 0.5 (`bc:1242`, `bc:1394–1412`). Only unknown words are expanded. A comment records that expanding known words cost top-1 accuracy on the author's benchmark (`bc:1243–1244`).
 - **Family lift.** An L2 concept inherits 0.5 × its best L3 child's raw score (`bc:1239`, `bc:1449–1457`), so a concept whose facts were moved into details still surfaces.
 - **Detail first.** A detail that matches at least as well on its own as its concept is placed just above it, because the detail holds the fact (`bc:1462–1466`).
-- **Weight and status.** The final score is `s · (1 + 0.5·√w) · status_factor` (`bc:1459`), where `w ∈ [0,1]` is the usage weight of §5 and the status factor is provisional 0.6, seed 0.8, consolidated 1.0, obsolete 0 (`bc:37`). The square root and the 0.5 damp usage so that popularity breaks ties without overriding relevance. A provisional node's weight is forced to 0: use confirms it, but never ranks it (`bc:1458`).
+- **Weight and status.** The final score is `s · (1 + 0.5·√w) · status_factor · truth_factor` (truth factor since v2.8.0, see §11) (`bc:1459`), where `w ∈ [0,1]` is the usage weight of §5 and the status factor is provisional 0.6, seed 0.8, consolidated 1.0, obsolete 0 (`bc:37`). The square root and the 0.5 damp usage so that popularity breaks ties without overriding relevance. A provisional node's weight is forced to 0: use confirms it, but never ranks it (`bc:1458`).
 
 Spanish queries are translated before scoring (`bc:1352–1372`): longest-match lookup in the engine's `lexicon_es.tsv` and the vault's `glossary.json` (the vault wins), matched by a light Spanish stem. Spanish function words are dropped, and "6 de octubre" becomes `10-06`. Storage stays English, and lint warns on Spanish titles or summaries (`bc:1073–1076`).
 
@@ -201,7 +201,7 @@ These runs exercise the mechanisms. They are not a retrieval benchmark. The comm
 
 - **Lexical retrieval only.** BM25 with synonyms and typo repair finds what is *worded* similarly. Paraphrases with no shared word, synonym group or glossary entry miss, and recall then falls back to listing the L1 domains.
 - **The light stemmer is uneven.** Stripping `-y` as a suffix maps "deploy" to `depl` but "deploys" to `deploy`, and "tuesday" to `tuesd` but "tuesdays" to `tuesday` (`bc:142–153`). Singular and plural forms of such words do not match. Aliases or a synonyms line work around it. A fix would change ranking, so it belongs in a versioned engine release, not in this export.
-- **Truth does not affect rank.** On the demo, `recall "what is the soil pH"` put the superseded *The 2025 soil test read pH 5.8* first, above its current parent, because the detail-first rule promotes a detail that matches on its own. The parent appears as a context line and the `contradicts` link is visible on read, but the engine leaves it to the agent to notice the truth tag.
+- **Truth affects rank only when tagged or linked.** Since v2.8.0 a node tagged `truth: superseded`, or the target of a `supersedes` synapse that is not tagged `historical`, scores ×0.4 and is never lifted above its concept, so on the demo `recall "what is the soil pH"` answers with the current reading, not *The 2025 soil test read pH 5.8*. A historical record keeps its weight even when replaced, because questions about the past need it. A stale note nobody tagged or linked still competes as current.
 - **Roles are conventions.** Any process that can run the CLI can run curator commands or `status consolidated`. Git history makes misuse visible, not impossible.
 - **Secret detection is pattern-based.** Patterns catch common formats. A bare password with no keyword, or a credential in a format the engine does not know, passes. The rule "store where a secret lives, never its value" still depends on the writer.
 - **Weights need traffic.** With little use, weights are dominated by in-degree (0.5 per incoming synapse), and the Hot list stays empty until reads accumulate.
@@ -210,7 +210,7 @@ These runs exercise the mechanisms. They are not a retrieval benchmark. The comm
 
 ## 12. Future work
 
-A versioned stemmer fix, with the benchmark rerun. A ranking penalty or a visible marker for `truth: superseded`. An optional embedding re-ranker behind the same budgets. Role enforcement through per-agent keys on write commands. A merge driver for usage logs, so vaults can be shared across machines. Glossaries for other languages. A public benchmark built from the demo vault, so that thresholds such as `GATE_COVERAGE`, `FAMILY_LIFT` and `HEBB_THRESHOLD` can be tuned in the open.
+A versioned stemmer fix, with the benchmark rerun. A visible marker for `truth: superseded` in recall output. An optional embedding re-ranker behind the same budgets. Role enforcement through per-agent keys on write commands. A merge driver for usage logs, so vaults can be shared across machines. Glossaries for other languages. A public benchmark built from the demo vault, so that thresholds such as `GATE_COVERAGE`, `FAMILY_LIFT` and `HEBB_THRESHOLD` can be tuned in the open.
 
 ## Appendix: reproducing §10
 

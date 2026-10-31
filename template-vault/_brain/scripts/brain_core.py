@@ -23,7 +23,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -35,6 +35,10 @@ TYPES_BY_LAYER = {1: {"domain", "tools"}, 2: {"concept", "tool"}, 3: {"fact", "p
 DEFAULT_TYPE = {1: "domain", 2: "concept", 3: "fact"}
 # provisional: an agent's own learning (brain.py learn), ranked low until use confirms it (2026-10-29)
 STATUS_FACTOR = {"provisional": 0.6, "seed": 0.8, "consolidated": 1.0, "obsolete": 0.0}
+# a fact known to be wrong now answers less often than a current one; a node another one `supersedes` counts as
+# superseded whatever its own tag says. A historical node is still true about its date, and questions about the past
+# need it: weighing it down at 0.75 cost five top answers on the 2026-10-30 bench (120 questions, 4 vaults)
+TRUTH_FACTOR = {"current": 1.0, "historical": 1.0, "superseded": 0.4}
 CONFIRM_SESSIONS, CONFIRM_MIN_DAYS, MAX_PROVISIONAL = 3, 2, 25  # config: confirm_sessions, confirm_min_days, max_provisional
 SYNAPSES = {"depends_on": 1, "contradicts": 1, "supersedes": 1, "causes": 2, "example_of": 3, "related": 4}
 MAX_SYNAPSES = 7
@@ -1456,6 +1460,17 @@ def correct_typos(ix: dict, terms: set) -> set:
     return out
 
 
+def truth_factor(v: Vault, n: Node) -> float:
+    # a node another one supersedes counts as superseded, unless the curator tagged it historical: a dated record
+    # stays true about its date even when replaced, and overriding that tag cost three past-tense questions ("where
+    # was the Copilot CLI on Windows?") on the 2026-10-30 bench of 7 vaults. `current` is the default tag, so it
+    # does not shield a replaced node.
+    truth = str(n.fm.get("truth") or "current")
+    if truth != "historical" and any(t == "supersedes" for t, _ in v.incoming.get(n.k, [])):
+        return TRUTH_FACTOR["superseded"]
+    return TRUTH_FACTOR.get(truth, 1.0)
+
+
 def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
     """BM25 over title, aliases, summary, tags, the node's own body and its generated questions, times a damped
     weight. The weight enters as 1 + USAGE_WEIGHT·sqrt(w): on an earlier bench (2026-10-23) the full weight cost a
@@ -1504,13 +1519,14 @@ def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
         n = v.net[k]
         s = raw.get(k, 0.0) + FAMILY_LIFT * lift.get(k, 0.0)
         w = 0.0 if n.status == "provisional" else weights.get(n.key, 0.0)  # use confirms a provisional node, never ranks it
-        res[k] = s * (1 + USAGE_WEIGHT * math.sqrt(w)) * STATUS_FACTOR.get(n.status, 0.8)
+        res[k] = s * (1 + USAGE_WEIGHT * math.sqrt(w)) * STATUS_FACTOR.get(n.status, 0.8) * truth_factor(v, n)
     # a detail that matches on its own at least as well as its concept goes before it: the concept only led on the
     # detail's borrowed match, and the detail holds the fact (2026-10-29 bench: 11 of 18 misses in one vault were this)
     for k, s in raw.items():
         n = v.net[k]
         p = v.parent(n) if n.layer == 3 else None
-        if p is not None and p.k in res and s >= raw.get(p.k, 0.0) and res[k] < res[p.k]:
+        # never a superseded detail: it stays below the concept that holds today's fact
+        if p is not None and p.k in res and s >= raw.get(p.k, 0.0) and res[k] < res[p.k] and truth_factor(v, n) >= 1.0:
             res[k] = res[p.k] * 1.0001
     out = sorted(((s, v.net[k]) for k, s in res.items()), key=lambda x: (-x[0], x[1].layer, x[1].k))
     return out

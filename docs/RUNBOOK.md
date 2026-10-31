@@ -218,7 +218,7 @@ Upgrade all siblings together:
 
 ```bash
 python3 scripts/upgrade_engine.py ~/vaults/fern-cortex ~/vaults/kitchen-cortex [--dry-run]
-cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.7.0"
+cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.8.0"
 ```
 
 The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lexicon_es.tsv`, `synonyms_en.tsv` and `tests/` into each vault's `_brain/scripts/` and runs `doctor` in each vault. It does not touch content, config, glossary or templates. Cached state is keyed by engine version, file mtime and size, and Python version, so caches rebuild automatically.
