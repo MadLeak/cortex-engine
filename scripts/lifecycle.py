@@ -327,6 +327,7 @@ def night(state):
 
 # ---------------------------------------------------------------- phase 4: REM
 STRATA = os.environ.get("CORTEX_STRATA", "http://localhost:8080")
+STRATA_KEY = Path(os.environ.get("CORTEX_STRATA_KEY", Path.home() / ".config/strata/api.key"))
 REM_MINUTES = 120
 REM_BATCH = 3
 REM_PROMPT = """For each note below, write 5 English and 5 Spanish questions that a person or an agent would type to find it
@@ -367,7 +368,10 @@ def strata_questions(notes):
     text = REM_PROMPT + "\n\n" + "\n".join(f"### ID: {n['id']}\nTITLE: {n['title']}\nSUMMARY: {n['summary']}\nTEXT: {n['text']}\n" for n in notes)
     body = {"messages": [{"role": "user", "content": text}], "temperature": 0.7, "max_tokens": 700 * len(notes),
             "chat_template_kwargs": {"enable_thinking": False}}
-    req = urllib.request.Request(f"{STRATA}/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if STRATA_KEY.exists():   # Strata asks for a Bearer key on the API (not on /health); it is passed unread
+        headers["Authorization"] = f"Bearer {STRATA_KEY.read_text().strip()}"
+    req = urllib.request.Request(f"{STRATA}/v1/chat/completions", json.dumps(body).encode(), headers)
     with urllib.request.urlopen(req, timeout=900) as r:
         reply = json.load(r)["choices"][0]["message"]["content"]
     wanted, got = {n["id"] for n in notes}, {}
