@@ -179,6 +179,18 @@ One agent per vault is the curator. It works in a deep session (`B session new -
 
 **Only the human** runs `B status "<title>" consolidated`. It records `reviewed:` and a `validated` usage event (weight 5).
 
+**Reviewing many seeds at no agent cost.** A local OpenAI-compatible model (Strata on Alastor) prepares the review and the
+human decides on the hub's Review page:
+
+1. `python3 scripts/review_prep.py ~/Vaults/"<Vault>" --owner <name>` sends each seed alone, with its parent, siblings,
+   truth and usage, and asks for six checks (one idea, specific, fits its parent, English, dated if current, still useful)
+   and a verdict: consolidate, fix, obsolete or merge. A consolidate with a failed check becomes fix. Verdicts go to
+   `~/Vaults/.cortex-hub/review/<Vault>.jsonl` and progress to `progress.json`. Nothing in the vault changes. It resumes
+   where it stopped and judges a node again only when its text changes. `CORTEX_STRATA` sets the model's URL.
+2. `https://cortex.local/review` (this machine only) lists the verdicts by domain. Pick consolidate, obsolete, fix later or
+   skip per node, or take the model's verdicts for a domain, then **Apply**. `scripts/review_apply.py` changes the statuses
+   in one `consolidation:` commit through the hook. Fix and skip are only recorded.
+
 Writing tools for the curator: `new`, `link`/`unlink` (typed: `depends_on`, `contradicts`, `supersedes`, `causes`, `example_of`, `related`; at most 7, each with a reason), `move --up`, `rename` (updates every link, including references in sibling vaults), `promote`, `demote`, and `lint --fix` (fills ids, dates and empty fields). Never move or rename files by hand.
 
 ## 7. Sibling vaults and external references

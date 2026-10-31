@@ -1,5 +1,6 @@
 """Hub tests. Run: python3 -m unittest scripts/test_cortex_hub.py"""
 import json
+import subprocess
 import sys
 import tempfile
 import threading
@@ -125,6 +126,31 @@ class HubTest(unittest.TestCase):
         self.assertIn("Curate (you are this vault's curator)", out["prompt"])
         self.assertEqual(self.post("/api/connect", json.dumps({"agent": "Kale", "kind": "codex"}).encode())[0], 400,
                          "an existing folder is never overwritten")
+
+    def test_review_lists_verdicts_and_applies_only_the_owners_decisions(self):
+        status, out = self.post("/api/connect", json.dumps({"agent": "Kale", "kind": "codex", "role": "curator"}).encode())
+        self.assertEqual(status, 200, out)
+        v = cortex_hub.Hub.root / "Kale Cortex"
+        sys.path.insert(0, str(v / "_brain/scripts"))
+        import brain_core
+        brain = [sys.executable, str(v / "_brain/scripts/brain.py"), "new"]
+        subprocess.run(brain + ["--layer", "1", "--title", "Garden", "--summary", "What grows in the beds and when it is watered."], check=True, capture_output=True)
+        subprocess.run(brain + ["--layer", "2", "--up", "Garden", "--title", "Kale Waters Weekly",
+                                "--summary", "Kale beds get water every Sunday morning, more in a heat wave."], check=True, capture_output=True)
+        seed = brain_core.Vault(v).node("Kale Waters Weekly")
+        store = cortex_hub.review_dir(cortex_hub.Hub.root, None)
+        store.mkdir(parents=True)
+        (store / "Kale Cortex.jsonl").write_text(json.dumps({"id": seed.key, "title": seed.title, "action": "consolidate", "hash": "x"}) + "\n")
+        self.assertEqual(json.loads(self.get("/api/review")[1])["vaults"][0]["open"], 1)
+        self.assertEqual(self.get("/review")[0], 200)
+        body = json.dumps({"vault": "Kale Cortex", "decisions": {seed.key: "consolidated"}}).encode()
+        self.assertEqual(self.post("/api/review/apply", body, {"X-Cortex-Csrf": "guess"})[0], 403)
+        self.assertEqual(self.post("/api/review/apply", json.dumps({"vault": "Kale Cortex", "decisions": {seed.key: "delete"}}).encode())[0], 500)
+        status, out = self.post("/api/review/apply", body)
+        self.assertEqual(status, 200, out)
+        self.assertEqual(json.loads(out)["changed"], 1)
+        self.assertEqual(brain_core.Vault(v).by_key()[seed.key].status, "consolidated")
+        self.assertEqual(json.loads(self.get("/api/review")[1])["vaults"][0]["open"], 0, "a decided node leaves the queue")
 
 
 class ScopeTest(unittest.TestCase):
