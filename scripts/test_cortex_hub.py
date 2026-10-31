@@ -127,6 +127,23 @@ class HubTest(unittest.TestCase):
                          "an existing folder is never overwritten")
 
 
+class DnsTest(unittest.TestCase):
+    def test_answers_its_domain_only(self):
+        import hub_dns
+        import struct
+
+        def ask(name, qtype):
+            q = b"".join(bytes([len(x)]) + x.encode() for x in name.split(".")) + b"\0"
+            r = hub_dns.answer(struct.pack("!HHHHHH", 9, 0x0100, 1, 0, 0, 0) + q + struct.pack("!HH", qtype, 1),
+                               "cortex.local", "127.0.0.1")
+            return r[3] & 15, struct.unpack("!H", r[6:8])[0], r[-4:]
+        self.assertEqual(ask("claude.cortex.local", 1), (0, 1, bytes([127, 0, 0, 1])))
+        self.assertEqual(ask("Cortex.Local", 1)[:2], (0, 1))
+        self.assertEqual(ask("claude.cortex.local", 28)[:2], (0, 0), "no IPv6 record, but the name exists")
+        self.assertEqual(ask("evilcortex.local", 1)[:2], (5, 0), "refused")
+        self.assertEqual(ask("example.com", 1)[:2], (5, 0))
+
+
 class LanTest(unittest.TestCase):
     """The LAN scope: everything but the sign-in page needs the access key."""
 

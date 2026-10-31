@@ -738,6 +738,7 @@ def main() -> None:
     ap.add_argument("--host-root", help="the vault root as the agents' machine writes it, for the prompts")
     ap.add_argument("--public-port", type=int, help="port browsers use, when it differs from --port (443: none in the links)")
     ap.add_argument("--redirect-port", type=int, help="also listen here in plain HTTP and send browsers to HTTPS")
+    ap.add_argument("--dns-port", type=int, help="also answer DNS here (UDP) for the domain and its subdomains")
     a = ap.parse_args()
     import hub_tls
     address = a.address or a.host
@@ -774,6 +775,10 @@ def main() -> None:
             Hub.key = kf.read_text(encoding="utf-8").strip()
     print(f"cortex hub, {scope} scope, {scheme} for {', '.join(dns + ips)} · listening on {a.host}:{a.port} · "
           f"{len(vaults(Hub.root))} vaults under {Hub.root}", flush=True)
+    if a.dns_port:
+        import hub_dns
+        hub_dns.serve(a.host, a.dns_port, dns[0], address)
+        print(f"DNS on {a.host}:{a.dns_port}/udp: {dns[0]} and *.{dns[0]} are {address}", flush=True)
     if a.redirect_port and a.data:
         plain = ThreadingHTTPServer((a.host, a.redirect_port), ToHttps)
         threading.Thread(target=plain.serve_forever, daemon=True).start()
