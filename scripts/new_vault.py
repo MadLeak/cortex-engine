@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 """Creates a fresh Cortex vault from template-vault/: scaffold, engine, config, hook, empty _inbox/, git.
 
     python3 scripts/new_vault.py ~/vaults/my-cortex --name "My Cortex" --agent "the assistant" --owner "the owner"

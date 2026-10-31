@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 """The Cortex hub's own certificate authority, made with the openssl command on first start.
 
 The CA can sign only the hub's own domains and private addresses (an X.509 name constraint): cortex.local,

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 """A DNS answerer for the hub's own domain only: <domain> and *.<domain> are the hub's address, nothing else.
 
 The system routes just that domain here (systemd-resolved through a NetworkManager link, /etc/resolver on macOS, an

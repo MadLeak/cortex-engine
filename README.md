@@ -1,5 +1,7 @@
 # Cortex
 
+*By MadLeak · Adhonys Diaz*
+
 **A graph second brain for AI agents.** Cortex gives an agent a long-term memory that stays small, auditable and owned by a human: plain Markdown notes in a git repository, organised in layers, read through a budgeted funnel, and changed only through commits a pre-commit hook has validated.
 
 - **Plain files.** Every memory is a Markdown note with YAML frontmatter. The vault opens in [Obsidian](https://obsidian.md) or any editor, and git keeps its history.

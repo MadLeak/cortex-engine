@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 # Installs the Cortex hub on Windows (Docker Desktop) in one go. Run in an administrator PowerShell:
 #   powershell -ExecutionPolicy Bypass -File install.ps1          # -NoLan: this machine only
 # It writes .env when there is none, creates %USERPROFILE%\Vaults, starts the container, routes cortex.local (and

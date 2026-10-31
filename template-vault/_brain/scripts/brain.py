@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 """Cortex engine entry point: `python _brain/scripts/brain.py <command>`.
 The engine lives in brain_core.py. A script run directly is recompiled on every call, an imported module is not
 (Python caches its bytecode), so this file stays tiny and imports the engine."""

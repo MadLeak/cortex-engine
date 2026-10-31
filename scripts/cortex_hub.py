@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 """Cortex hub: one web page with every agent's brain panel, live.
 
     python3 scripts/cortex_hub.py [--root ~/Vaults] [--host 127.0.0.1] [--port 8790]
@@ -56,6 +57,8 @@ AGENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}")
 KINDS = ("claude-code", "codex", "gemini", "opencode", "hermes", "custom")
 PYTHONS = ("python3", "python", "py")
 SESSION_DAYS = 30
+CREDIT = ('Cortex &copy; 2026 Adhonys Diaz &middot; <span class="by">By MadLeak</span> &middot; '
+          '<a href="https://polyformproject.org/licenses/noncommercial/1.0.0" target="_blank" rel="noopener noreferrer">PolyForm Noncommercial 1.0.0</a>')
 
 
 def vaults(root: Path) -> dict[str, Path]:
@@ -358,7 +361,7 @@ class Hub(BaseHTTPRequestHandler):
                 return self.redirect("/", {"Set-Cookie": f"cortex_hub={tok}; {shared}Path=/; HttpOnly; Secure; "
                                                          f"SameSite=Strict; Max-Age={SESSION_DAYS * 86400}"})
             time.sleep(1)   # slows guessing
-            return self.send(HTTPStatus.UNAUTHORIZED, LOGIN.replace("<!--err-->", "<p class=err>Wrong key.</p>").encode(),
+            return self.send(HTTPStatus.UNAUTHORIZED, LOGIN.replace("<!--err-->", "<p class=err>Wrong key.</p>").replace("__CREDIT__", CREDIT).encode(),
                              "text/html; charset=utf-8")
         if path == "/api/connect":
             if self.scope != "localhost":   # vaults live on this machine: only its owner connects agents
@@ -396,12 +399,13 @@ class Hub(BaseHTTPRequestHandler):
                 return self.redirect(self.url(self.domain) + "/login")
             return self.send(404, b"not found", TEXT)
         if path == "/login":
-            return self.send(200, LOGIN.encode(), "text/html; charset=utf-8") if self.key else self.redirect("/")
+            return self.send(200, LOGIN.replace("__CREDIT__", CREDIT).encode(), "text/html; charset=utf-8") if self.key else self.redirect("/")
         if path == "/ca.crt" and self.tls:
             return self.send(200, (self.tls / "ca.crt").read_bytes(), "application/x-x509-ca-cert",
                              {"Content-Disposition": 'attachment; filename="cortex-hub-ca.crt"'})
         if path == "/":
-            return self.send(200, PAGE.replace("__CSRF__", self.csrf).encode("utf-8"), "text/html; charset=utf-8")
+            return self.send(200, PAGE.replace("__CSRF__", self.csrf).replace("__CREDIT__", CREDIT).encode("utf-8"),
+                             "text/html; charset=utf-8")
         if path == "/api/vaults":
             scopes = load_scopes(self.data)
             data = [summary(n, v) for n, v in self.visible().items()]
@@ -504,6 +508,10 @@ button[aria-pressed="true"] { background: var(--ink); color: var(--surface); bor
 .frame iframe { border: 0; width: 100%; height: min(70vh, 640px); display: block; background: var(--page); }
 .foot { margin-top: 18px; color: var(--muted); font-size: 12px; }
 .foot a { color: var(--ink2); }
+.credit { margin-top: 4px; }
+.by, .brand { font-weight: 650; letter-spacing: .02em; color: var(--ink); }
+h1 .brand { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; margin-left: 6px; vertical-align: 3px; }
 button.primary { background: var(--ink); color: var(--surface); border-color: var(--ink); }
 dialog { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--ink); padding: 18px;
   width: min(640px, calc(100vw - 32px)); box-shadow: var(--shadow); }
@@ -523,7 +531,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
 <body>
 <div class="wrap">
   <header>
-    <div><h1>Cortex hub</h1><div class="sub" id="sub">Loading…</div></div>
+    <div><h1>Cortex hub <span class="brand">By MadLeak</span></h1><div class="sub" id="sub">Loading…</div></div>
     <div class="controls">
       <button type="button" id="m-grid" aria-pressed="true">Agents</button>
       <button type="button" id="m-wall" aria-pressed="false">Wall</button>
@@ -536,6 +544,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     <section class="wall" id="wall" aria-label="Every agent's panel" hidden></section>
   </main>
   <p class="foot" id="foot"></p>
+  <p class="foot credit">__CREDIT__</p>
 </div>
 <dialog id="connect" aria-labelledby="c-title">
   <form id="c-form" class="form-wrap">
@@ -772,6 +781,9 @@ p { margin: 0; color: GrayText; font-size: 12px; }
 input, button { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid GrayText; }
 button { cursor: pointer; }
 .err { color: #d03b3b; }
+.credit { position: fixed; bottom: 12px; left: 0; right: 0; text-align: center; }
+.credit a { color: inherit; }
+.by { font-weight: 650; }
 </style>
 </head>
 <body>
@@ -782,6 +794,7 @@ button { cursor: pointer; }
   <input type="password" name="key" aria-label="Access key" autocomplete="current-password" required autofocus>
   <button type="submit">Sign in</button>
 </form>
+<p class="credit">__CREDIT__</p>
 </body>
 </html>
 """

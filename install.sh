@@ -1,4 +1,5 @@
 #!/bin/sh
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 # Installs the Cortex hub on this machine (Linux or macOS) in one go, with the only password prompt at the end:
 #   ./install.sh            # again at any time: it keeps .env and the CA, and refreshes the rest
 #   ./install.sh --no-lan   # this machine only, no LAN listener

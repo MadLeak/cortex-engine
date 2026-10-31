@@ -1,4 +1,5 @@
 #!/bin/sh
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
 # Makes this machine (Linux or macOS) use its Cortex hub with no port and no certificate warning (NetworkManager +
 # systemd-resolved). Run once, and again after the CA changes (a new domain, address or machine name):
 #   sudo installers/setup_host.sh            # reads the repository's .env
