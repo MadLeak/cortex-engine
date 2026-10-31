@@ -204,6 +204,62 @@ Point at a sibling's node; never copy it. Create siblings before or alongside ea
 - `_brain/Panel.md`: the same summary for Obsidian, with `generated/orbit.svg`.
 - `_brain/generated/index.tsv` (one row per node; the only file agents may grep), `graph.json` and `hot.md`.
 
+`Panel.html?embed` shows the orbit alone, filling its frame, and `?theme=dark` or `?theme=light` overrides the saved theme.
+
+**The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
+
+```bash
+python3 scripts/cortex_hub.py --port 8790            # http://127.0.0.1:8790
+```
+
+*Agents* shows one card per vault: its orbit, its size by layer, the seeds waiting for review, today's recalls and its latest activity. A card flashes when its agent acts. *Wall* embeds every panel at once (`?embed`), live, in one theme. The views serve only `Panel.html`, `state/activity.js` and `generated/orbit.svg` of each vault; everything else answers 404. Requests naming a host the hub was not given are refused (421), which stops DNS rebinding. As a systemd user service, run from the engine checkout (the hub imports `hub_tls.py` and `installers/wire_agent.py` beside it):
+
+```ini
+# ~/.config/systemd/user/cortex-hub.service
+[Unit]
+Description=Cortex hub (every agent's brain panel)
+
+[Service]
+ExecStart=/usr/bin/python3 %h/AI/cortex/scripts/cortex_hub.py --port 8790
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+**Connect an agent.** *Connect an agent* on the hub creates a vault under the root with `scripts/new_vault.py` (or picks an existing one, to share it) and returns a prompt to paste to the agent. The prompt carries the vault's path as the agent's machine writes it, the agent's `wire_agent.py` block (and, for Hermes Agent, its skill), and three steps: run `doctor`, put the block between its markers in the agent's own global instruction file, try one `recall`. The agent wires itself; the hub never touches an agent's files. `custom` agents are told to use the instruction file they load at every start. New vaults get `CORTEX_OWNER` in AGENTS.md and their first commit from `CORTEX_GIT_NAME`/`CORTEX_GIT_EMAIL`; without them the prompt asks the agent to make that commit. The form is a same-origin JSON request carrying the page's token.
+
+**HTTPS and scope.** `--data DIR` turns on HTTPS with the hub's own certificate authority (`scripts/hub_tls.py`, made with `openssl` on first start in `DIR/tls`). The CA carries an X.509 name constraint: it can sign only the names the hub answers to, so trusting its `ca.crt` trusts nothing else even if its key leaked. The server certificate lasts 397 days and is renewed on start. The scope is chosen by the address browsers reach the hub at (`--address`, default `--host`):
+
+| Scope | Address | Domain (`--domain`) | Access |
+|---|---|---|---|
+| localhost | 127.0.0.1 | `localhost` or a `*.localhost` name | this machine only, no sign-in |
+| local network | this machine's private LAN address | a name your router's DNS or hosts files point at it (`cortex.lan`, `cortex.home.arpa`) | sign in with `DIR/access.key` (cookie: HttpOnly, Secure, SameSite=Strict, 30 days) |
+
+Public addresses are refused, and the LAN scope refuses to start without `--data`. Changing the domain or the address makes a new CA, which has to be trusted again.
+
+**In Docker, the same on Linux, macOS and Windows.** At the repository root:
+
+```bash
+cp .env.example .env          # scope, domain, port, owner, git identity, Linux uid/gid
+mkdir -p ~/Vaults             # Windows: mkdir $env:USERPROFILE\Vaults
+docker compose up -d --build  # https://localhost:8443
+```
+
+The container mounts `~/Vaults` (`%USERPROFILE%\Vaults` on Windows; `CORTEX_VAULTS` moves it) at `/vaults` and keeps its own data beside the vaults in `.cortex-hub/` (`tls/ca.crt`, `access.key`). It publishes the port only on `CORTEX_ADDRESS`, runs as `CORTEX_UID:CORTEX_GID` with a read-only root, no capabilities and no new privileges. The engine runs with each agent, on its machine: the agents still need Python 3.10+ and git there. The life cycle (nap, REM, night) stays a host service for now.
+
+Trust the CA once (download it from the hub's footer, or take `~/Vaults/.cortex-hub/tls/ca.crt`):
+
+| System | Command |
+|---|---|
+| Linux, Chrome and Chromium | `certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n "Cortex hub" -i ca.crt` |
+| Linux, system | `sudo cp ca.crt /usr/local/share/ca-certificates/cortex-hub.crt && sudo update-ca-certificates` |
+| Windows (current user) | `Import-Certificate -FilePath ca.crt -CertStoreLocation Cert:\CurrentUser\Root` |
+| macOS | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt` |
+| Firefox | Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import |
+
+The LAN access key: `cat ~/Vaults/.cortex-hub/access.key` on the hub's machine (PowerShell: `Get-Content`). Delete the file and restart to change it; browsers then sign in again.
+
 ## 9. Backups
 
 A vault is a git repository with no remote by default. Choose one:
@@ -218,7 +274,7 @@ Upgrade all siblings together:
 
 ```bash
 python3 scripts/upgrade_engine.py ~/vaults/fern-cortex ~/vaults/kitchen-cortex [--dry-run]
-cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.10.0"
+cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.11.0"
 ```
 
 The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lexicon_es.tsv`, `synonyms_en.tsv` and `tests/` into each vault's `_brain/scripts/` and runs `doctor` in each vault. It does not touch content, config, glossary or templates. Cached state is keyed by engine version, file mtime and size, and Python version, so caches rebuild automatically.

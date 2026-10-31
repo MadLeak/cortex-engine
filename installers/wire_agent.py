@@ -74,6 +74,24 @@ Never create, edit, move or link other nodes, never run new, link, status, move,
     return text
 
 
+def markers(name: str) -> tuple[str, str]:
+    return f"<!-- cortex:{slug(name)} -->", f"<!-- /cortex:{slug(name)} -->"
+
+
+def blocks(agent: str, name: str, b: str, by: str, role: str) -> tuple[str, str | None]:
+    """The marked block for the agent's instruction file and, for Hermes Agent, the skill the block points at."""
+    marker, end = markers(name)
+    if agent != "hermes":
+        return f"{marker}\n{guide(name, b, by, role).rstrip()}\n{end}", None
+    skill = (f"---\nname: {slug(name)}\ndescription: Long-term memory ({name}) - procedures, environment, past work "
+             f"and lessons. Use it when a task depends on them and neither the conversation nor one look at the live "
+             f"system answers, and to store a verified learning it lacks.\n---\n\n# {name}\n\n" + guide(name, b, by, role))
+    block = (f"{marker}\n## Long-term memory: {name}\nYour `{slug(name)}` skill is your long-term memory. Use it when "
+             "the answer is not already in the conversation or one look at the live system away; answer in your own "
+             "voice, never narrate the lookup. The live system wins over any node.\n" + end)
+    return block, skill
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Wire an agent to a Cortex vault")
     ap.add_argument("--agent", required=True, choices=["claude-code", "codex", "gemini", "opencode", "hermes", "custom"])
@@ -101,24 +119,15 @@ def main() -> int:
         print((doctor.stdout.strip().splitlines() or ["(no doctor output)"])[-1])
 
     b = f'{a.python} "{brain}"'
-    marker, end = f"<!-- cortex:{slug(name)} -->", f"<!-- /cortex:{slug(name)} -->"
+    marker, end = markers(name)
     stamp = time.strftime("%Y%m%d-%H%M%S")
 
     def backup(path: Path) -> None:
         if path.exists():
             shutil.copy2(path, path.with_name(f"{path.name}.bak-{stamp}"))
 
-    if a.agent == "hermes":
-        skill_dir = target.parent / "skills" / slug(name)
-        skill = (f"---\nname: {slug(name)}\ndescription: Long-term memory ({name}) - procedures, environment, past work "
-                 f"and lessons. Use it when a task depends on them and neither the conversation nor one look at the live "
-                 f"system answers, and to store a verified learning it lacks.\n---\n\n# {name}\n\n" + guide(name, b, by, a.role))
-        block = (f"{marker}\n## Long-term memory: {name}\nYour `{slug(name)}` skill is your long-term memory. Use it when "
-                 "the answer is not already in the conversation or one look at the live system away; answer in your own "
-                 "voice, never narrate the lookup. The live system wins over any node.\n" + end)
-    else:
-        skill_dir, skill = None, None
-        block = f"{marker}\n{guide(name, b, by, a.role).rstrip()}\n{end}"
+    block, skill = blocks(a.agent, name, b, by, a.role)
+    skill_dir = target.parent / "skills" / slug(name) if skill else None
 
     text = target.read_text(encoding="utf-8") if target.exists() else ""
     s, e = text.find(marker), text.find(end)

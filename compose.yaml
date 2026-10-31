@@ -1,0 +1,27 @@
+# Cortex hub. Settings come from .env (copy .env.example); `docker compose up -d --build` starts it.
+# One folder on the host holds every agent's cortex and the hub's own data (.cortex-hub: local CA, access key).
+name: cortex
+
+services:
+  hub:
+    build: .
+    image: cortex-hub:2.11.0
+    restart: unless-stopped
+    user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CORTEX_OWNER: ${CORTEX_OWNER:-the owner}
+      CORTEX_GIT_NAME: ${CORTEX_GIT_NAME:-}
+      CORTEX_GIT_EMAIL: ${CORTEX_GIT_EMAIL:-}
+    volumes:
+      - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
+    # published only on the chosen address: 127.0.0.1 = this machine, a private LAN address = the local network
+    ports:
+      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_PORT:-8443}:8443"
+    command:
+      - --address=${CORTEX_ADDRESS:-127.0.0.1}
+      - --domain=${CORTEX_DOMAIN:-localhost}
+      - --host-root=${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}
