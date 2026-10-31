@@ -73,6 +73,18 @@ def brain(v, *args, timeout=600):
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
+def phase(v, event, *args, nodes=None):
+    """Tell the vault's panel a phase is running (`brain.py activity`, engine 2.10.0+; older engines just refuse it)."""
+    try:
+        if nodes is None:
+            return brain(v, "activity", event, *args, timeout=60)
+        r = subprocess.run([sys.executable, str(v / "_brain/scripts/brain.py"), "activity", event, "--nodes", "-", *args], cwd=v,
+                           input="\n".join(nodes), capture_output=True, text=True, timeout=60)
+        return r.returncode, r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+
+
 # ---------------------------------------------------------------- phase 1: nap
 def mirror_usage(v, state):
     """Append the lines usage.jsonl gained since the last nap to DATA/usage/<vault>/usage.jsonl (the vault's own log is
@@ -117,6 +129,7 @@ def nap(state, report=None):
             log(f"nap {v.name}: git busy, skipped")
             continue
         added = mirror_usage(v, state)
+        phase(v, "rested")
         s = stamp(v)
         st = state.setdefault("built", {})
         if s > st.get(v.name, 0):
@@ -240,6 +253,8 @@ def bench(v, report):
     hist_p.parent.mkdir(parents=True, exist_ok=True)
     with open(hist_p, "a", encoding="utf-8") as f:
         f.write(json.dumps(res) + "\n")
+    fell = bool(recent) and (res["hit1"] <= best1 - BENCH_DROP_HIT1 or res["mrr"] <= prev["mrr"] - BENCH_DROP_MRR)
+    phase(v, "measured", "--note", f"hit@1 {res['hit1']}/{res['n']} · MRR {res['mrr']}", *(["--alarm"] if fell else []))
     trend = f" (last {recent[-1]['hit1']})" if recent else " (first run)"
     r["bench"] = f"hit@1 {res['hit1']}/{res['n']}{trend} · hit@5 {res['hit5']} · MRR {res['mrr']} · engine {res['engine']}"
 
@@ -397,8 +412,9 @@ def rem(state, minutes=REM_MINUTES):
     if not strata_up():
         state["rem"] = {"t": now().isoformat(), "result": "Strata off, skipped"}
         return log("rem: Strata is not answering, skipped")
-    todo, stores = [], {}
+    todo, stores, where = [], {}, {}
     for v in vaults():
+        where[v.name] = v
         p = subprocess.run([sys.executable, "-I", "-c", REM_CHILD, str(v)], capture_output=True, text=True, timeout=600)
         if p.returncode:
             log(f"rem {v.name}: node listing failed")
@@ -431,6 +447,9 @@ def rem(state, minutes=REM_MINUTES):
             log(f"rem {name}: Strata call failed ({ex}); stopping")
             break
         sp, have = stores[name]
+        dreamed = [n["id"] for n in batch if n["id"] in got]
+        if dreamed:
+            phase(where[name], "dreamed", "--note", f"REM {done[name] + len(dreamed)} notes tonight", nodes=dreamed)
         for n in batch:
             if n["id"] in got:
                 have[n["id"]] = {"id": n["id"], "hash": n["hash"], **got[n["id"]], "t": now().isoformat()}
