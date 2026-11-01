@@ -79,6 +79,9 @@ VERIFY_FORMS = (r"(key|nokey)\s+\S+\s+in\s+\S+(\s*=\s*.+)?", r"(path|nopath)\s+\
                 r"url\s+http://(localhost|127\.0\.0\.1)\S*\s+\S+\s*=\s*.+", r"version\s+\S+\s+contains\s+.+",
                 r"service\s+\S+\s+active")
 MAX_CHECKS = 5
+# system scope: a note with `system: [windows]` holds only on that system. Recall still finds it (it says how it is
+# done there) but ranks it at OTHER_SYSTEM and marks it, so the agent acts on its own system's notes first
+OTHER_SYSTEM = 0.5
 EVENT_WEIGHT = {"activated": 0.2, "read": 1.0, "used": 3.0, "validated": 5.0}
 # hot memory (ACT-R base-level activation): B = ln Σ w·age_hours^-HOT_DECAY over the reads, uses and validations of a
 # node (being listed by recall is not being needed). build puts the HOT_MAX most active L2/L3 nodes in MAP.md, so an
@@ -1110,6 +1113,9 @@ def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
             continue
         for e in contract_errors(n.fm.get("verify_intent"), n.fm.get("verify_keywords"), n.fm.get("verify")):
             E(r, e)
+        for x in node_systems(n):
+            if not re.fullmatch(r"[a-z][a-z0-9-]*", x):
+                E(r, f'system "{x}" must be one lowercase word, such as ubuntu or windows')
         if n.type not in TYPES_BY_LAYER[n.layer]:
             E(r, f'type "{n.type}" not valid for L{n.layer}: {", ".join(sorted(TYPES_BY_LAYER[n.layer]))}')
         if n.type == "tool" and n.up and norm(n.up) in v.net and v.net[norm(n.up)].type != "tools":
@@ -1375,11 +1381,14 @@ def bm25_index(v: Vault) -> dict:
             if meta and prev and prev[0] == meta[0] and prev[1] == meta[1]:
                 docs[k] = kept[rel] = prev
                 continue
-            tags = n.fm.get("tags")
+            # the words a note was born with (verify_keywords, set by its writer for the searches it should answer)
+            # count as tags
+            tags = [x for f in ("tags", "verify_keywords") for x in
+                    (n.fm.get(f) if isinstance(n.fm.get(f), list) else [n.fm.get(f)]) if x not in (None, "")]
             gen = qs.get(n.key) or {}
             fields = {"title": n.title, "aliases": " ".join(n.aliases),
                       "summary": f"{n.summary} {n.fm.get('summary_long') or ''}",
-                      "tags": " ".join(map(str, tags)) if isinstance(tags, list) else str(tags or ""),
+                      "tags": " ".join(map(str, tags)),
                       "body": own_text(n.body), "questions": " ".join(gen.get("en") or []),
                       "questions_es": " ".join(gen.get("es") or [])}
             tf: dict[str, float] = {}
@@ -1524,6 +1533,36 @@ def truth_factor(v: Vault, n: Node) -> float:
     return TRUTH_FACTOR.get(truth, 1.0)
 
 
+def host_system(v: Vault | None = None) -> str:
+    """The system this agent runs on: CORTEX_SYSTEM, else the vault's config "system", else detected."""
+    if os.environ.get("CORTEX_SYSTEM"):
+        return os.environ["CORTEX_SYSTEM"].strip().lower()
+    if v is not None and v.cfg.get("system"):
+        return str(v.cfg["system"]).strip().lower()
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if line.startswith("ID="):
+                return line[3:].strip().strip('"').lower()
+    except OSError:
+        pass
+    return "linux"
+
+
+def node_systems(n: Node) -> list[str]:
+    """The systems a note holds on; empty = every system."""
+    x = n.fm.get("system")
+    return [str(i).strip().lower() for i in (x if isinstance(x, list) else [x]) if i not in (None, "")]
+
+
+def foreign(n: Node, host: str) -> bool:
+    systems = node_systems(n)
+    return bool(systems) and host not in systems
+
+
 def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
     """BM25 over title, aliases, summary, tags, the node's own body and its generated questions, times a damped
     weight. The weight enters as 1 + USAGE_WEIGHT·sqrt(w): on an earlier bench (2026-10-23) the full weight cost a
@@ -1567,12 +1606,13 @@ def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
         p = v.parent(v.net[k]) if v.net[k].layer == 3 else None
         if p is not None and p.layer == 2 and STATUS_FACTOR.get(p.status, 0.8):
             lift[p.k] = max(lift.get(p.k, 0.0), s)
-    res = {}
+    res, host = {}, host_system(v)
     for k in set(raw) | set(lift):
         n = v.net[k]
         s = raw.get(k, 0.0) + FAMILY_LIFT * lift.get(k, 0.0)
         w = 0.0 if n.status == "provisional" else weights.get(n.key, 0.0)  # use confirms a provisional node, never ranks it
-        res[k] = s * (1 + USAGE_WEIGHT * math.sqrt(w)) * STATUS_FACTOR.get(n.status, 0.8) * truth_factor(v, n)
+        res[k] = (s * (1 + USAGE_WEIGHT * math.sqrt(w)) * STATUS_FACTOR.get(n.status, 0.8) * truth_factor(v, n)
+                  * (OTHER_SYSTEM if foreign(n, host) else 1))
     # a detail that matches on its own at least as well as its concept goes before it: the concept only led on the
     # detail's borrowed match, and the detail holds the fact (2026-10-29 bench: 11 of 18 misses in one vault were this)
     for k, s in raw.items():
@@ -1611,9 +1651,11 @@ def gate_probability(v: Vault, query: str, ranked: list) -> tuple[float, float]:
     return 1 / (1 + math.exp(-max(min(z, 50), -50))), cov
 
 
-def signature(n: Node, weights: dict, extra: str = "") -> str:
+def signature(n: Node, weights: dict, extra: str = "", host: str = "") -> str:
     w = weights.get(n.key, 0.0)
     status = "PROVISIONAL, unconfirmed" if n.status == "provisional" else n.status
+    if host and foreign(n, host):
+        status += f" · {'/'.join(node_systems(n)).upper()} ONLY, not this {host}"
     return f"[L{n.layer}] {n.title} — {n.summary} (weight {w:.2f} · {n.tokens} tok · {status}{extra})"
 
 
@@ -1635,7 +1677,7 @@ def traverse(v: Vault, query: str, mode: dict, weights: dict, co: dict, label: s
     results = (results if results is not None else score(v, query, weights))[: mode["top"]]
     out, listed = Output(mode["lines"], mode["chars"]), set()
     primary = []
-    sigs = [label + signature(n, weights) for _, n in results]
+    sigs = [label + signature(n, weights, host=host_system(v)) for _, n in results]
     for i, (_, n) in enumerate(results):
         if n.k in listed:
             continue
@@ -1705,7 +1747,7 @@ def cmd_recall(v: Vault, a) -> int:
     lines, primary = traverse(v, a.query, mode, weights, co, results=ranked)
     for line in notes:
         print(line)
-    print(f'# recall "{a.query}" · vault {v.name} · mode {mode_name} · {len(primary)} signatures')
+    print(f'# recall "{a.query}" · vault {v.name} · system {host_system(v)} · mode {mode_name} · {len(primary)} signatures')
     if translate_query(v, a.query) != a.query:
         print(f'# searched as: {translate_query(v, a.query)}')
     if not lines:
@@ -1733,7 +1775,8 @@ def cmd_recall(v: Vault, a) -> int:
         p, cov = gate_probability(v, a.query, ranked)
         if (n.layer in (2, 3) and n.status in ("seed", "consolidated") and n.key not in data["visited"]
                 and p >= GATE["threshold"]):
-            print(f"# answer: [L{n.layer}] {n.title} ({n.path.as_posix()}) · {n.status} · "
+            other = f" · {'/'.join(node_systems(n)).upper()} ONLY, not this {host_system(v)}" if foreign(n, host_system(v)) else ""
+            print(f"# answer: [L{n.layer}] {n.title} ({n.path.as_posix()}) · {n.status}{other} · "
                   f"{p:.0%} likely the answer; its title and summary cover {cov:.0%} of the question")
             lines_given = body_lines(n, v, a.query, data)
             print("\n".join(lines_given))

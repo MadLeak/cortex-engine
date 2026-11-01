@@ -119,6 +119,25 @@ class StructureTests(Base):
         self.assertIn('verify_intent "guess"', out)
         self.assertIn("verify check in no known form", out)
 
+    def test_recall_marks_and_ranks_another_systems_note(self):
+        self.seed()
+        write_node(self.v, "Orders/Windows label printer.md", 2, "Windows label printer", "Orders",
+                   "The label printer prints order labels from the spooler.", "Order labels print through the spooler.")
+        write_node(self.v, "Orders/Ubuntu label printer.md", 2, "Ubuntu label printer", "Orders",
+                   "The label printer prints order labels through CUPS.", "Order labels print through CUPS.")
+        path = self.v / "Orders" / "Windows label printer.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("\n---", "\nsystem: [windows]\n---", 1), encoding="utf-8")
+        import os
+        os.environ["CORTEX_SYSTEM"] = "ubuntu"
+        try:
+            out = run(self.v, "recall", "label printer order labels", "--no-body")[1]
+        finally:
+            del os.environ["CORTEX_SYSTEM"]
+        self.assertIn("system ubuntu", out)
+        self.assertLess(out.index("Ubuntu label printer"), out.index("Windows label printer"))
+        self.assertIn("WINDOWS ONLY, not this ubuntu", out)
+        self.assertEqual(self.code("lint"), 0)
+
     def test_forbidden_and_duplicate_title(self):
         self.seed()
         self.assertEqual(self.code("new", "--layer", "1", "--title", "What is it?", "--summary", "x"), 1)
