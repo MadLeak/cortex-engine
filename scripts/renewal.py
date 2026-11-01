@@ -144,7 +144,7 @@ def precheck(text: str, configs: list[str]) -> tuple[list[str], int]:
     import yaml
     paths, keys = atoms(text)
     facts = [f"path {p}: {'exists' if Path(p).expanduser().exists() else 'MISSING'}" for p in paths]
-    files = sorted({f for c in configs for f in glob.glob(str(Path(c).expanduser()))})
+    files = sorted({f for c in configs for f in glob.glob(str(Path(c).expanduser()), recursive=True)})
     loaded = {}
     for f in files:
         try:
@@ -184,7 +184,7 @@ def run_check(line: str) -> tuple[bool | None, str]:
     m = re.match(r"(key|nokey)\s+(\S+)\s+in\s+(\S+)(?:\s*=\s*(.+))?$", line)
     if m:
         kind, key, where, want = m.groups()
-        files = glob.glob(str(Path(where).expanduser()))
+        files = glob.glob(str(Path(where).expanduser()), recursive=True)
         if not files:
             return None, f"{where}: no such file"
         for f in files:
@@ -205,7 +205,7 @@ def run_check(line: str) -> tuple[bool | None, str]:
         return (there if m.group(1) == "path" else not there), f"{m.group(2)} {'exists' if there else 'missing'}"
     m = re.match(r"grep\s+(.+?)\s+in\s+(\S+)$", line)
     if m:
-        files = glob.glob(str(Path(m.group(2)).expanduser()))
+        files = glob.glob(str(Path(m.group(2)).expanduser()), recursive=True)
         if not files:
             return None, f"{m.group(2)}: no such file"
         try:
@@ -392,6 +392,8 @@ def renew(a) -> int:
                 early = "drift"   # the system broke the rule; the note is not rewritten
             elif not results and intent == "behavior":
                 early = "needs_experiment"
+            elif not results and intent == "rule":
+                early = "policy"   # a standing rule with nothing to check: only Adhonys revokes it, no model rewrites it
         if early:
             rec.update(verdict=early, secs=0, stray_edits=0, by="contract")
             if early == "still_true":
