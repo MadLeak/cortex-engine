@@ -46,7 +46,9 @@ def guide(name: str, b: str, by: str, role: str) -> str:
     """How to use the vault: the same text goes in a block or a skill."""
     learn = (f'{b} learn --up "<exact L2 concept title>" --title "<short English title>" '
              f'--summary "<one English line, max 140 chars>" --type <fact|procedure|error|decision|example> '
-             f'--content "<what is true>" --evidence "<how you know it: file, command, date>" --by {by}')
+             f'--content "<what is true>" --evidence "<how you know it: file, command, date>" --by {by} '
+             f'--system <this system, e.g. ubuntu> --verify-intent <config|file|service|endpoint|version|code|rule|behavior> '
+             f'--verify-keywords <3 to 6 search words> [--verify "<check>"]...')
     text = f"""## Long-term memory: {name}
 `{name}` is your graph memory (a Cortex vault). Use it for what you would otherwise guess: names, paths, past decisions, procedures, lessons. Skip it when the conversation already holds the answer or one look at the live system gives it.
 
@@ -60,6 +62,8 @@ How, quietly and cheaply:
 
 Learn: when you verify something reusable the vault lacks or gets wrong, store one fact per call:
 `{learn}`
+- The last four flags let a script recheck it later without a model. Leave `--system` out when it holds on any system. Each `--verify` is one read-only check whose expected value is what you learned: `key a.b in <file> = <value>`, `nokey a.b in <file>`, `path <p>`, `nopath <p>`, `grep <regex> in <file>`, `service <unit> active`; at most five, none when nothing can be checked. A dated record uses `--truth historical` and needs none.
+- Recall names the system you run on; a node marked `<SYSTEM> ONLY` holds on another system: never run its paths or commands here; use this system's twin when shown, otherwise find this system's way and learn it.
 - If a node is wrong, do not edit it: learn the correct fact with `--contradicts "<title>"`.
 - A learning starts provisional and becomes a seed after it helps in 3 sessions. Exit 1 = fix what the engine says; exit 2 = too many pending, write to the vault's `_inbox/` instead.
 """

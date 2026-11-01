@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.12.0"
+VERSION = "2.13.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -71,6 +71,19 @@ CHILD_SECTION = {1: "Branches", 2: "Details"}
 TEMPLATES = {1: "L1 Domain.md", 2: "L2 Concept.md", 3: "L3 Detail.md"}
 FM_ORDER = ["id", "layer", "type", "summary", "up", "aliases", "status", "source", "external",
             "created", "updated", "reviewed"]
+# verify contract: how renewal checks a current note against the live system with code before any model. The intent
+# routes it (history never goes stale, a broken rule is drift, behavior needs an experiment); each check is one
+# read-only line whose expected value is what the note claims
+VERIFY_INTENTS = ("config", "file", "service", "endpoint", "version", "code", "rule", "behavior", "history")
+VERIFY_FORMS = (r"(key|nokey)\s+\S+\s+in\s+\S+(\s*=\s*.+)?", r"(path|nopath)\s+\S+", r"grep\s+.+?\s+in\s+\S+",
+                r"url\s+http://(localhost|127\.0\.0\.1)\S*\s+\S+\s*=\s*.+", r"version\s+\S+\s+contains\s+.+",
+                r"service\s+\S+\s+active")
+MAX_CHECKS = 5
+# system scope: a note with `system: [windows]` holds only on that system. Recall still finds it and marks it, since
+# it says how it is done there; only when this system has its twin (a note of this system linked to it) does it rank
+# at OTHER_SYSTEM, so the twin comes first. Hermes Cortex bench 2026-11-01 (twins count as right): every foreign note
+# x0.5 → hit@1 27 MRR 0.569; x0.75 → 31 0.630; none → 34 0.656; only twinned x0.5 → 34 0.656 (best MRR)
+OTHER_SYSTEM = 0.5
 EVENT_WEIGHT = {"activated": 0.2, "read": 1.0, "used": 3.0, "validated": 5.0}
 # hot memory (ACT-R base-level activation): B = ln Σ w·age_hours^-HOT_DECAY over the reads, uses and validations of a
 # node (being listed by recall is not being needed). build puts the HOT_MAX most active L2/L3 nodes in MAP.md, so an
@@ -1041,6 +1054,24 @@ def validate_parent(layer: int, parent: Node | None) -> None:
         raise BrainError("an L3 must hang from an L2")
 
 
+def contract_errors(intent, keywords, checks) -> list[str]:
+    """What is wrong with a verify contract; empty when it is well formed (or absent)."""
+    if intent in (None, "") and not keywords and not checks:
+        return []
+    errs = []
+    if intent not in VERIFY_INTENTS:
+        errs.append(f'verify_intent "{intent or "-"}" is not one of {", ".join(VERIFY_INTENTS)}')
+    if keywords is not None and not isinstance(keywords, list):
+        errs.append("verify_keywords must be a list")
+    checks = checks if isinstance(checks, list) else [] if checks in (None, "") else [checks]
+    if len(checks) > MAX_CHECKS:
+        errs.append(f"{len(checks)} verify checks (max {MAX_CHECKS})")
+    for c in checks:
+        if not any(re.fullmatch(f, str(c).strip()) for f in VERIFY_FORMS):
+            errs.append(f"verify check in no known form: {str(c)[:60]}")
+    return errs
+
+
 def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
 
@@ -1082,6 +1113,11 @@ def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
         if n.layer not in (1, 2, 3):
             E(r, "layer must be 1, 2 or 3")
             continue
+        for e in contract_errors(n.fm.get("verify_intent"), n.fm.get("verify_keywords"), n.fm.get("verify")):
+            E(r, e)
+        for x in node_systems(n):
+            if not re.fullmatch(r"[a-z][a-z0-9-]*", x):
+                E(r, f'system "{x}" must be one lowercase word, such as ubuntu or windows')
         if n.type not in TYPES_BY_LAYER[n.layer]:
             E(r, f'type "{n.type}" not valid for L{n.layer}: {", ".join(sorted(TYPES_BY_LAYER[n.layer]))}')
         if n.type == "tool" and n.up and norm(n.up) in v.net and v.net[norm(n.up)].type != "tools":
@@ -1262,8 +1298,11 @@ def template_body(v: Vault, layer: int, title: str) -> str:
 # frozen 38-question test 48 → 55 of 76, Holm-corrected permutation p < 0.001. "questions" and "questions_es" index
 # the generated questions of _brain/questions.jsonl (doc2query, `brain.py questions`); the Spanish ones keep their
 # own "es:" vocabulary. k1 and b moved between fits (a flat optimum); the title, body, tags and synonym weights did not.
-BM25_FIELDS = {"title": 6, "aliases": 4, "summary": 3, "tags": 0.5, "body": 0.25, "questions": 0.5, "questions_es": 1}
+BM25_FIELDS = {"title": 6, "aliases": 4, "summary": 3, "tags": 0.5, "body": 0.25, "questions": 0.5, "questions_es": 1, "keywords": 0.25}
 BM25_K1, BM25_B = 2.0, 1.0
+# keywords = the verify_keywords a note is born with. Hermes Cortex bench 2026-11-01 (60 questions, with the REM
+# questions): boost 0 → hit@1 34 MRR 0.661; 0.25 → 34 0.662; 0.5 → 33 0.658; 1.5 → 34 0.663; 3 → 33 0.655. Neutral
+# beside the generated questions; without them (engine 2.5.3) 0.5 gave +4 hit@1, so a note not yet through REM gains
 # share of its best detail's match an L2 concept inherits: 0.5 gave the bench back 9/10 after atomizing
 # Infrastructure (2026-10-28); with the generated questions 0 fitted best, 0.25 cost no measurable hit@1 and keeps
 # concepts above their details where the details carry the match
@@ -1353,7 +1392,8 @@ def bm25_index(v: Vault) -> dict:
                       "summary": f"{n.summary} {n.fm.get('summary_long') or ''}",
                       "tags": " ".join(map(str, tags)) if isinstance(tags, list) else str(tags or ""),
                       "body": own_text(n.body), "questions": " ".join(gen.get("en") or []),
-                      "questions_es": " ".join(gen.get("es") or [])}
+                      "questions_es": " ".join(gen.get("es") or []),
+                      "keywords": " ".join(map(str, n.fm.get("verify_keywords") or []))}
             tf: dict[str, float] = {}
             length = 0.0
             for f, boost in BM25_FIELDS.items():
@@ -1496,6 +1536,45 @@ def truth_factor(v: Vault, n: Node) -> float:
     return TRUTH_FACTOR.get(truth, 1.0)
 
 
+def host_system(v: Vault | None = None) -> str:
+    """The system this agent runs on: CORTEX_SYSTEM, else the vault's config "system", else detected."""
+    if os.environ.get("CORTEX_SYSTEM"):
+        return os.environ["CORTEX_SYSTEM"].strip().lower()
+    if v is not None and v.cfg.get("system"):
+        return str(v.cfg["system"]).strip().lower()
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if line.startswith("ID="):
+                return line[3:].strip().strip('"').lower()
+    except OSError:
+        pass
+    return "linux"
+
+
+def node_systems(n: Node) -> list[str]:
+    """The systems a note holds on; empty = every system."""
+    x = n.fm.get("system")
+    return [str(i).strip().lower() for i in (x if isinstance(x, list) else [x]) if i not in (None, "")]
+
+
+def foreign(n: Node, host: str) -> bool:
+    systems = node_systems(n)
+    return bool(systems) and host not in systems
+
+
+def system_mark(n: Node, host: str) -> str:
+    return f" ({'/'.join(node_systems(n)).upper()} ONLY)" if foreign(n, host) else ""
+
+
+def twinned(v: Vault, host: str) -> set[str]:
+    """Keys of the notes this system has a twin of: the targets of links from this system's own notes."""
+    return {norm(s.target) for n in v.net.values() if host in node_systems(n) for s in n.synapses}
+
+
 def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
     """BM25 over title, aliases, summary, tags, the node's own body and its generated questions, times a damped
     weight. The weight enters as 1 + USAGE_WEIGHT·sqrt(w): on an earlier bench (2026-10-23) the full weight cost a
@@ -1539,12 +1618,14 @@ def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
         p = v.parent(v.net[k]) if v.net[k].layer == 3 else None
         if p is not None and p.layer == 2 and STATUS_FACTOR.get(p.status, 0.8):
             lift[p.k] = max(lift.get(p.k, 0.0), s)
-    res = {}
+    res, host = {}, host_system(v)
+    twins = twinned(v, host)
     for k in set(raw) | set(lift):
         n = v.net[k]
         s = raw.get(k, 0.0) + FAMILY_LIFT * lift.get(k, 0.0)
         w = 0.0 if n.status == "provisional" else weights.get(n.key, 0.0)  # use confirms a provisional node, never ranks it
-        res[k] = s * (1 + USAGE_WEIGHT * math.sqrt(w)) * STATUS_FACTOR.get(n.status, 0.8) * truth_factor(v, n)
+        res[k] = (s * (1 + USAGE_WEIGHT * math.sqrt(w)) * STATUS_FACTOR.get(n.status, 0.8) * truth_factor(v, n)
+                  * (OTHER_SYSTEM if k in twins and foreign(n, host) else 1))
     # a detail that matches on its own at least as well as its concept goes before it: the concept only led on the
     # detail's borrowed match, and the detail holds the fact (2026-10-29 bench: 11 of 18 misses in one vault were this)
     for k, s in raw.items():
@@ -1583,9 +1664,11 @@ def gate_probability(v: Vault, query: str, ranked: list) -> tuple[float, float]:
     return 1 / (1 + math.exp(-max(min(z, 50), -50))), cov
 
 
-def signature(n: Node, weights: dict, extra: str = "") -> str:
+def signature(n: Node, weights: dict, extra: str = "", host: str = "") -> str:
     w = weights.get(n.key, 0.0)
     status = "PROVISIONAL, unconfirmed" if n.status == "provisional" else n.status
+    if host and foreign(n, host):
+        status += f" · {'/'.join(node_systems(n)).upper()} ONLY, not this {host}"
     return f"[L{n.layer}] {n.title} — {n.summary} (weight {w:.2f} · {n.tokens} tok · {status}{extra})"
 
 
@@ -1607,7 +1690,8 @@ def traverse(v: Vault, query: str, mode: dict, weights: dict, co: dict, label: s
     results = (results if results is not None else score(v, query, weights))[: mode["top"]]
     out, listed = Output(mode["lines"], mode["chars"]), set()
     primary = []
-    sigs = [label + signature(n, weights) for _, n in results]
+    host = host_system(v)
+    sigs = [label + signature(n, weights, host=host) for _, n in results]
     for i, (_, n) in enumerate(results):
         if n.k in listed:
             continue
@@ -1627,11 +1711,12 @@ def traverse(v: Vault, query: str, mode: dict, weights: dict, co: dict, label: s
         for typ, m, d in nb[: mode["neighbors"]]:
             if m.k in listed:
                 continue
-            if out.add(f"   ↳ {typ}{d} [L{m.layer}] {m.title}" + (" (OBSOLETE)" if m.status == "obsolete" else ""), keep):
+            if out.add(f"   ↳ {typ}{d} [L{m.layer}] {m.title}" + (" (OBSOLETE)" if m.status == "obsolete" else "")
+                       + system_mark(m, host), keep):
                 listed.add(m.k)
             if mode["hops"] >= 2 and typ != "related":
                 for typ2, m2, d2 in [x for x in v.neighbors(m) if x[0] != "related"][:2]:
-                    if m2.k not in listed and out.add(f"      ↳ {typ2}{d2} [L{m2.layer}] {m2.title}", keep):
+                    if m2.k not in listed and out.add(f"      ↳ {typ2}{d2} [L{m2.layer}] {m2.title}" + system_mark(m2, host), keep):
                         listed.add(m2.k)
     if out.trimmed:
         out.buf.append(f"# … {out.trimmed} lines trimmed by budget")
@@ -1677,7 +1762,7 @@ def cmd_recall(v: Vault, a) -> int:
     lines, primary = traverse(v, a.query, mode, weights, co, results=ranked)
     for line in notes:
         print(line)
-    print(f'# recall "{a.query}" · vault {v.name} · mode {mode_name} · {len(primary)} signatures')
+    print(f'# recall "{a.query}" · vault {v.name} · system {host_system(v)} · mode {mode_name} · {len(primary)} signatures')
     if translate_query(v, a.query) != a.query:
         print(f'# searched as: {translate_query(v, a.query)}')
     if not lines:
@@ -1705,7 +1790,8 @@ def cmd_recall(v: Vault, a) -> int:
         p, cov = gate_probability(v, a.query, ranked)
         if (n.layer in (2, 3) and n.status in ("seed", "consolidated") and n.key not in data["visited"]
                 and p >= GATE["threshold"]):
-            print(f"# answer: [L{n.layer}] {n.title} ({n.path.as_posix()}) · {n.status} · "
+            other = f" · {'/'.join(node_systems(n)).upper()} ONLY, not this {host_system(v)}" if foreign(n, host_system(v)) else ""
+            print(f"# answer: [L{n.layer}] {n.title} ({n.path.as_posix()}) · {n.status}{other} · "
                   f"{p:.0%} likely the answer; its title and summary cover {cov:.0%} of the question")
             lines_given = body_lines(n, v, a.query, data)
             print("\n".join(lines_given))
@@ -2003,7 +2089,16 @@ def cmd_learn(v: Vault, a) -> int:
     spanish = looks_spanish(f"{a.title}\n{a.summary}")
     if spanish:
         raise BrainError(f"title or summary looks Spanish ({spanish}): the vault is written in English")
-    found = sensitive("\n".join((a.title, a.summary, content, evidence)), {x.lower() for x in v.cfg.get("allowed_addresses", {})})
+    if a.truth == "current" and not a.verify_intent:
+        raise BrainError("a current learning needs its verify contract: --verify-intent (" + ", ".join(VERIFY_INTENTS)
+                         + "), --verify-keywords and, when something can be checked, --verify lines such as "
+                         '"key a.b in <file> = <value>", "path <path>" or "grep <regex> in <file>" '
+                         "(use --truth historical for a dated record)")
+    contract = contract_errors(a.verify_intent, a.verify_keywords or [], a.verify or [])
+    if contract:
+        raise BrainError("; ".join(contract))
+    found = sensitive("\n".join((a.title, a.summary, content, evidence, *(a.verify or []))),
+                      {x.lower() for x in v.cfg.get("allowed_addresses", {})})
     if found:
         raise BrainError(f"possible {found}: never store credentials or personal data")
     target = v.node(a.contradicts) if a.contradicts else None
@@ -2022,6 +2117,10 @@ def cmd_learn(v: Vault, a) -> int:
     fm = {"id": new_id(), "layer": 3, "type": typ, "summary": a.summary.strip(), "up": f"[[{parent.title}]]",
           "aliases": [], "status": "provisional", "source": f"learned by {by} {today()}", "external": [],
           "created": today(), "updated": today(), "reviewed": None, "truth": a.truth, "learned_by": by}
+    if a.verify_intent:
+        fm.update(verify_intent=a.verify_intent, verify_keywords=a.verify_keywords or [], verify=a.verify or [])
+    if a.system:
+        fm["system"] = [x.strip().lower() for x in a.system]
     body = (f"\n## Content\n{content}\n\n## Evidence\n{evidence}\n\n## Connections\n"
             "%% Format: - type:: link to target — reason. Types: depends_on, contradicts, causes, example_of, related. Max 7. %%\n")
     if target:
@@ -2057,6 +2156,15 @@ def cmd_new(v: Vault, a) -> int:
     fm = {"id": new_id(), "layer": layer, "type": typ, "summary": a.summary.strip(),
           "up": f"[[{parent.title if parent else 'MAP'}]]", "aliases": a.aliases or [], "status": "seed",
           "source": a.source or None, "external": [], "created": today(), "updated": today(), "reviewed": None}
+    if a.verify_intent or a.verify:
+        if layer == 1:
+            raise BrainError("a verify contract belongs on an L2 or L3 note")
+        contract = contract_errors(a.verify_intent, a.verify_keywords or [], a.verify or [])
+        if contract:
+            raise BrainError("; ".join(contract))
+        fm.update(verify_intent=a.verify_intent, verify_keywords=a.verify_keywords or [], verify=a.verify or [])
+    if a.system:
+        fm["system"] = [x.strip().lower() for x in a.system]
     n = Node(rel, a.title, fm, template_body(v, layer, a.title), [])
     with v.lock():
         save_node(v.root, n, touch=False)
@@ -3135,6 +3243,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--summary", required=True)
     p.add_argument("--aliases", nargs="*")
     p.add_argument("--source")
+    p.add_argument("--system", nargs="*", help="the systems the note holds on, such as ubuntu or windows (default: all)")
+    p.add_argument("--verify-intent", choices=VERIFY_INTENTS, help="what kind of claim renewal will check")
+    p.add_argument("--verify-keywords", nargs="*", help="3 to 6 words a search for this note would use")
+    p.add_argument("--verify", action="append", metavar="CHECK", help="one read-only check (repeatable): "
+                   "key|nokey <a.b> in <file> [= value] · path|nopath <path> · grep <regex> in <file> · "
+                   "url <http://localhost..> <field> = value · version <prog> contains <text> · service <unit> active")
     p.set_defaults(func=cmd_new)
 
     p = sub.add_parser("learn", help="an agent's own learning: one provisional L3, checked before it is written")
@@ -3147,6 +3261,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--truth", choices=["current", "historical"], default="current")
     p.add_argument("--contradicts", metavar="TITLE", help="an existing node this learning corrects")
     p.add_argument("--by", help="the learning agent (default: config learner)")
+    p.add_argument("--system", nargs="*", help="the systems the note holds on, such as ubuntu or windows (default: all)")
+    p.add_argument("--verify-intent", choices=VERIFY_INTENTS, help="what kind of claim renewal will check")
+    p.add_argument("--verify-keywords", nargs="*", help="3 to 6 words a search for this note would use")
+    p.add_argument("--verify", action="append", metavar="CHECK", help="one read-only check (repeatable): "
+                   "key|nokey <a.b> in <file> [= value] · path|nopath <path> · grep <regex> in <file> · "
+                   "url <http://localhost..> <field> = value · version <prog> contains <text> · service <unit> active")
     p.set_defaults(func=cmd_learn)
 
     p = sub.add_parser("link", help="adds a typed synapse with a reason")
