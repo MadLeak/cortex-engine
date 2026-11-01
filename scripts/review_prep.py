@@ -8,8 +8,10 @@
 Nothing in the vault changes: verdicts go to <vault root>/.cortex-hub/review/<vault>.jsonl, which the hub's Review page
 shows, and only the owner's click there marks a node consolidated or obsolete. A node is judged again when its text
 changes. Strata gets one node per request with everything it needs to judge it alone: the vault's purpose, the node,
-its parent and its siblings (to spot duplicates), its truth and how agents used it. It answers checks first, then a
-verdict, so the verdict rests on them. Progress goes to review/progress.json (the wallpaper's Strata office shows it).
+the chain of ancestors it hangs from, the notes it links to, the titles of its siblings (to spot duplicates), its
+truth and how agents used it. Ancestors rather than siblings' summaries: a 2026-10-31 test on 20 seeds gave the same
+or better verdicts in two thirds of the time. A note with no valid truth is settled by rule, without a model. It
+answers checks first, then a verdict, so the verdict rests on them. Progress goes to review/progress.json (the wallpaper's Strata office shows it).
 """
 import argparse
 import contextlib
@@ -29,6 +31,7 @@ STRATA_KEY = Path(os.environ.get("CORTEX_STRATA_KEY", Path.home() / ".config/str
 ACTIONS = ("consolidate", "fix", "obsolete", "merge")
 META = ("title", "layer", "summary", "domain", "truth", "reads", "used")   # shown on the Review page
 CHECKS = ("one_idea", "specific", "fits_parent", "english", "dated_if_current", "still_useful")
+TRUTHS = ("current", "historical", "superseded")
 
 PROMPT = """You review one note of {vault}, the long-term memory that AI agents read for {owner}. The owner will mark
 the note CONSOLIDATED (verified and kept as is) only on your recommendation, so be strict: when in doubt, say fix.
@@ -41,7 +44,7 @@ of the past, valid as long as it says when; superseded = wrong now.
 Judge the NOTE against these checks (true or false):
 - one_idea: it holds one idea; an L1 may summarise many.
 - specific: concrete and checkable (names, numbers, paths, commands, dates), not vague advice.
-- fits_parent: it belongs under its parent and does not contradict the parent or a sibling.
+- fits_parent: it belongs under its parent and does not contradict an ancestor, a linked note or a sibling.
 - english: written in English (names and quoted commands may be in any language).
 - dated_if_current: a present-tense claim carries a date or evidence; true when truth is historical.
 - still_useful: an agent would still want it, or it is a dated record worth keeping.
@@ -64,10 +67,13 @@ used by agents: {reads} reads, {used} times credited as helpful{contradicts}
 text:
 {text}
 
-PARENT
-{parent}
+ANCESTORS (the chain this note hangs from, top first)
+{ancestors}
 
-SIBLINGS (other notes under the same parent)
+LINKED NOTES (the notes this note itself points at, with the link type)
+{linked}
+
+SIBLINGS (other notes under the same parent, titles only)
 {siblings}
 """
 
@@ -146,8 +152,12 @@ def items(vault: Path, owner: str = "its owner") -> list[dict]:
     for n in nodes:
         if n.status != "seed":
             continue
-        parent = by_title.get(n.up or "")
-        sibs = [s for s in kids.get(n.up or "", []) if s is not n][:12]
+        chain, p = [], by_title.get(n.up or "")
+        while p and p not in chain:   # a cycle of ups would loop forever
+            chain.append(p)
+            p = by_title.get(p.up or "")
+        linked = [(s.type, by_title[s.target]) for s in n.synapses if s.target in by_title]
+        sibs = [s for s in kids.get(n.up or "", []) if s is not n][:20]
         contra = [s.target for s in n.synapses if s.type == "contradicts"]
         prompt = PROMPT.format(
             vault=cfg.get("vault") or vault.name, owner=owner,
@@ -155,8 +165,10 @@ def items(vault: Path, owner: str = "its owner") -> list[dict]:
             summary=n.summary, reads=reads[n.key], used=used[n.key],
             contradicts=f"\ncontradicts: {', '.join(contra)}" if contra else "",
             text=clean(n.body, 2200) or "(empty)",
-            parent=f"{parent.title} (L{parent.layer}): {parent.summary}" if parent else "(none: a top domain)",
-            siblings="\n".join(f"- {s.title}: {s.summary}" for s in sibs) or "(none)")
+            ancestors="\n".join(f"- L{a.layer} {a.title}: {a.summary}" for a in reversed(chain)) or "(none: a top domain)",
+            linked="\n".join(f"- {t} → {m.title} (L{m.layer}, truth {m.fm.get('truth') or '-'}): {m.summary}"
+                             for t, m in linked) or "(none)",
+            siblings="\n".join(f"- {s.title}" for s in sibs) or "(none)")
         rel = n.path.relative_to(vault) if n.path.is_absolute() else n.path
         domain = rel.parts[0] if len(rel.parts) > 1 else ""
         out.append({"id": n.key, "title": n.title, "layer": n.layer, "summary": n.summary, "domain": domain,
@@ -171,6 +183,8 @@ def rule(it: dict) -> dict | None:
         return {"action": "fix", "reason": f"contradicts {it['contradicts'][0]}: decide which one holds"}
     if it["truth"] == "superseded":
         return {"action": "obsolete", "reason": "marked superseded: wrong now"}
+    if it["truth"] not in TRUTHS:   # models judged these unevenly; the fix is always the same
+        return {"action": "fix", "reason": f"truth is '{it['truth'] or '-'}': set current (with a date or evidence) or historical"}
     return None
 
 
