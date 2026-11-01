@@ -130,13 +130,22 @@ class StructureTests(Base):
         path.write_text(path.read_text(encoding="utf-8").replace("\n---", "\nsystem: [windows]\n---", 1), encoding="utf-8")
         import os
         os.environ["CORTEX_SYSTEM"] = "ubuntu"
+        try:   # with no twin here, the windows note keeps its rank: it is still the best answer, marked
+            out = run(self.v, "recall", "label printer order labels spooler", "--no-body")[1]
+        finally:
+            del os.environ["CORTEX_SYSTEM"]
+        self.assertLess(out.index("Windows label printer"), out.index("Ubuntu label printer"))
+        twin = self.v / "Orders" / "Ubuntu label printer.md"
+        twin.write_text(twin.read_text(encoding="utf-8").replace("\n---", "\nsystem: [ubuntu]\n---", 1), encoding="utf-8")
+        self.ok("link", "Ubuntu label printer", "Windows label printer", "--type", "related", "--reason", "its twin on windows")
+        os.environ["CORTEX_SYSTEM"] = "ubuntu"
         try:
             out = run(self.v, "recall", "label printer order labels", "--no-body")[1]
         finally:
             del os.environ["CORTEX_SYSTEM"]
         self.assertIn("system ubuntu", out)
         self.assertLess(out.index("Ubuntu label printer"), out.index("Windows label printer"))
-        self.assertIn("WINDOWS ONLY, not this ubuntu", out)
+        self.assertIn("Windows label printer (WINDOWS ONLY)", out)
         self.assertEqual(self.code("lint"), 0)
 
     def test_forbidden_and_duplicate_title(self):

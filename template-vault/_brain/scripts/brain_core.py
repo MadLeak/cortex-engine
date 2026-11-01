@@ -79,8 +79,10 @@ VERIFY_FORMS = (r"(key|nokey)\s+\S+\s+in\s+\S+(\s*=\s*.+)?", r"(path|nopath)\s+\
                 r"url\s+http://(localhost|127\.0\.0\.1)\S*\s+\S+\s*=\s*.+", r"version\s+\S+\s+contains\s+.+",
                 r"service\s+\S+\s+active")
 MAX_CHECKS = 5
-# system scope: a note with `system: [windows]` holds only on that system. Recall still finds it (it says how it is
-# done there) but ranks it at OTHER_SYSTEM and marks it, so the agent acts on its own system's notes first
+# system scope: a note with `system: [windows]` holds only on that system. Recall still finds it and marks it, since
+# it says how it is done there; only when this system has its twin (a note of this system linked to it) does it rank
+# at OTHER_SYSTEM, so the twin comes first. Hermes Cortex bench 2026-11-01 (twins count as right): every foreign note
+# x0.5 → hit@1 27 MRR 0.569; x0.75 → 31 0.630; none → 34 0.656; only twinned x0.5 → 34 0.656 (best MRR)
 OTHER_SYSTEM = 0.5
 EVENT_WEIGHT = {"activated": 0.2, "read": 1.0, "used": 3.0, "validated": 5.0}
 # hot memory (ACT-R base-level activation): B = ln Σ w·age_hours^-HOT_DECAY over the reads, uses and validations of a
@@ -1564,6 +1566,15 @@ def foreign(n: Node, host: str) -> bool:
     return bool(systems) and host not in systems
 
 
+def system_mark(n: Node, host: str) -> str:
+    return f" ({'/'.join(node_systems(n)).upper()} ONLY)" if foreign(n, host) else ""
+
+
+def twinned(v: Vault, host: str) -> set[str]:
+    """Keys of the notes this system has a twin of: the targets of links from this system's own notes."""
+    return {norm(s.target) for n in v.net.values() if host in node_systems(n) for s in n.synapses}
+
+
 def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
     """BM25 over title, aliases, summary, tags, the node's own body and its generated questions, times a damped
     weight. The weight enters as 1 + USAGE_WEIGHT·sqrt(w): on an earlier bench (2026-10-23) the full weight cost a
@@ -1608,12 +1619,13 @@ def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
         if p is not None and p.layer == 2 and STATUS_FACTOR.get(p.status, 0.8):
             lift[p.k] = max(lift.get(p.k, 0.0), s)
     res, host = {}, host_system(v)
+    twins = twinned(v, host)
     for k in set(raw) | set(lift):
         n = v.net[k]
         s = raw.get(k, 0.0) + FAMILY_LIFT * lift.get(k, 0.0)
         w = 0.0 if n.status == "provisional" else weights.get(n.key, 0.0)  # use confirms a provisional node, never ranks it
         res[k] = (s * (1 + USAGE_WEIGHT * math.sqrt(w)) * STATUS_FACTOR.get(n.status, 0.8) * truth_factor(v, n)
-                  * (OTHER_SYSTEM if foreign(n, host) else 1))
+                  * (OTHER_SYSTEM if k in twins and foreign(n, host) else 1))
     # a detail that matches on its own at least as well as its concept goes before it: the concept only led on the
     # detail's borrowed match, and the detail holds the fact (2026-10-29 bench: 11 of 18 misses in one vault were this)
     for k, s in raw.items():
@@ -1678,7 +1690,8 @@ def traverse(v: Vault, query: str, mode: dict, weights: dict, co: dict, label: s
     results = (results if results is not None else score(v, query, weights))[: mode["top"]]
     out, listed = Output(mode["lines"], mode["chars"]), set()
     primary = []
-    sigs = [label + signature(n, weights, host=host_system(v)) for _, n in results]
+    host = host_system(v)
+    sigs = [label + signature(n, weights, host=host) for _, n in results]
     for i, (_, n) in enumerate(results):
         if n.k in listed:
             continue
@@ -1698,11 +1711,12 @@ def traverse(v: Vault, query: str, mode: dict, weights: dict, co: dict, label: s
         for typ, m, d in nb[: mode["neighbors"]]:
             if m.k in listed:
                 continue
-            if out.add(f"   ↳ {typ}{d} [L{m.layer}] {m.title}" + (" (OBSOLETE)" if m.status == "obsolete" else ""), keep):
+            if out.add(f"   ↳ {typ}{d} [L{m.layer}] {m.title}" + (" (OBSOLETE)" if m.status == "obsolete" else "")
+                       + system_mark(m, host), keep):
                 listed.add(m.k)
             if mode["hops"] >= 2 and typ != "related":
                 for typ2, m2, d2 in [x for x in v.neighbors(m) if x[0] != "related"][:2]:
-                    if m2.k not in listed and out.add(f"      ↳ {typ2}{d2} [L{m2.layer}] {m2.title}", keep):
+                    if m2.k not in listed and out.add(f"      ↳ {typ2}{d2} [L{m2.layer}] {m2.title}" + system_mark(m2, host), keep):
                         listed.add(m2.k)
     if out.trimmed:
         out.buf.append(f"# … {out.trimmed} lines trimmed by budget")
