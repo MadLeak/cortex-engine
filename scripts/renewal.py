@@ -160,6 +160,79 @@ def precheck(text: str, configs: list[str]) -> tuple[list[str], int]:
     return facts, len(paths) + len(keys)
 
 
+def _value(text: str):
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    if text.startswith("[") and text.endswith("]"):
+        return [x.strip().strip("'\"") for x in text[1:-1].split(",") if x.strip()]
+    return text.strip("'\"")
+
+
+def _same(found, want) -> bool:
+    norm = lambda v: sorted(map(str, v)) if isinstance(v, list) else str(v).lower()  # noqa: E731
+    return norm(found) == norm(want)
+
+
+def run_check(line: str) -> tuple[bool | None, str]:
+    """One contract line, read-only. True = the note holds, False = it does not, None = the check itself is broken."""
+    import glob
+    import urllib.request
+    import yaml
+    m = re.match(r"(key|nokey)\s+(\S+)\s+in\s+(\S+)(?:\s*=\s*(.+))?$", line)
+    if m:
+        kind, key, where, want = m.groups()
+        files = glob.glob(str(Path(where).expanduser()))
+        if not files:
+            return None, f"{where}: no such file"
+        for f in files:
+            try:
+                ok, val = lookup(yaml.safe_load(Path(f).read_text(encoding="utf-8")) or {}, key)
+            except (OSError, yaml.YAMLError) as ex:
+                return None, f"{f}: {ex}"
+            if kind == "nokey" and ok:
+                return False, f"{key} present in {f}"
+            if kind == "key" and not ok:
+                return False, f"{key} missing in {f}"
+            if kind == "key" and want is not None and not _same(val, _value(want)):
+                return False, f"{key} in {f} is {json.dumps(val, default=str)[:80]}, the note says {want}"
+        return True, f"{kind} {key} ok"
+    m = re.match(r"(path|nopath)\s+(\S+)$", line)
+    if m:
+        there = Path(m.group(2)).expanduser().exists()
+        return (there if m.group(1) == "path" else not there), f"{m.group(2)} {'exists' if there else 'missing'}"
+    m = re.match(r"grep\s+(.+?)\s+in\s+(\S+)$", line)
+    if m:
+        files = glob.glob(str(Path(m.group(2)).expanduser()))
+        if not files:
+            return None, f"{m.group(2)}: no such file"
+        try:
+            rx = re.compile(m.group(1))
+        except re.error as ex:
+            return None, f"bad regex: {ex}"
+        hit = any(rx.search(l) for f in files for l in Path(f).read_text(encoding="utf-8", errors="replace").splitlines())
+        return hit, f"/{m.group(1)}/ {'found' if hit else 'not found'} in {m.group(2)}"
+    m = re.match(r"url\s+(http://(?:localhost|127\.0\.0\.1)\S*)\s+(\S+)\s*=\s*(.+)$", line)
+    if m:
+        try:
+            with urllib.request.urlopen(m.group(1), timeout=10) as r:
+                ok, val = lookup(json.load(r), m.group(2))
+        except (OSError, ValueError) as ex:
+            return None, f"{m.group(1)}: {ex}"
+        return (ok and _same(val, _value(m.group(3)))), f"{m.group(2)} = {val}"
+    m = re.match(r"version\s+(\S+)\s+contains\s+(.+)$", line)
+    if m:
+        out = subprocess.run([m.group(1), "--version"], capture_output=True, text=True, timeout=30)
+        return m.group(2).strip() in out.stdout + out.stderr, (out.stdout + out.stderr).strip()[:80]
+    m = re.match(r"service\s+(\S+)\s+active$", line)
+    if m:
+        out = subprocess.run(["systemctl", "--user", "is-active", m.group(1)], capture_output=True, text=True)
+        return out.stdout.strip() == "active", f"{m.group(1)} {out.stdout.strip()}"
+    return None, f"unknown check form: {line[:60]}"
+
+
 def session_calls(vault: Path, since: float) -> tuple[list[str], float]:
     """Tool-call arguments of the agent's sessions in this vault since a time, and the time of the last message."""
     try:
@@ -287,10 +360,12 @@ def apply(vault: Path, n, d: dict, day: str) -> str:
 
 def renew(a) -> int:
     skip = set(Path(a.skip_titles).read_text(encoding="utf-8").splitlines()) if a.skip_titles else set()
+    only = set(Path(a.only_titles).read_text(encoding="utf-8").splitlines()) if a.only_titles else None
     vault = Path(a.vault).expanduser().resolve()
     usage_file = Path(a.usage_from).expanduser() if a.usage_from else vault / "_brain/state/usage.jsonl"
     day = today(None).isoformat()
-    todo = [d for d in due(vault, today(a.as_of), usage_file) if d["node"].title not in skip][:a.limit]
+    todo = [d for d in due(vault, today(a.as_of), usage_file) if d["node"].title not in skip
+            and (only is None or d["node"].title in only)][:a.limit]
     configs = CONFIGS.get(a.config_name or vault.name, [])
     DATA.mkdir(parents=True, exist_ok=True)
     log = DATA / f"{vault.name}.jsonl"
@@ -300,9 +375,40 @@ def renew(a) -> int:
     for i, d in enumerate(todo, 1):
         n = d["node"]
         text = re.sub(r"(?ms)^## Connections.*", "", n.body).strip()[:2500]
-        facts, checkable = precheck(text, configs)
+        intent, checks = n.fm.get("verify_intent"), n.fm.get("verify") or []
+        checks = checks if isinstance(checks, list) else [checks]
         rec = {"t": dt.datetime.now().isoformat(timespec="seconds"), "title": n.title, "type": n.type, "age": d["age"], "ttl": d["ttl"],
-               "checkable": checkable, "facts": facts}
+               "intent": intent, "contract": len(checks)}
+        early, results = None, []
+        if intent:   # the note was born (or backfilled) with its contract: code decides first
+            results = [(c, *run_check(c)) for c in checks]
+            rec["checks"] = [f"{'ok' if r is True else 'FAIL' if r is False else 'BROKEN'} {c} :: {why}" for c, r, why in results]
+            failed = [x for x in results if x[1] is False]
+            if intent == "history":
+                early = "history"
+            elif results and all(r is True for _, r, _ in results):
+                early = "still_true"
+            elif failed and intent == "rule":
+                early = "drift"   # the system broke the rule; the note is not rewritten
+            elif not results and intent == "behavior":
+                early = "needs_experiment"
+        if early:
+            rec.update(verdict=early, secs=0, stray_edits=0, by="contract")
+            if early == "still_true":
+                apply(vault, n, {"verdict": "still_true", "evidence": "contract: " + "; ".join(w for _, _, w in results)[:200]}, day)
+                subprocess.run([sys.executable, "_brain/scripts/brain.py", "build"], cwd=vault, capture_output=True)
+                git(vault, "add", "-A")
+                git(vault, "commit", "-q", "-m", f"consolidation: renewal still_true by contract, {n.title}")
+            tally[early] += 1
+            with log.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            print(f"  {i}/{len(todo)} {early:16}    0s {n.title[:70]}", flush=True)
+            continue
+        facts, checkable = precheck(text, configs)
+        if intent:
+            facts = rec.get("checks", []) + facts
+            checkable = checkable or len(checks)
+        rec.update(checkable=checkable, facts=facts)
         if not checkable:   # behaviour or rules only: a verifier would wander; it waits for an experiment or the owner
             rec.update(verdict="needs_experiment", secs=0, stray_edits=0)
             tally[rec["verdict"]] += 1
@@ -358,6 +464,7 @@ def main() -> int:
         s.add_argument("--limit", type=int, default=20)
         s.add_argument("--usage-from", help="usage.jsonl to weigh heat with (a worktree has none)")
         s.add_argument("--skip-titles", help="file of titles to leave out, one per line")
+        s.add_argument("--only-titles", help="file of the only titles to renew, one per line")
         s.add_argument("--config-name", help="whose config files to check keys in (default: the vault's name)")
         if name == "renew":
             s.add_argument("--agent", default="hermes", choices=["hermes"])
