@@ -186,7 +186,7 @@ def run_check(line: str) -> tuple[bool | None, str]:
     m = re.match(r"(key|nokey)\s+(\S+)\s+in\s+(\S+)(?:\s*=\s*(.+))?$", line)
     if m:
         kind, key, where, want = m.groups()
-        files = glob.glob(str(Path(where).expanduser()), recursive=True)
+        files = [f for f in glob.glob(str(Path(where).expanduser()), recursive=True) if os.path.isfile(f)]
         if not files:
             return None, f"{where}: no such file"
         for f in files:
@@ -208,7 +208,8 @@ def run_check(line: str) -> tuple[bool | None, str]:
         return (there if m.group(1) == "path" else not there), f"{m.group(2)} {'exists' if there else 'missing'}"
     m = re.match(r"grep\s+(.+?)\s+in\s+(\S+)$", line)
     if m:
-        files = glob.glob(str(Path(m.group(2)).expanduser()), recursive=True)
+        files = [f for f in glob.glob(str(Path(m.group(2)).expanduser()), recursive=True)
+                 if os.path.isfile(f) and "/.git/" not in f and os.path.getsize(f) < 2_000_000]
         if not files:
             return None, f"{m.group(2)}: no such file"
         try:
