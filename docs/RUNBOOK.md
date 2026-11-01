@@ -214,7 +214,7 @@ Point at a sibling's node; never copy it. Create siblings before or alongside ea
 `B build` (and every commit) regenerates:
 - `_brain/Panel.html`: one self-contained page (works offline from disk) with a 2D orbit view and a 3D sphere view of the layers, plus health, growth, top weights, co-activations and recent commits. Open it in a browser. It reads `_brain/state/activity.js`, when present, to show live recall and read activity.
 - `_brain/Panel.md`: the same summary for Obsidian, with `generated/orbit.svg`.
-- `_brain/generated/index.tsv` (one row per node; the only file agents may grep), `graph.json` and `hot.md`.
+- `_brain/generated/index.tsv` (one row per node; the only file agents may grep; the final columns are `id` and `tokens`), `graph.json` and `hot.md`.
 
 `Panel.html?embed` shows the orbit alone, filling its frame, and `?theme=dark` or `?theme=light` overrides the saved theme.
 
@@ -295,7 +295,7 @@ Upgrade all siblings together:
 
 ```bash
 python3 scripts/upgrade_engine.py ~/vaults/fern-cortex ~/vaults/kitchen-cortex [--dry-run]
-cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.11.0"
+cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.12.0"
 ```
 
 The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lexicon_es.tsv`, `synonyms_en.tsv` and `tests/` into each vault's `_brain/scripts/` and runs `doctor` in each vault. It does not touch content, config, glossary or templates. Cached state is keyed by engine version, file mtime and size, and Python version, so caches rebuild automatically.
