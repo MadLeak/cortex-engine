@@ -191,6 +191,14 @@ human decides on the hub's Review page:
    skip per node, or take the model's verdicts for a domain, then **Apply**. `scripts/review_apply.py` changes the statuses
    in one `consolidation:` commit through the hook. Fix and skip are only recorded.
 
+**Verify contracts and system scope (2.13.0).** A `current` L2/L3 note can carry `verify_intent`, `verify_keywords`
+and up to five read-only `verify` checks (`key a.b in <file> = v`, `nokey`, `path`, `nopath`, `grep <rx> in <file>`,
+`url http://localhost… field = v`, `version <prog> contains t`, `service <unit> active`); `learn` requires them for a
+current learning and lint rejects a malformed one. `scripts/renewal.py` runs a note's checks before any model and
+routes by intent (history, still_true, drift, policy, needs_experiment). `system: [windows]` scopes a note to one
+system: recall prints the host (`CORTEX_SYSTEM`, config `system`, or detected), marks a foreign note `WINDOWS ONLY`
+and ranks it lower only when the host has its twin (a host-system note linked to it); renewal leaves it alone.
+
 **The mechanical phases run on their own** (Linux, systemd user timers): `python3 scripts/lifecycle.py install` sets up
 - `cortex-nap`, hourly: mirrors each vault's gitignored `usage.jsonl` into `~/.local/share/cortex-life/usage/` (a fresh clone starts the log empty, so the history lives outside the vault), then rebuilds and lints any vault whose notes or usage changed;
 - `cortex-night`, 03:00: `B consolidate`, the vault's bench on a throwaway copy with an alarm when hit@1 or MRR falls, a layer report (fan-out, empty concepts, traffic per domain) in `~/.local/share/cortex-life/reports/`, and a desktop notification when anything needs a look. The only change it makes on its own is pruning: at most 10 synapses per night, only once the usage history spans 90 days (the prune rule reads "no joint use in 90 days") and only with a clean index, committed `consolidation: nightly prune`;
@@ -304,7 +312,7 @@ Upgrade all siblings together:
 
 ```bash
 python3 scripts/upgrade_engine.py ~/vaults/fern-cortex ~/vaults/kitchen-cortex [--dry-run]
-cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.12.0"
+cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.13.0"
 ```
 
 The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lexicon_es.tsv`, `synonyms_en.tsv` and `tests/` into each vault's `_brain/scripts/` and runs `doctor` in each vault. It does not touch content, config, glossary or templates. Cached state is keyed by engine version, file mtime and size, and Python version, so caches rebuild automatically.
