@@ -1296,8 +1296,11 @@ def template_body(v: Vault, layer: int, title: str) -> str:
 # frozen 38-question test 48 → 55 of 76, Holm-corrected permutation p < 0.001. "questions" and "questions_es" index
 # the generated questions of _brain/questions.jsonl (doc2query, `brain.py questions`); the Spanish ones keep their
 # own "es:" vocabulary. k1 and b moved between fits (a flat optimum); the title, body, tags and synonym weights did not.
-BM25_FIELDS = {"title": 6, "aliases": 4, "summary": 3, "tags": 0.5, "body": 0.25, "questions": 0.5, "questions_es": 1}
+BM25_FIELDS = {"title": 6, "aliases": 4, "summary": 3, "tags": 0.5, "body": 0.25, "questions": 0.5, "questions_es": 1, "keywords": 0.25}
 BM25_K1, BM25_B = 2.0, 1.0
+# keywords = the verify_keywords a note is born with. Hermes Cortex bench 2026-11-01 (60 questions, with the REM
+# questions): boost 0 → hit@1 34 MRR 0.661; 0.25 → 34 0.662; 0.5 → 33 0.658; 1.5 → 34 0.663; 3 → 33 0.655. Neutral
+# beside the generated questions; without them (engine 2.5.3) 0.5 gave +4 hit@1, so a note not yet through REM gains
 # share of its best detail's match an L2 concept inherits: 0.5 gave the bench back 9/10 after atomizing
 # Infrastructure (2026-10-28); with the generated questions 0 fitted best, 0.25 cost no measurable hit@1 and keeps
 # concepts above their details where the details carry the match
@@ -1381,16 +1384,14 @@ def bm25_index(v: Vault) -> dict:
             if meta and prev and prev[0] == meta[0] and prev[1] == meta[1]:
                 docs[k] = kept[rel] = prev
                 continue
-            # the words a note was born with (verify_keywords, set by its writer for the searches it should answer)
-            # count as tags
-            tags = [x for f in ("tags", "verify_keywords") for x in
-                    (n.fm.get(f) if isinstance(n.fm.get(f), list) else [n.fm.get(f)]) if x not in (None, "")]
+            tags = n.fm.get("tags")
             gen = qs.get(n.key) or {}
             fields = {"title": n.title, "aliases": " ".join(n.aliases),
                       "summary": f"{n.summary} {n.fm.get('summary_long') or ''}",
-                      "tags": " ".join(map(str, tags)),
+                      "tags": " ".join(map(str, tags)) if isinstance(tags, list) else str(tags or ""),
                       "body": own_text(n.body), "questions": " ".join(gen.get("en") or []),
-                      "questions_es": " ".join(gen.get("es") or [])}
+                      "questions_es": " ".join(gen.get("es") or []),
+                      "keywords": " ".join(map(str, n.fm.get("verify_keywords") or []))}
             tf: dict[str, float] = {}
             length = 0.0
             for f, boost in BM25_FIELDS.items():
