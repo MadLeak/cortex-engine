@@ -2104,6 +2104,8 @@ def cmd_learn(v: Vault, a) -> int:
           "created": today(), "updated": today(), "reviewed": None, "truth": a.truth, "learned_by": by}
     if a.verify_intent:
         fm.update(verify_intent=a.verify_intent, verify_keywords=a.verify_keywords or [], verify=a.verify or [])
+    if a.system:
+        fm["system"] = [x.strip().lower() for x in a.system]
     body = (f"\n## Content\n{content}\n\n## Evidence\n{evidence}\n\n## Connections\n"
             "%% Format: - type:: link to target — reason. Types: depends_on, contradicts, causes, example_of, related. Max 7. %%\n")
     if target:
@@ -2146,6 +2148,8 @@ def cmd_new(v: Vault, a) -> int:
         if contract:
             raise BrainError("; ".join(contract))
         fm.update(verify_intent=a.verify_intent, verify_keywords=a.verify_keywords or [], verify=a.verify or [])
+    if a.system:
+        fm["system"] = [x.strip().lower() for x in a.system]
     n = Node(rel, a.title, fm, template_body(v, layer, a.title), [])
     with v.lock():
         save_node(v.root, n, touch=False)
@@ -3224,6 +3228,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--summary", required=True)
     p.add_argument("--aliases", nargs="*")
     p.add_argument("--source")
+    p.add_argument("--system", nargs="*", help="the systems the note holds on, such as ubuntu or windows (default: all)")
     p.add_argument("--verify-intent", choices=VERIFY_INTENTS, help="what kind of claim renewal will check")
     p.add_argument("--verify-keywords", nargs="*", help="3 to 6 words a search for this note would use")
     p.add_argument("--verify", action="append", metavar="CHECK", help="one read-only check (repeatable): "
@@ -3241,6 +3246,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--truth", choices=["current", "historical"], default="current")
     p.add_argument("--contradicts", metavar="TITLE", help="an existing node this learning corrects")
     p.add_argument("--by", help="the learning agent (default: config learner)")
+    p.add_argument("--system", nargs="*", help="the systems the note holds on, such as ubuntu or windows (default: all)")
     p.add_argument("--verify-intent", choices=VERIFY_INTENTS, help="what kind of claim renewal will check")
     p.add_argument("--verify-keywords", nargs="*", help="3 to 6 words a search for this note would use")
     p.add_argument("--verify", action="append", metavar="CHECK", help="one read-only check (repeatable): "

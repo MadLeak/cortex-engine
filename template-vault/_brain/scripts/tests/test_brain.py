@@ -103,10 +103,11 @@ class StructureTests(Base):
         self.assertEqual(self.code(*base), 1)
         self.assertEqual(self.code(*base, "--verify-intent", "config", "--verify", "chmod 777 /"), 1)
         self.assertEqual(self.code(*base, "--verify-intent", "config", "--verify-keywords", "cutoff", "friday",
-                                   "--verify", "key waves.friday.cutoff in ~/waves.yaml = 15:00"), 0)
+                                   "--verify", "key waves.friday.cutoff in ~/waves.yaml = 15:00", "--system", "ubuntu"), 0)
         text = next(self.v.rglob("Cutoff moved to 3pm on Fridays.md")).read_text(encoding="utf-8")
         self.assertIn("verify_intent: config", text)
         self.assertIn('  - "key waves.friday.cutoff in ~/waves.yaml = 15:00"', text)
+        self.assertIn("system:\n  - ubuntu", text)
         self.assertEqual(self.code("lint"), 0)
 
     def test_lint_rejects_a_malformed_contract(self):
@@ -540,7 +541,8 @@ class VisualizationTests(Base):
         self.seed()
         self.ok("learn", "--up", "Order cutoff is at 2pm EST", "--title", "Friday cutoff moves to noon",
                 "--summary", "On Fridays the cutoff is at noon EST.", "--content", "The Friday wave leaves early.",
-                "--evidence", "Seen in the dispatch log.", "--by", "tester")
+                "--evidence", "Seen in the dispatch log.", "--by", "tester",
+                "--verify-intent", "behavior", "--verify-keywords", "friday", "cutoff")
 
         def planted():
             self.ok("build")
