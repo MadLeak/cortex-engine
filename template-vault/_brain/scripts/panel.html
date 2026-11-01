@@ -821,6 +821,7 @@ footer .credit a { color: inherit; }
     [LAYER[n.layer], n.layer === 3 || n.limb ? n.type : null, n.status, n.unplaced ? 'misplaced' : null].filter(Boolean).forEach(t => el('span', { class: 'pill' }, t, pills));
     if (n.summary) el('p', { class: 'summary' }, n.summary, box);
     el('div', { class: 'sect' }, `Weight ${fmt(n.weight || 0)}`, box);
+    el('div', { class: 'sect' }, `${n.tokens || 0} tokens`, box);
     const m = el('div', { class: 'meter' }, null, box);
     el('i', { class: `L${n.layer}`, style: `width:${Math.round((n.weight || 0) * 100)}%` }, null, m);
     if (n.children.length) {

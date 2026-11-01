@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.11.0"
+VERSION = "2.12.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -156,6 +156,13 @@ def word_stem(t: str) -> str:
 
 def tokens(s: str) -> set:
     return {word_stem(t) for t in re.findall(r"[a-z0-9]+", norm(s)) if t not in STOPWORDS and len(t) > 1}
+
+
+def count_tokens(text: str) -> int:
+    """Estimate modern LLM tokens without a tokenizer: ceil(chars/4) blended 50/50 with ceil(words*1.3)."""
+    chars = math.ceil(len(text) / 4)
+    words = math.ceil(len(re.findall(r"\w+", text, re.UNICODE)) * 1.3)
+    return math.ceil((chars + words) / 2)
 
 
 def looks_spanish(text: str, ignore=()) -> str | None:
@@ -504,7 +511,9 @@ def read_node(root: Path, rel: Path, cold: bool = False, text: str | None = None
     raw, body = split_fm(text)
     fm, errors = parse_fm(raw) if raw is not None else ({}, [])
     s, bad, lnk, words = parse_body(body)
-    return Node(rel, rel.stem, fm, body, errors, s, bad, lnk, words, raw is not None, cold)
+    n = Node(rel, rel.stem, fm, body, errors, s, bad, lnk, words, raw is not None, cold)
+    n.tokens = count_tokens(text)
+    return n
 
 
 def save_node(root: Path, n: Node, touch: bool = True) -> None:
@@ -1577,7 +1586,7 @@ def gate_probability(v: Vault, query: str, ranked: list) -> tuple[float, float]:
 def signature(n: Node, weights: dict, extra: str = "") -> str:
     w = weights.get(n.key, 0.0)
     status = "PROVISIONAL, unconfirmed" if n.status == "provisional" else n.status
-    return f"[L{n.layer}] {n.title} — {n.summary} (weight {w:.2f} · {status}{extra})"
+    return f"[L{n.layer}] {n.title} — {n.summary} (weight {w:.2f} · {n.tokens} tok · {status}{extra})"
 
 
 class Output:
@@ -1698,12 +1707,20 @@ def cmd_recall(v: Vault, a) -> int:
                 and p >= GATE["threshold"]):
             print(f"# answer: [L{n.layer}] {n.title} ({n.path.as_posix()}) · {n.status} · "
                   f"{p:.0%} likely the answer; its title and summary cover {cov:.0%} of the question")
-            print("\n".join(body_lines(n, v, a.query, data)))
+            lines_given = body_lines(n, v, a.query, data)
+            print("\n".join(lines_given))
+            amount = count_tokens(handed_text(lines_given))
+            if n.key in data.get("excerpted", []):
+                data.setdefault("excerpt_tokens", {})[n.key] = amount
+            data["tokens_read"] = data.get("tokens_read", 0) + amount
+            add_tokens_read(v, n.key, amount)
             data["visited"].append(n.key)
             data["query_bodies"] += 1
             data["total_bodies"] += 1
             ses.save(a.session, data)
             tel.record("read", [n.key], a.session)
+            print(f"# budget: {data['query_bodies']}/{mode['bodies']} query · {data['total_bodies']}/{mode['session_bodies']} session · "
+                  f"{data['tokens_read']} tok read")
     left = mode["session_bodies"] - data["total_bodies"]
     print(f'# read: brain.py read "<Title>" · max {mode["bodies"]} bodies in this query · {left} left in the session')
     tel.record("activated", [n.key for n in primary], a.session, query=a.query)
@@ -1796,6 +1813,45 @@ def body_lines(n: Node, v: Vault | None = None, query: str = "", data: dict | No
     return out
 
 
+def handed_text(lines: list[str]) -> str:
+    """The text from body_lines that the CLI actually hands to the agent."""
+    return "\n".join(lines)
+
+
+def add_tokens_read(v: Vault, key: str, amount: int) -> None:
+    path = v.state_dir / "tokens_read.json"
+    try:
+        totals = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        totals = {}
+    totals[key] = totals.get(key, 0) + amount
+    write_atomic(path, json.dumps(totals, ensure_ascii=False, sort_keys=True))
+
+
+def cmd_stats(v: Vault, a) -> int:
+    nodes = list(v.net.values())
+    counts = sorted(n.tokens for n in nodes)
+    total = sum(counts)
+    mean = total / len(counts) if counts else 0
+    print(f"tokens: {total} vault · {mean:.1f} mean · {max(counts, default=0)} max · {len(nodes)} nodes")
+    print("heaviest nodes:")
+    for n in sorted(nodes, key=lambda x: (-x.tokens, x.k))[:10]:
+        print(f"  {n.tokens:>5} tok · {n.title}")
+    try:
+        reads = json.loads((v.state_dir / "tokens_read.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        reads = {}
+    print("most tokens read:")
+    by_key = v.by_key()
+    ranked = sorted(((amount, by_key[key].title if key in by_key else key)
+                     for key, amount in reads.items()), key=lambda x: (-x[0], x[1]))[:10]
+    for amount, title in ranked:
+        print(f"  {amount:>5} tok · {title}")
+    if not ranked:
+        print("  (none yet)")
+    return 0
+
+
 def cmd_read(v: Vault, a) -> int:
     ses = Sessions(v)
     if not a.session:
@@ -1821,8 +1877,15 @@ def cmd_read(v: Vault, a) -> int:
         # the rest of a body first handed over as an excerpt costs no new body from the budget
         data["excerpted"].remove(n.key)
         ses.save(a.session, data)
-        print(f"# [L{n.layer}] {n.title} ({n.path.as_posix()}) · in full")
-        print("\n".join(body_lines(n)))
+        print(f"# [L{n.layer}] {n.title} ({n.path.as_posix()}) · in full · {n.tokens} tok")
+        lines = body_lines(n)
+        print("\n".join(lines))
+        amount = max(0, count_tokens(handed_text(lines)) - data.get("excerpt_tokens", {}).pop(n.key, 0))
+        data["tokens_read"] = data.get("tokens_read", 0) + amount
+        ses.save(a.session, data)
+        add_tokens_read(v, n.key, amount)
+        print(f"# budget: {data['query_bodies']}/{mode['bodies']} query · {data['total_bodies']}/{mode['session_bodies']} session · "
+              f"{data['tokens_read']} tok read")
         return 0
     if data["query_bodies"] >= mode["bodies"]:
         raise BrainError(f"query budget exhausted ({mode['bodies']} bodies): answer with what you have "
@@ -1832,15 +1895,22 @@ def cmd_read(v: Vault, a) -> int:
                          "or delegate to a subagent in deep mode", 2)
     parent = f" · ↑ {n.up}" if n.up else ""
     layer = f"L{n.layer}" if n.layer else "cold"
-    print(f"# [{layer}] {n.title} ({n.path.as_posix()}){parent} · {n.status}")
+    print(f"# [{layer}] {n.title} ({n.path.as_posix()}){parent} · {n.status} · {n.tokens} tok")
     if n.summary:
         print(f"summary: {n.summary}")
-    print("\n".join(body_lines(n, v, "" if a.full else data.get("query", ""), data)))
+    lines = body_lines(n, v, "" if a.full else data.get("query", ""), data)
+    print("\n".join(lines))
+    amount = count_tokens(handed_text(lines))
+    if n.key in data.get("excerpted", []):
+        data.setdefault("excerpt_tokens", {})[n.key] = amount
     data["visited"].append(n.key)
     data["query_bodies"] += 1
     data["total_bodies"] += 1
+    data["tokens_read"] = data.get("tokens_read", 0) + amount
     ses.save(a.session, data)
-    print(f"# budget: {data['query_bodies']}/{mode['bodies']} query · {data['total_bodies']}/{mode['session_bodies']} session")
+    add_tokens_read(v, n.key, amount)
+    print(f"# budget: {data['query_bodies']}/{mode['bodies']} query · {data['total_bodies']}/{mode['session_bodies']} session · "
+          f"{data['tokens_read']} tok read")
     Telemetry(v).record("read", [n.key], a.session)
     return 0
 
@@ -2763,16 +2833,17 @@ def render_index(v: Vault, weights: dict) -> str:
     def clean(s):
         return re.sub(r"[\t\r\n]+", " ", str(s or ""))
 
-    rows = ["layer\ttitle\tsummary\taliases\tup\tstatus\tweight\tpath\tid"]
+    rows = ["layer\ttitle\tsummary\taliases\tup\tstatus\tweight\tpath\tid\ttokens"]
     for n in sorted(v.net.values(), key=lambda n: (n.layer or 9, -weights.get(n.key, 0.0), n.k)):
         rows.append("\t".join(clean(x) for x in (f"L{n.layer}", n.title, n.summary, ", ".join(n.aliases), n.up,
-                                                 n.status, f"{weights.get(n.key, 0.0):.3f}", n.path.as_posix(), n.fm.get("id"))))
+                                                 n.status, f"{weights.get(n.key, 0.0):.3f}", n.path.as_posix(), n.fm.get("id"), n.tokens)))
     return "\n".join(rows) + "\n"
 
 
 def render_graph(v: Vault, weights: dict) -> str:
     nodes = [{"id": n.key, "title": n.title, "layer": n.layer, "type": n.type, "status": n.status, "up": n.up,
-              "path": n.path.as_posix(), "weight": round(weights.get(n.key, 0.0), 4), "words": n.words}
+              "path": n.path.as_posix(), "weight": round(weights.get(n.key, 0.0), 4), "words": n.words,
+              "tokens": n.tokens}
              for n in sorted(v.net.values(), key=lambda x: x.k)]
     edges = []
     for n in v.net.values():
@@ -2910,6 +2981,7 @@ def render_panel_html(v: Vault, weights: dict, history: list[dict], findings: li
         "nodes": [{"id": n.fm.get("id"), "title": n.title, "layer": n.layer, "type": n.type, "status": n.status,
                    "weight": round(weights.get(n.key, 0.0), 3), "summary": n.summary, "up": n.up,
                    "path": n.path.with_suffix("").as_posix(), "updated": str(n.fm.get("updated") or ""),
+                   "tokens": n.tokens,
                    "aliases": n.aliases, "external": n.external,
                    **({"planted": planted[n.key]["t"][:19]} if n.key in planted else {})} for n in net],
         "synapses": [{"source": n.title, "target": s.target, "type": s.type, "reason": s.reason}
@@ -3030,6 +3102,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", choices=list(MODES), default="normal")
     p.add_argument("--session")
     p.set_defaults(func=cmd_session)
+
+    p = sub.add_parser("stats", help="token sizes and cumulative tokens read")
+    p.set_defaults(func=cmd_stats)
 
     p = sub.add_parser("recall", help="read funnel: signatures by relevance × weight")
     p.add_argument("query")

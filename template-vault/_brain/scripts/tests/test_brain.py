@@ -71,6 +71,21 @@ class Base(unittest.TestCase):
 
 
 class StructureTests(Base):
+    def test_count_tokens_is_deterministic_estimate(self):
+        self.assertEqual(brain.count_tokens(""), 0)
+        self.assertEqual(brain.count_tokens("abcd"), 2)
+        self.assertEqual(brain.count_tokens("one two three four"), 6)
+
+    def test_token_index_graph_and_stats(self):
+        self.seed()
+        self.ok("build")
+        lines = (self.v / "_brain" / "generated" / "index.tsv").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0].split("\t")[-1], "tokens")
+        self.assertTrue(all(len(line.split("\t")) == len(lines[0].split("\t")) for line in lines))
+        graph = json.loads((self.v / "_brain" / "generated" / "graph.json").read_text(encoding="utf-8"))
+        self.assertTrue(all("tokens" in n for n in graph["nodes"]))
+        self.assertIn("tokens:", self.ok("stats"))
+
     def test_new_places_and_links(self):
         self.seed()
         self.assertTrue((self.v / "Orders" / "Orders.md").exists())
@@ -336,7 +351,20 @@ class ReadTests(Base):
         self.assertIn("# excerpt:", out)
         full = self.ok("read", "Carrier pickup", "--full", "--session", sid)
         self.assertIn("Routine line 5", full, "the rest of an excerpt comes on request, outside the budget")
+        self.assertIn("tok", full.splitlines()[0])
+        session = brain.Sessions(brain.Vault(self.v)).load(sid)
+        self.assertEqual(session["tokens_read"], brain.count_tokens("\n".join(brain.body_lines(brain.Vault(self.v).node("Carrier pickup")))))
         self.assertEqual(self.code("read", "Carrier pickup", "--full", "--session", sid), 2, "but only once")
+
+    def test_tokens_read_accumulate_in_session_and_state(self):
+        self.seed()
+        sid = run(self.v, "session", "new")[1].splitlines()[0]
+        out = self.ok("read", "Order cutoff is at 2pm EST", "--session", sid)
+        self.assertRegex(out, r"# budget: .* · \d+ tok read")
+        key = brain.Vault(self.v).node("Order cutoff is at 2pm EST").key
+        state = json.loads((self.v / "_brain" / "state" / "tokens_read.json").read_text(encoding="utf-8"))
+        self.assertGreater(state[key], 0)
+        self.assertEqual(brain.Sessions(brain.Vault(self.v)).load(sid)["tokens_read"], state[key])
 
     def test_read_budget_and_visited(self):
         self.populate(8)
