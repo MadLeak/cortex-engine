@@ -71,6 +71,14 @@ CHILD_SECTION = {1: "Branches", 2: "Details"}
 TEMPLATES = {1: "L1 Domain.md", 2: "L2 Concept.md", 3: "L3 Detail.md"}
 FM_ORDER = ["id", "layer", "type", "summary", "up", "aliases", "status", "source", "external",
             "created", "updated", "reviewed"]
+# verify contract: how renewal checks a current note against the live system with code before any model. The intent
+# routes it (history never goes stale, a broken rule is drift, behavior needs an experiment); each check is one
+# read-only line whose expected value is what the note claims
+VERIFY_INTENTS = ("config", "file", "service", "endpoint", "version", "code", "rule", "behavior", "history")
+VERIFY_FORMS = (r"(key|nokey)\s+\S+\s+in\s+\S+(\s*=\s*.+)?", r"(path|nopath)\s+\S+", r"grep\s+.+?\s+in\s+\S+",
+                r"url\s+http://(localhost|127\.0\.0\.1)\S*\s+\S+\s*=\s*.+", r"version\s+\S+\s+contains\s+.+",
+                r"service\s+\S+\s+active")
+MAX_CHECKS = 5
 EVENT_WEIGHT = {"activated": 0.2, "read": 1.0, "used": 3.0, "validated": 5.0}
 # hot memory (ACT-R base-level activation): B = ln Σ w·age_hours^-HOT_DECAY over the reads, uses and validations of a
 # node (being listed by recall is not being needed). build puts the HOT_MAX most active L2/L3 nodes in MAP.md, so an
@@ -1041,6 +1049,24 @@ def validate_parent(layer: int, parent: Node | None) -> None:
         raise BrainError("an L3 must hang from an L2")
 
 
+def contract_errors(intent, keywords, checks) -> list[str]:
+    """What is wrong with a verify contract; empty when it is well formed (or absent)."""
+    if intent in (None, "") and not keywords and not checks:
+        return []
+    errs = []
+    if intent not in VERIFY_INTENTS:
+        errs.append(f'verify_intent "{intent or "-"}" is not one of {", ".join(VERIFY_INTENTS)}')
+    if keywords is not None and not isinstance(keywords, list):
+        errs.append("verify_keywords must be a list")
+    checks = checks if isinstance(checks, list) else [] if checks in (None, "") else [checks]
+    if len(checks) > MAX_CHECKS:
+        errs.append(f"{len(checks)} verify checks (max {MAX_CHECKS})")
+    for c in checks:
+        if not any(re.fullmatch(f, str(c).strip()) for f in VERIFY_FORMS):
+            errs.append(f"verify check in no known form: {str(c)[:60]}")
+    return errs
+
+
 def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
 
@@ -1082,6 +1108,8 @@ def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
         if n.layer not in (1, 2, 3):
             E(r, "layer must be 1, 2 or 3")
             continue
+        for e in contract_errors(n.fm.get("verify_intent"), n.fm.get("verify_keywords"), n.fm.get("verify")):
+            E(r, e)
         if n.type not in TYPES_BY_LAYER[n.layer]:
             E(r, f'type "{n.type}" not valid for L{n.layer}: {", ".join(sorted(TYPES_BY_LAYER[n.layer]))}')
         if n.type == "tool" and n.up and norm(n.up) in v.net and v.net[norm(n.up)].type != "tools":
@@ -2003,7 +2031,16 @@ def cmd_learn(v: Vault, a) -> int:
     spanish = looks_spanish(f"{a.title}\n{a.summary}")
     if spanish:
         raise BrainError(f"title or summary looks Spanish ({spanish}): the vault is written in English")
-    found = sensitive("\n".join((a.title, a.summary, content, evidence)), {x.lower() for x in v.cfg.get("allowed_addresses", {})})
+    if a.truth == "current" and not a.verify_intent:
+        raise BrainError("a current learning needs its verify contract: --verify-intent (" + ", ".join(VERIFY_INTENTS)
+                         + "), --verify-keywords and, when something can be checked, --verify lines such as "
+                         '"key a.b in <file> = <value>", "path <path>" or "grep <regex> in <file>" '
+                         "(use --truth historical for a dated record)")
+    contract = contract_errors(a.verify_intent, a.verify_keywords or [], a.verify or [])
+    if contract:
+        raise BrainError("; ".join(contract))
+    found = sensitive("\n".join((a.title, a.summary, content, evidence, *(a.verify or []))),
+                      {x.lower() for x in v.cfg.get("allowed_addresses", {})})
     if found:
         raise BrainError(f"possible {found}: never store credentials or personal data")
     target = v.node(a.contradicts) if a.contradicts else None
@@ -2022,6 +2059,8 @@ def cmd_learn(v: Vault, a) -> int:
     fm = {"id": new_id(), "layer": 3, "type": typ, "summary": a.summary.strip(), "up": f"[[{parent.title}]]",
           "aliases": [], "status": "provisional", "source": f"learned by {by} {today()}", "external": [],
           "created": today(), "updated": today(), "reviewed": None, "truth": a.truth, "learned_by": by}
+    if a.verify_intent:
+        fm.update(verify_intent=a.verify_intent, verify_keywords=a.verify_keywords or [], verify=a.verify or [])
     body = (f"\n## Content\n{content}\n\n## Evidence\n{evidence}\n\n## Connections\n"
             "%% Format: - type:: link to target — reason. Types: depends_on, contradicts, causes, example_of, related. Max 7. %%\n")
     if target:
@@ -2057,6 +2096,13 @@ def cmd_new(v: Vault, a) -> int:
     fm = {"id": new_id(), "layer": layer, "type": typ, "summary": a.summary.strip(),
           "up": f"[[{parent.title if parent else 'MAP'}]]", "aliases": a.aliases or [], "status": "seed",
           "source": a.source or None, "external": [], "created": today(), "updated": today(), "reviewed": None}
+    if a.verify_intent or a.verify:
+        if layer == 1:
+            raise BrainError("a verify contract belongs on an L2 or L3 note")
+        contract = contract_errors(a.verify_intent, a.verify_keywords or [], a.verify or [])
+        if contract:
+            raise BrainError("; ".join(contract))
+        fm.update(verify_intent=a.verify_intent, verify_keywords=a.verify_keywords or [], verify=a.verify or [])
     n = Node(rel, a.title, fm, template_body(v, layer, a.title), [])
     with v.lock():
         save_node(v.root, n, touch=False)
@@ -3135,6 +3181,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--summary", required=True)
     p.add_argument("--aliases", nargs="*")
     p.add_argument("--source")
+    p.add_argument("--verify-intent", choices=VERIFY_INTENTS, help="what kind of claim renewal will check")
+    p.add_argument("--verify-keywords", nargs="*", help="3 to 6 words a search for this note would use")
+    p.add_argument("--verify", action="append", metavar="CHECK", help="one read-only check (repeatable): "
+                   "key|nokey <a.b> in <file> [= value] · path|nopath <path> · grep <regex> in <file> · "
+                   "url <http://localhost..> <field> = value · version <prog> contains <text> · service <unit> active")
     p.set_defaults(func=cmd_new)
 
     p = sub.add_parser("learn", help="an agent's own learning: one provisional L3, checked before it is written")
@@ -3147,6 +3198,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--truth", choices=["current", "historical"], default="current")
     p.add_argument("--contradicts", metavar="TITLE", help="an existing node this learning corrects")
     p.add_argument("--by", help="the learning agent (default: config learner)")
+    p.add_argument("--verify-intent", choices=VERIFY_INTENTS, help="what kind of claim renewal will check")
+    p.add_argument("--verify-keywords", nargs="*", help="3 to 6 words a search for this note would use")
+    p.add_argument("--verify", action="append", metavar="CHECK", help="one read-only check (repeatable): "
+                   "key|nokey <a.b> in <file> [= value] · path|nopath <path> · grep <regex> in <file> · "
+                   "url <http://localhost..> <field> = value · version <prog> contains <text> · service <unit> active")
     p.set_defaults(func=cmd_learn)
 
     p = sub.add_parser("link", help="adds a typed synapse with a reason")

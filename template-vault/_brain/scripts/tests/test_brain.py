@@ -95,6 +95,30 @@ class StructureTests(Base):
         self.assertIn("- [[Order cutoff is at 2pm EST]] — ", parent)
         self.assertEqual(self.code("lint"), 0)
 
+    def test_learn_needs_a_contract_when_current(self):
+        self.seed()
+        base = ("learn", "--up", "Order cutoff is at 2pm EST", "--title", "Cutoff moved to 3pm on Fridays",
+                "--summary", "Friday orders close one hour later.", "--content", "On Fridays the cutoff is 3pm.",
+                "--evidence", "Seen in the Friday wave config.")
+        self.assertEqual(self.code(*base), 1)
+        self.assertEqual(self.code(*base, "--verify-intent", "config", "--verify", "chmod 777 /"), 1)
+        self.assertEqual(self.code(*base, "--verify-intent", "config", "--verify-keywords", "cutoff", "friday",
+                                   "--verify", "key waves.friday.cutoff in ~/waves.yaml = 15:00"), 0)
+        text = next(self.v.rglob("Cutoff moved to 3pm on Fridays.md")).read_text(encoding="utf-8")
+        self.assertIn("verify_intent: config", text)
+        self.assertIn('  - "key waves.friday.cutoff in ~/waves.yaml = 15:00"', text)
+        self.assertEqual(self.code("lint"), 0)
+
+    def test_lint_rejects_a_malformed_contract(self):
+        self.seed()
+        write_node(self.v, "Orders/Ops.md", 2, "Ops", "Orders", "Ops runbook.")
+        path = self.v / "Orders" / "Ops.md"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.replace("\n---", '\nverify_intent: guess\nverify:\n  - "ask someone"\n---', 1), encoding="utf-8")
+        out = run(self.v, "lint")[1]
+        self.assertIn('verify_intent "guess"', out)
+        self.assertIn("verify check in no known form", out)
+
     def test_forbidden_and_duplicate_title(self):
         self.seed()
         self.assertEqual(self.code("new", "--layer", "1", "--title", "What is it?", "--summary", "x"), 1)
