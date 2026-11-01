@@ -181,6 +181,7 @@ def run_check(line: str) -> tuple[bool | None, str]:
     """One contract line, read-only. True = the note holds, False = it does not, None = the check itself is broken."""
     import glob
     import urllib.request
+    import tomllib
     import yaml
     m = re.match(r"(key|nokey)\s+(\S+)\s+in\s+(\S+)(?:\s*=\s*(.+))?$", line)
     if m:
@@ -190,8 +191,9 @@ def run_check(line: str) -> tuple[bool | None, str]:
             return None, f"{where}: no such file"
         for f in files:
             try:
-                ok, val = lookup(yaml.safe_load(Path(f).read_text(encoding="utf-8")) or {}, key)
-            except (OSError, yaml.YAMLError) as ex:
+                text = Path(f).read_text(encoding="utf-8")
+                ok, val = lookup((tomllib.loads(text) if f.endswith(".toml") else yaml.safe_load(text)) or {}, key)
+            except (OSError, yaml.YAMLError, tomllib.TOMLDecodeError) as ex:
                 return None, f"{f}: {ex}"
             if kind == "nokey" and ok:
                 return False, f"{key} present in {f}"
