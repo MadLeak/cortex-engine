@@ -105,11 +105,12 @@ def ttl(n, heat: Counter) -> int | None:
 
 def due(vault: Path, as_of: dt.date, usage_file: Path) -> list[dict]:
     v, heat = load(vault), usage(usage_file)
-    out = []
+    import brain_core as bc
+    host, out = bc.host_system(v) if hasattr(bc, "host_system") else "", []
     for n in v.net.values():
         t = ttl(n, heat)
-        if t is None:
-            continue
+        if t is None or (host and bc.foreign(n, host)):
+            continue   # a note of another system is checked only there: from here it would always look broken
         seen = str(n.fm.get("reviewed") or n.fm.get("updated") or n.fm.get("created") or "")[:10]
         try:
             age = (as_of - dt.date.fromisoformat(seen)).days
