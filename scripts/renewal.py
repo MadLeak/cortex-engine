@@ -227,7 +227,12 @@ def run_check(line: str) -> tuple[bool | None, str]:
         return (ok and _same(val, _value(m.group(3)))), f"{m.group(2)} = {val}"
     m = re.match(r"version\s+(\S+)\s+contains\s+(.+)$", line)
     if m:
-        out = subprocess.run([m.group(1), "--version"], capture_output=True, text=True, timeout=30)
+        try:
+            out = subprocess.run([m.group(1), "--version"], capture_output=True, text=True, timeout=30)
+        except FileNotFoundError:
+            return False, f"{m.group(1)} is not installed"   # the note claims a program this system lacks
+        except (OSError, subprocess.TimeoutExpired) as ex:
+            return None, f"{m.group(1)} --version: {ex}"
         return m.group(2).strip() in out.stdout + out.stderr, (out.stdout + out.stderr).strip()[:80]
     m = re.match(r"service\s+(\S+)\s+active$", line)
     if m:
