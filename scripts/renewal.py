@@ -146,8 +146,9 @@ def set_fm(text: str, key: str, value: str) -> str:
     return fm + rest
 
 
-def apply(n, d: dict, day: str) -> str:
-    text = n.path.read_text(encoding="utf-8")
+def apply(vault: Path, n, d: dict, day: str) -> str:
+    path = n.path if n.path.is_absolute() else vault / n.path
+    text = path.read_text(encoding="utf-8")
     text = set_fm(text, "reviewed", day)
     if d["verdict"] == "changed" and (d.get("new_text") or "").strip():
         m = re.search(r"(?m)^## (?!Evidence|Connections|Details|Branches).*\n", text)
@@ -160,7 +161,7 @@ def apply(n, d: dict, day: str) -> str:
     ev = f"- Renewal {day}: {d['verdict']}, {str(d.get('evidence') or '')[:200]}"
     if re.search(r"(?m)^## Evidence", text):
         text = re.sub(r"(?m)^(## Evidence[ \t]*\n(?:(?!## ).*\n)*?)(?=\n*## |\Z)", lambda m: m.group(1).rstrip("\n") + "\n" + ev + "\n", text, count=1)
-    n.path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     return d["verdict"]
 
 
@@ -190,7 +191,7 @@ def renew(a) -> int:
             rec.update(verdict="skipped", reason="timeout" if raw == "timeout" else "no verdict in the reply")
         elif verdict["verdict"] in ("still_true", "changed"):
             rec.update(verdict=verdict["verdict"], evidence=verdict.get("evidence"), reason=verdict.get("reason"))
-            apply(n, verdict, day)
+            apply(vault, n, verdict, day)
             subprocess.run([sys.executable, "_brain/scripts/brain.py", "build"], cwd=vault, capture_output=True)
             git(vault, "add", "-A")
             git(vault, "commit", "-q", "-m", f"consolidation: renewal {verdict['verdict']}, {n.title}")
