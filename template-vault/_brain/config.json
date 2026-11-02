@@ -3,5 +3,6 @@
   "siblings": {},
   "warn_dependency_on": [],
   "half_life_days": 30,
+  "tokenizer_url": "",
   "allowed_addresses": {}
 }

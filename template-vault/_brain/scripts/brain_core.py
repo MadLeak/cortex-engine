@@ -12,11 +12,13 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import functools
+import hashlib
 import json
 import math
 import os
 import pickle
 import re
+import statistics
 import sys
 import time
 import unicodedata
@@ -158,11 +160,109 @@ def tokens(s: str) -> set:
     return {word_stem(t) for t in re.findall(r"[a-z0-9]+", norm(s)) if t not in STOPWORDS and len(t) > 1}
 
 
-def count_tokens(text: str) -> int:
-    """Estimate modern LLM tokens without a tokenizer: ceil(chars/4) blended 50/50 with ceil(words*1.3)."""
-    chars = math.ceil(len(text) / 4)
-    words = math.ceil(len(re.findall(r"\w+", text, re.UNICODE)) * 1.3)
-    return math.ceil((chars + words) / 2)
+TOKENIZER_URL = ""
+TOKEN_CACHE_PATH: Path | None = None
+TOKEN_CACHE: dict[str, dict] = {}
+
+
+def count_tokens(text: str, tokenizer_url: str | None = None, cache_path: Path | None = None) -> int:
+    """Return the rounded-up median of available independent token counters."""
+    global TOKEN_CACHE
+    key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    path = cache_path if cache_path is not None else TOKEN_CACHE_PATH
+    url = TOKENIZER_URL if tokenizer_url is None else tokenizer_url
+    if path is not None:
+        if not TOKEN_CACHE:
+            try:
+                TOKEN_CACHE = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                TOKEN_CACHE = {}
+        cached = TOKEN_CACHE.get(key)
+        if cached and cached.get("url") == url:
+            return cached["median"]
+    counts = {"blend": token_count_blend(text), "script": token_count_script(text),
+              "bytes": token_count_bytes(text), "pretok": token_count_pretok(text)}
+    counts.update(exact_token_counts(text, url))
+    value = math.ceil(statistics.median(counts.values()))
+    if path is not None:
+        TOKEN_CACHE[key] = {"url": url, "median": value, "counts": counts}
+        try:
+            write_atomic(path, json.dumps(TOKEN_CACHE, sort_keys=True))
+        except OSError:
+            pass
+    return value
+
+
+def token_counter_names() -> list[str]:
+    """Names of counters currently configured and available for stats output."""
+    names = ["blend", "script", "bytes", "pretok"]
+    if TOKENIZER_URL:
+        names.append("strata")
+    try:
+        import tiktoken
+        if tiktoken:
+            names.append("tiktoken")
+    except ImportError:
+        pass
+    return names
+
+
+def token_count_blend(text: str) -> int:
+    """Codex blend: average ceil(chars/4) and ceil(words*1.3), rounded up."""
+    return math.ceil((math.ceil(len(text) / 4) + math.ceil(len(re.findall(r"\w+", text, re.UNICODE)) * 1.3)) / 2)
+
+
+def token_count_script(text: str) -> int:
+    """Estimate ASCII characters at four per token and non-ASCII at 2.5 per token."""
+    return math.ceil(sum(1 for char in text if ord(char) < 128) / 4 +
+                     sum(1 for char in text if ord(char) >= 128) / 2.5)
+
+
+def token_count_bytes(text: str) -> int:
+    """Estimate UTF-8 encoded bytes at four bytes per token."""
+    return math.ceil(len(text.encode("utf-8")) / 4)
+
+
+PRETOKEN_RE = re.compile(r"'(?i:s|t|re|ve|m|ll|d)|[^\W\d_]+|\d{1,3}|[^\w\s]+|\s+", re.UNICODE)
+
+
+def token_count_pretok(text: str) -> int:
+    """Count regex pre-token pieces, splitting pieces over eight characters at six each."""
+    return sum(math.ceil(len(piece) / 6) if len(piece) > 8 else 1 for piece in PRETOKEN_RE.findall(text))
+
+
+def exact_token_counts(text: str, tokenizer_url: str = "") -> dict[str, int]:
+    """Return optional exact counts from tiktoken and a credential-free local tokenizer endpoint."""
+    result = {}
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("o200k_base") if "o200k_base" in tiktoken.list_encoding_names() else tiktoken.get_encoding("cl100k_base")
+        result["tiktoken"] = len(enc.encode(text))
+    except Exception:  # optional package and model data
+        pass
+    if tokenizer_url:
+        try:
+            from urllib.parse import urlsplit
+            from urllib.request import Request, urlopen
+            parsed = urlsplit(tokenizer_url)
+            if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+                return result
+            endpoint = tokenizer_url.rstrip("/")
+            payload = {"content": text}
+            if endpoint.endswith("/tokenize"):
+                payload = {"content": text, "add_special": False}
+            else:
+                endpoint += "/tokenize" if not endpoint.endswith("/v1/tokenize") else ""
+            req = Request(endpoint, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+            with urlopen(req, timeout=1) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if isinstance(data.get("tokens"), list):
+                result["strata"] = len(data["tokens"])
+            elif isinstance(data.get("usage"), dict) and isinstance(data["usage"].get("prompt_tokens"), int):
+                result["strata"] = data["usage"]["prompt_tokens"]
+        except Exception:  # endpoint is optional and may be offline
+            pass
+    return result
 
 
 def looks_spanish(text: str, ignore=()) -> str | None:
@@ -535,6 +635,10 @@ class Vault:
         self.name = self.cfg["vault"]
         self.state_dir = self.root / "_brain" / "state"
         self.gen_dir = self.root / "_brain" / "generated"
+        global TOKENIZER_URL, TOKEN_CACHE_PATH, TOKEN_CACHE
+        TOKENIZER_URL = str(self.cfg.get("tokenizer_url", "") or "")
+        TOKEN_CACHE_PATH = self.gen_dir / "token_counts.json"
+        TOKEN_CACHE = {}
         self.net: dict[str, Node] = {}
         self.archive: dict[str, Node] = {}
         self.titles: dict[str, list[Path]] = {}
@@ -1833,7 +1937,9 @@ def cmd_stats(v: Vault, a) -> int:
     counts = sorted(n.tokens for n in nodes)
     total = sum(counts)
     mean = total / len(counts) if counts else 0
-    print(f"tokens: {total} vault · {mean:.1f} mean · {max(counts, default=0)} max · {len(nodes)} nodes")
+    used = sorted({name for entry in TOKEN_CACHE.values() if entry.get("url") == TOKENIZER_URL
+                   for name in entry.get("counts", {})}) or token_counter_names()
+    print(f"tokens: median of {len(used)} counters ({', '.join(used)}) · {total} vault · {mean:.1f} mean · {max(counts, default=0)} max · {len(nodes)} nodes")
     print("heaviest nodes:")
     for n in sorted(nodes, key=lambda x: (-x.tokens, x.k))[:10]:
         print(f"  {n.tokens:>5} tok · {n.title}")

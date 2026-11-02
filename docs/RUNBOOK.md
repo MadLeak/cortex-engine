@@ -54,7 +54,9 @@ Without a git identity (no global one, and no `--git-name` / `--git-email`), it 
 | `_templates/` | bodies for L1, L2 and L3 nodes | rarely |
 | `_inbox/` `_sources/` `_log/` `_archive/` | the cold ring: not searched by recall | curator |
 
-Optional `config.json` keys: `half_life_days` (30), `confirm_sessions` (3), `confirm_min_days` (2), `max_provisional` (25), `learner`, `warn_dependency_on` (a list of sibling names to warn on), and `allowed_addresses` (`{"address": "why it is kept"}`, for email addresses kept on purpose).
+Optional `config.json` keys: `half_life_days` (30), `confirm_sessions` (3), `confirm_min_days` (2), `max_provisional` (25), `learner`, `warn_dependency_on` (a list of sibling names to warn on), `allowed_addresses` (`{"address": "why it is kept"}`, for email addresses kept on purpose), and `tokenizer_url` (empty by default; optional local tokenization endpoint, one-second timeout).
+
+`stats` estimates note tokens as the rounded-up median of the Codex blend, ASCII/Unicode character ratio, UTF-8 byte count, and regex pre-tokenizer. `tiktoken` and a configured local endpoint add exact counts only when available. Results are cached by text hash in `_brain/generated/token_counts.json`.
 
 ## 3. Git and the hook
 

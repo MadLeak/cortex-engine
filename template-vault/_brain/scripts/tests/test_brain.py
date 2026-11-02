@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import math
 import shutil
 import sys
 import tempfile
@@ -73,8 +74,33 @@ class Base(unittest.TestCase):
 class StructureTests(Base):
     def test_count_tokens_is_deterministic_estimate(self):
         self.assertEqual(brain.count_tokens(""), 0)
-        self.assertEqual(brain.count_tokens("abcd"), 2)
+        self.assertEqual(brain.token_count_blend("one two three four"), 6)
+        self.assertEqual(brain.token_count_script("hola, señor"), 3)
+        self.assertEqual(brain.token_count_bytes("abcd"), 1)
+        self.assertEqual(brain.token_count_pretok("hello world"), 3)
         self.assertEqual(brain.count_tokens("one two three four"), 6)
+        self.assertEqual(brain.count_tokens("Hola, señor. ¿Cómo estás?"),
+                         math.ceil(__import__("statistics").median((brain.token_count_blend("Hola, señor. ¿Cómo estás?"),
+                         brain.token_count_script("Hola, señor. ¿Cómo estás?"), brain.token_count_bytes("Hola, señor. ¿Cómo estás?"),
+                         brain.token_count_pretok("Hola, señor. ¿Cómo estás?")))))
+
+    def test_counters_on_english_spanish_and_code(self):
+        samples = {
+            "english": ("The quick brown fox jumps over the lazy dog.", (12, 11, 11, 18), 12),
+            "spanish": ("Hola, señor. ¿Cómo estás?", (7, 7, 8, 11), 8),
+            "code": ("def greet(name): return f'Hola, {name}!'", (10, 10, 10, 17), 10),
+        }
+        for name, (text, expected, median) in samples.items():
+            with self.subTest(sample=name):
+                actual = (brain.token_count_blend(text), brain.token_count_script(text),
+                          brain.token_count_bytes(text), brain.token_count_pretok(text))
+                self.assertEqual(actual, expected)
+                self.assertEqual(brain.count_tokens(text, tokenizer_url=""), median)
+
+    def test_optional_tokenizers_do_not_change_base_median_when_unavailable(self):
+        text = "def greet(name): return f'Hola, {name}!'"
+        baseline = brain.count_tokens(text, tokenizer_url="")
+        self.assertEqual(brain.count_tokens(text, tokenizer_url="http://127.0.0.1:1/tokenize"), baseline)
 
     def test_token_index_graph_and_stats(self):
         self.seed()

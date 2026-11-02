@@ -81,6 +81,8 @@ The suite has 31 tests, including a 1,000-node performance check, and runs in ab
 
 Engine version 2.12.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
+Token counts are the rounded-up median of four lightweight estimates: the original Codex character/word blend, an ASCII/Unicode character estimate, UTF-8 bytes, and regex pre-token pieces. Optional `tiktoken` or a local tokenizer endpoint can contribute an exact count when available. Set `tokenizer_url` in `_brain/config.json` to a local llama.cpp `/tokenize` endpoint; it is empty by default and requests have a one-second timeout. Per-text counts are cached under `_brain/generated/` by content hash.
+
 ## License
 
 Copyright (c) 2026 Adhonys Diaz. Cortex is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md): you may use, study, modify and share it for any noncommercial purpose, including personal use, research, education and work by charities and public institutions.
