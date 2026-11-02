@@ -380,7 +380,7 @@ class Hub(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if self.gate(path):
             return
-        if not self.same_origin():
+        if path != "/login" and not self.same_origin():   # sign-in carries the key in the body: no Origin needed
             return self.send(HTTPStatus.FORBIDDEN, b"cross-site request refused", TEXT)
         try:
             raw = self.body()
@@ -391,7 +391,11 @@ class Hub(BaseHTTPRequestHandler):
             if self.key and hmac.compare_digest(key.encode(), self.key.encode()):
                 tok = secrets.token_urlsafe(32)
                 self.sessions[tok] = time.time() + SESSION_DAYS * 86400
-                shared = f"Domain={self.domain}; " if self.domain and "." in self.domain else ""   # the agents' hosts too
+                try:   # a by-IP sign-in gets a host-only cookie: a browser drops Domain= on a bare address
+                    by_ip = bool(ipaddress.ip_address(self.hostname()))
+                except ValueError:
+                    by_ip = False
+                shared = f"Domain={self.domain}; " if self.domain and "." in self.domain and not by_ip else ""   # the agents' hosts too
                 return self.redirect("/", {"Set-Cookie": f"cortex_hub={tok}; {shared}Path=/; HttpOnly; Secure; "
                                                          f"SameSite=Strict; Max-Age={SESSION_DAYS * 86400}"})
             time.sleep(1)   # slows guessing
@@ -576,8 +580,13 @@ button[aria-pressed="true"] { background: var(--ink); color: var(--surface); bor
 .feed li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 0; border-top: 1px solid var(--border); }
 .feed li:first-child { border-top: 0; color: var(--ink); }
 .feed .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
-.actions { display: flex; gap: 6px; margin-top: auto; align-items: center; }
-.host { margin-left: auto; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.actions { position: relative; display: flex; gap: 6px; margin-top: auto; align-items: center; }
+.actions .btn { flex: 0 0 auto; white-space: nowrap; }
+.host { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 2; margin: 0; padding: 2px 7px; max-width: 100%;
+  font-size: 11px; color: var(--ink2); background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+  box-shadow: var(--shadow);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .12s ease; }
+.actions:hover .host, .card:focus-within .host { opacity: 1; }
 .empty { color: var(--muted); font-size: 13px; }
 /* the wall: every agent's panel at once, orbit only */
 .wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 12px; }
@@ -751,7 +760,8 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
   };
   const panelUrl = (v, extra = '') => `/v/${v.slug}/Panel.html${extra}`;   // same origin: the wall embeds these
-  const openUrl = (v, extra = '') => v.url ? v.url + extra : panelUrl(v, extra);   // the agent's own host
+  const byIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(location.hostname);   // a sign-in by address is host-only: stay on it
+  const openUrl = (v, extra = '') => byIp && v.ip_url ? v.ip_url + extra : (v.url ? v.url + extra : panelUrl(v, extra));
   let hubInfo = {}, vaults = [], loaded = false, view = 'agents', slug = '';
   const seq = {}, cards = {};
 
@@ -774,7 +784,8 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
   function fill(c, v) {
     c.classList.toggle('live', !!v.live);
     const hs = c.querySelector('.host') || el('span', { class: 'host' }, null, c.querySelector('.actions'));
-    hs.textContent = v.lan_url ? `LAN · ${new URL(v.lan_url).host}` : v.url ? new URL(v.url).host : '';
+    hs.textContent = byIp && v.ip_url ? `LAN · ${new URL(v.ip_url).host}`
+      : v.lan_url ? `LAN · ${new URL(v.lan_url).host}` : v.url ? new URL(v.url).host : '';
     hs.title = v.lan_url ? 'Reachable from the local network, behind the access key' : 'Only on this machine';
     let ip = c.querySelector('.by-ip');
     if (v.ip_url && !ip) ip = el('a', { class: 'btn by-ip', target: '_blank', rel: 'noopener', title: 'When the network does not resolve the name' }, 'By IP', c.querySelector('.actions'));
