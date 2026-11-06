@@ -551,3 +551,19 @@ class HttpTests(unittest.TestCase):
     def test_two_agents_on_one_vault_share_one_gate(self):
         hub = cortex_mcp.Hub(self.tmp, 10.0)
         self.assertIs(hub.server("my", "codex", "curator").gate, hub.server("my", "hermes", "reader").gate)
+
+
+class BriefTests(Base):
+    def test_brief_gives_the_hot_nodes_and_the_session_and_with_a_query_the_ask(self):
+        (self.v / "MAP.md").write_text("# MAP\n\n## Hot\nWhat was needed.\n- [[A]] — first\n- [[B]] — second\n\n"
+                                       "## How to read\n- [[C]] — not hot\n", encoding="utf-8")
+        out = self.ran(call("brief"))
+        self.assertIn("- [[A]] — first\n- [[B]] — second", out)
+        self.assertNotIn("[[C]]", out)
+        self.assertIn("argv session status", out)
+        self.assertNotIn("## recall", out)
+        out = self.ran(call("brief", query="hub tls", reads=0))
+        self.assertIn("## recall\nargv recall hub tls", out)
+
+    def test_brief_without_a_map_says_so(self):
+        self.assertIn("no MAP.md yet", self.ran(call("brief")))

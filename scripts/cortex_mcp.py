@@ -10,7 +10,7 @@ folder's first word in lower case (claude, hermes) or its full name; ?by=<agent>
 ?role=reader hides the curator tool. It listens on localhost only and refuses a browser Origin that is not local.
 One gate per vault is shared by every agent, so two agents on one vault queue instead of racing its bookkeeping.
 
-Tools. `cortex`, the funnel: recall · read · credit · stats · learn · session, and the combined actions ask (recall
+Tools. `cortex`, the funnel: recall · read · credit · stats · learn · session, and the combined actions brief (the Hot nodes, the budget, and with a query an ask), ask (recall
 plus the reads it points at), finish (credit plus learnings), health (stats, session, lint, broken references) and
 batch (up to 12 calls in order). vault=<sibling> runs a read on a sibling vault. `cortex_curate`, every other verb
 of the vault's own engine, read from its parser at start (a new engine verb appears with no change here), plus
@@ -49,8 +49,8 @@ PROTOCOL = "2025-06-18"            # what we answer with when a client asks for 
 KNOWN = {"2024-11-05", "2025-03-26", PROTOCOL}
 ENGINE_MARK = "✖"                  # what brain.py puts in front of every error it raises itself (main's handler)
 ACTIONS = ("recall", "read", "credit", "stats", "learn", "session")
-COMBINED = ("ask", "finish", "health", "batch")   # several engine calls in one round trip
-SIBLING_OK = {"recall", "read", "credit", "stats", "session", "ask", "health"}   # what may target a sibling vault
+COMBINED = ("brief", "ask", "finish", "health", "batch")   # several engine calls in one round trip
+SIBLING_OK = {"recall", "read", "credit", "stats", "session", "ask", "health", "brief"}   # what may target a sibling vault
 MAX_STEPS = 12
 MAX_TEXT = 20_000                  # a client caps its own results anyway; say so instead of silently cutting
 
@@ -72,7 +72,8 @@ def describe() -> str:
             "you already have. Anything else is the engine's own failure: retry once. The budget belongs to the "
             "vault and is shared with any brain.py call in the same 10 minutes. Cite what you used as [[Title]]. "
             "Never store secrets, credentials or personal data. "
-            "Combined actions save round trips: action=ask(query, reads 0-2 or titles) is recall plus the reads it "
+            "Combined actions save round trips: action=brief(query optional) at the start of a task gives the Hot "
+            "nodes and the budget left, and with a query answers it like ask; action=ask(query, reads 0-2 or titles) is recall plus the reads it "
             "points at; action=finish(used, learnings=[learn objects]) credits and stores at the end of a task; "
             "action=health is stats, session, lint and broken sibling references at once; action=batch(steps) runs "
             "up to 12 calls in order (a step with verb and args is a cortex_curate call) and stops at the first "
@@ -128,6 +129,8 @@ ARGS = {"recall": {"query": "what to look for, in English", "all": D["all"], "no
 ARGS["ask"] = {"query": ARGS["recall"]["query"], "all": D["all"],
                "reads": "how many top signatures to read when recall gives no clear answer (0-2, default 1)",
                "titles": "exact titles to read after the recall, instead of the top signatures (at most 2)"}
+ARGS["brief"] = {"query": "optional: the task's question, answered in the same call as an ask",
+                 "all": D["all"], "reads": "with query: how many top signatures to read (0-2, default 1)"}
 ARGS["finish"] = {"used": "the titles that helped (credited first)",
                   "learnings": "learn calls to run after the credit: each one an object with learn's fields"}
 ARGS["health"] = {}
@@ -408,6 +411,36 @@ def ask(st, a: dict, vault: Path) -> tuple[bool, str]:
     return True, "\n\n".join(parts)
 
 
+def hot(vault: Path) -> str:
+    """The Hot section of the vault's MAP.md: the nodes needed most lately, title and summary."""
+    try:
+        lines = (vault / "MAP.md").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return "(this vault has no MAP.md yet)"
+    out, on = [], False
+    for line in lines:
+        if line.startswith("## "):
+            if on:
+                break
+            on = line.strip() == "## Hot"
+            continue
+        if on and line.startswith("- [["):
+            out.append(line)
+    return "\n".join(out) or "(no Hot nodes yet)"
+
+
+def brief(st, a: dict, vault: Path) -> tuple[bool, str]:
+    """Start of a task in one call: the Hot nodes, the budget left, and with a query the ask as well."""
+    ok, ses = one(st, {"action": "session"}, vault)
+    parts = [f"## hot (when a summary here answers, answer from it and credit it)\n{hot(vault)}",
+             f"## session\n{ses if ok else 'unknown: ' + ses}"]
+    if a.get("query"):
+        okq, got = ask(st, {k: v for k, v in a.items() if k in ("query", "all", "reads")}, vault)
+        parts.append(got)
+        return okq, "\n\n".join(parts)
+    return True, "\n\n".join(parts)
+
+
 def finish(st, a: dict) -> tuple[bool, str]:
     parts, ok = [], True
     if a.get("used"):
@@ -463,6 +496,8 @@ def run(st, a: dict, depth: int = 0) -> tuple[bool, str]:
             vault = sibling(st, a["vault"])
         if act == "ask":
             return ask(st, {k: v for k, v in a.items() if k != "vault"}, vault)
+        if act == "brief":
+            return brief(st, {k: v for k, v in a.items() if k != "vault"}, vault)
         if act == "finish":
             return finish(st, a)
         if act == "health":
