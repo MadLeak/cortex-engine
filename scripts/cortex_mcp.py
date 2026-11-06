@@ -1,0 +1,815 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
+"""The Cortex engine as an MCP server: standard library only, no SDK. Two ways to run it:
+
+    python3 scripts/cortex_mcp.py --http 127.0.0.1:8777 [--vaults ~/Vaults]      one service for every agent
+    python3 scripts/cortex_mcp.py --vault ~/vaults/my-cortex [--by myagent]       stdio, one vault per process
+
+The service answers MCP's streamable HTTP (JSON replies, no event stream) at /mcp/<vault>, where <vault> is the
+folder's first word in lower case (claude, hermes) or its full name; ?by=<agent> names who authors the learnings and
+?role=reader hides the curator tool. It listens on localhost only and refuses a browser Origin that is not local.
+One gate per vault is shared by every agent, so two agents on one vault queue instead of racing its bookkeeping.
+
+Tools. `cortex`, the funnel: recall · read · credit · stats · learn · session, and the combined actions ask (recall
+plus the reads it points at), finish (credit plus learnings), health (stats, session, lint, broken references) and
+batch (up to 12 calls in order). vault=<sibling> runs a read on a sibling vault. `cortex_curate`, every other verb
+of the vault's own engine, read from its parser at start (a new engine verb appears with no change here), plus
+create (new and its links). status consolidated needs --allow-consolidate: only the vault's owner consolidates.
+Each call runs that vault's own `_brain/scripts/brain.py` and hands back its stdout as the answer, so the engine's
+formatting and its exit codes stay the contract: 0 the text is the answer · 1 the arguments were wrong (the engine's
+✖ line comes back as a tool error, so the model fixes them and retries) · 2 the read budget or the provisional
+limit is spent (stop reading and answer with what you have).
+
+No --session is passed: the engine keeps one automatic session per vault, renewed after 10 idle minutes, so the
+budget spent here is the budget a brain.py call spends in the same window, and the engine's automatic credit of a
+closed session still happens. Only learn writes; the engine takes the vault's own lock and waits about 10 seconds
+for it, because a curator or a consolidation timer can be writing at the same time.
+
+Every read call also touches the automatic session and the telemetry, which the vault lock does not cover, so this
+process runs one engine call at a time: a second call waits for the first instead of racing it. Two agents reading
+the same vault from two processes still spend the same budget, and the last of them to finish is the one whose
+bookkeeping survives. Running the engine fresh costs about 0.04 s and 17 MB per call (timed twice on Alastor,
+2026-11-03), which is why nothing here keeps a long-lived engine around.
+
+Test: python3 -m unittest scripts/test_cortex_mcp.py
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+PROTOCOL = "2025-06-18"            # what we answer with when a client asks for a revision we do not speak
+# echo a revision only when we speak it: promising one we cannot read invites requests we cannot answer
+KNOWN = {"2024-11-05", "2025-03-26", PROTOCOL}
+ENGINE_MARK = "✖"                  # what brain.py puts in front of every error it raises itself (main's handler)
+ACTIONS = ("recall", "read", "credit", "stats", "learn", "session")
+COMBINED = ("ask", "finish", "health", "batch")   # several engine calls in one round trip
+SIBLING_OK = {"recall", "read", "credit", "stats", "session", "ask", "health"}   # what may target a sibling vault
+MAX_STEPS = 12
+MAX_TEXT = 20_000                  # a client caps its own results anyway; say so instead of silently cutting
+
+
+class BadCall(Exception):
+    """The call is wrong before the engine is even asked: bad action, missing argument, no vault."""
+
+
+def describe() -> str:
+    """What the model reads. The funnel's four steps live here, so a small model does not have to remember them."""
+    return ("Cortex vault: graph memory, read through its budgeted funnel. "
+            "action=recall(query): signatures by relevance and weight, and the body itself under '# answer:' when "
+            "one node clearly answers. action=read(title): one node body by exact title, at most two per question. "
+            "action=credit(used=[titles]): name the titles that helped; it is bookkeeping, do not mention it. "
+            "action=stats: the vault's size and the tokens read from it so far. action=learn: store one verified "
+            "fact you just learned (English title and summary; a current one needs verify_intent, verify_keywords "
+            "and, when it can be rechecked, verify lines - or truth=historical). "
+            "isError means fix the arguments, or - when it says budget or limit - stop reading and answer with what "
+            "you already have. Anything else is the engine's own failure: retry once. The budget belongs to the "
+            "vault and is shared with any brain.py call in the same 10 minutes. Cite what you used as [[Title]]. "
+            "Never store secrets, credentials or personal data. "
+            "Combined actions save round trips: action=ask(query, reads 0-2 or titles) is recall plus the reads it "
+            "points at; action=finish(used, learnings=[learn objects]) credits and stores at the end of a task; "
+            "action=health is stats, session, lint and broken sibling references at once; action=batch(steps) runs "
+            "up to 12 calls in order (a step with verb and args is a cortex_curate call) and stops at the first "
+            "failure. action=session shows the budget left. vault=<sibling name> runs a read on a sibling vault.")
+
+
+def text(a: dict, key: str) -> str:
+    v = a.get(key)
+    if not isinstance(v, str) or not v.strip():
+        raise BadCall(f"{a.get('action')} needs {key} as a non-empty string")
+    return v
+
+
+def words(a: dict, key: str) -> list[str]:
+    v = a.get(key)
+    if not isinstance(v, list) or not v:
+        raise BadCall(f"{a.get('action')} needs {key} as a list of strings")
+    out = []
+    for x in v:
+        if not isinstance(x, str) or not x.strip():
+            raise BadCall(f"{a.get('action')} needs {key} as a list of strings")
+        out.append(x)
+    return out
+
+
+# What each action takes, and what to tell the model about it. The schema and the argument check both come from
+# this table, so they cannot drift apart: anything not listed here is refused before the engine is asked.
+D = {"all": "also search the sibling vaults",
+     "no_body": "signatures only, even when one answer looks clear",
+     "full": "the whole body, not only the lines that match the last recall",
+     "cold": "why you are reading a note in the cold ring",
+     "by": "the short name of the agent authoring this learning",
+     "system": "the systems it holds on, such as ubuntu or windows (leave out when it holds on any system)",
+     "verify_keywords": "3 to 6 words a search for this note would use",
+     "verify": "one read-only check a script could rerun without a model, such as 'path <p>', 'key a.b in <file> "
+               "= <value>' or 'grep <regex> in <file>' (up to five, none when nothing can be checked)"}
+ARGS = {"recall": {"query": "what to look for, in English", "all": D["all"], "no_body": D["no_body"],
+                   "mode": "the session's reading mode, when the engine offers more than normal"},
+        "read": {"title": "the exact title of the node", "full": D["full"], "cold": D["cold"]},
+        "credit": {"used": "the titles that helped"},
+        "stats": {},
+        "session": {},
+        "learn": {"up": "the L2 concept it belongs under", "title": "a short English title",
+                  "summary": "one English line saying what is true", "content": "what is true",
+                  "evidence": "how you know: a file, a command, a date",
+                  "type": "fact, procedure, error, decision or example",
+                  "truth": "current (verify anything measurable before stating it) or historical (a dated record)",
+                  "contradicts": "the title of a node this learning corrects",
+                  "verify_intent": "what a script will recheck later: config, file, service, endpoint, version, "
+                                   "code, rule or behavior",
+                  "system": D["system"], "verify_keywords": D["verify_keywords"], "verify": D["verify"],
+                  "by": D["by"]}}
+ARGS["ask"] = {"query": ARGS["recall"]["query"], "all": D["all"],
+               "reads": "how many top signatures to read when recall gives no clear answer (0-2, default 1)",
+               "titles": "exact titles to read after the recall, instead of the top signatures (at most 2)"}
+ARGS["finish"] = {"used": "the titles that helped (credited first)",
+                  "learnings": "learn calls to run after the credit: each one an object with learn's fields"}
+ARGS["health"] = {}
+ARGS["batch"] = {"steps": "up to 12 calls run in order, each an object with its own action (or verb and args for "
+                          "cortex_curate's verbs); it stops at the first one that fails"}
+for _a in SIBLING_OK:
+    ARGS[_a]["vault"] = "a sibling vault's name, such as Agents Cortex, to read there instead (reads only)"
+LISTS = {"used", "system", "verify_keywords", "verify", "titles"}
+INTS = {"reads"}
+OBJS = {"learnings", "steps"}        # arrays of strings, not single strings
+BOOLS = {"all", "no_body", "full"}                              # flags, not text
+SHARED = {"vault": "a sibling vault's name, such as Agents Cortex, to read there instead (reads only)",
+          "used": "the titles that helped",
+          "query": "what to look for, in English",
+          "all": D["all"],
+          "title": "read: the exact title of the node. learn: a short English title for the node it creates"}
+
+
+def argv_for(a: dict, by: str | None) -> list[str]:
+    """The engine's own command line for a tool call: one argument per title, query or line, never a shell."""
+    act = a.get("action")
+    if act not in ACTIONS:
+        raise BadCall(f"action must be one of: {', '.join(ACTIONS)}")
+    for key in a:
+        if key not in ("action", "vault") and key not in ARGS[act]:
+            raise BadCall(f"{act} does not take {key}")
+    if act == "recall":
+        cmd = ["recall", text(a, "query")]
+        if a.get("all"):
+            cmd.append("--all")
+        if a.get("no_body"):
+            cmd.append("--no-body")
+        if a.get("mode"):
+            cmd += ["--mode", text(a, "mode")]
+    elif act == "read":
+        cmd = ["read", text(a, "title")]
+        if a.get("full"):
+            cmd.append("--full")
+        if a.get("cold"):
+            cmd += ["--cold", text(a, "cold")]
+    elif act == "credit":
+        cmd = ["credit", "--used", *words(a, "used")]
+    elif act == "stats":
+        cmd = ["stats"]
+    elif act == "session":
+        cmd = ["session", "status"]
+    else:
+        cmd = ["learn", "--up", text(a, "up"), "--title", text(a, "title"), "--summary", text(a, "summary"),
+               "--content", text(a, "content"), "--evidence", text(a, "evidence")]
+        for key, flag in (("type", "--type"), ("truth", "--truth"), ("contradicts", "--contradicts"),
+                          ("verify_intent", "--verify-intent")):
+            if a.get(key):
+                cmd += [flag, text(a, key)]
+        if a.get("system"):
+            cmd += ["--system", *words(a, "system")]
+        if a.get("verify_keywords"):
+            cmd += ["--verify-keywords", *words(a, "verify_keywords")]
+        for line in a.get("verify") or []:
+            if not isinstance(line, str) or not line.strip():
+                raise BadCall("learn's verify takes read-only checks as strings")
+            cmd += ["--verify", line]
+        if a.get("by") or by:
+            cmd += ["--by", a.get("by") or by]
+    return cmd
+
+
+
+# ---- every other verb of the vault's own engine, read from its parser: a new verb appears with no change here
+SPEC_CODE = r"""
+import argparse, json, sys
+sys.path.insert(0, sys.argv[1])
+import brain_core as bc
+p = bc.build_parser()
+sub = next(a for a in p._actions if isinstance(a, argparse._SubParsersAction))
+helps = {c.dest: c.help for c in sub._choices_actions}
+out = {}
+for verb, sp in sub.choices.items():
+    args = []
+    for a in sp._actions:
+        if a.dest in ("help", "session", "vault"):
+            continue
+        if isinstance(a, argparse._StoreTrueAction):
+            kind = "bool"
+        elif a.nargs in ("*", "+") or isinstance(a, argparse._AppendAction):
+            kind = "list"
+        elif a.type is int:
+            kind = "int"
+        else:
+            kind = "str"
+        args.append({"name": a.dest, "flag": a.option_strings[-1] if a.option_strings else None, "kind": kind,
+                     "choices": [str(c) for c in a.choices] if a.choices else None,
+                     "required": bool(a.required) if a.option_strings else a.nargs != "?",
+                     "append": isinstance(a, argparse._AppendAction), "help": a.help or ""})
+    out[verb] = {"help": helps.get(verb, ""), "args": args}
+print(json.dumps(out))
+"""
+READER = set(ACTIONS) | {"session"}     # the funnel's verbs live on the cortex tool, never on cortex_curate
+NOT_HERE = {"precommit"}                # the Git hook's verb: a model has no reason to call it
+GUARDED = {("status", "consolidated")}  # only the owner marks a node consolidated: needs --allow-consolidate
+
+
+def engine_spec(brain: Path) -> dict:
+    """{verb: {help, args}} as this vault's engine defines them; {} when its parser cannot be read that way."""
+    try:
+        r = subprocess.run([sys.executable, "-I", "-c", SPEC_CODE, str(brain.parent)], capture_output=True,
+                           text=True, timeout=30, encoding="utf-8")
+        spec = json.loads(r.stdout) if r.returncode == 0 else {}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        spec = {}
+    return {v: s for v, s in spec.items() if v not in READER | NOT_HERE}
+
+
+def signature(verb: str, s: dict) -> str:
+    parts = []
+    for a in s["args"]:
+        t = "|".join(a["choices"]) if a["choices"] else {"bool": "true", "list": "[..]", "int": "n"}.get(a["kind"], "..")
+        parts.append(f"{a['name']}={t}" + ("" if a["required"] else "?"))
+    return f"{verb}({', '.join(parts)}): {s['help']}"
+
+
+def curate_argv(spec: dict, verb, args, allow_consolidate: bool = False) -> list[str]:
+    """The engine's command line for a curator verb, checked against the engine's own parser spec."""
+    if verb not in spec:
+        raise BadCall(f"verb must be one of: {', '.join(sorted(spec))}")
+    if not isinstance(args, dict):
+        raise BadCall("args must be an object")
+    known = {a["name"]: a for a in spec[verb]["args"]}
+    for k in args:
+        if k not in known:
+            raise BadCall(f"{verb} does not take {k}; it takes: {', '.join(known) or 'nothing'}")
+    pos, opt = [], []
+    for name, a in known.items():
+        v = args.get(name)
+        if v is None or v is False or v == [] or v == "":
+            if a["required"]:
+                raise BadCall(f"{verb} needs {name}")
+            continue
+        if a["kind"] == "list" and not isinstance(v, list):
+            v = [v]
+        elif a["kind"] != "list" and isinstance(v, list):
+            raise BadCall(f"{verb}'s {name} takes one value, not a list")
+        vals = v if isinstance(v, list) else [v]
+        for x in vals:
+            if (isinstance(x, bool) and a["kind"] != "bool") or not isinstance(x, (str, int, bool)):
+                raise BadCall(f"{verb}'s {name} takes {a['kind']}, not {type(x).__name__}")
+            if a["choices"] and str(x) not in a["choices"]:
+                raise BadCall(f"{verb}'s {name} must be one of: {', '.join(a['choices'])}")
+        if a["flag"] is None:
+            pos += [str(x) for x in vals]
+        elif a["kind"] == "bool":
+            opt.append(a["flag"])
+        elif a["append"]:
+            for x in vals:
+                opt += [a["flag"], str(x)]
+        else:
+            opt += [a["flag"], *[str(x) for x in vals]]
+    for name, value in GUARDED:
+        if verb == name and value in pos and not allow_consolidate:
+            raise BadCall(f"only the vault's owner marks a node {value}; this server was not started with "
+                          "--allow-consolidate")
+    if verb == "activity" and args.get("nodes") == "-":
+        raise BadCall("activity's nodes takes a file path here, not stdin")
+    return [verb, *pos, *opt]
+
+def cap(t: str) -> str:
+    return t if len(t) <= MAX_TEXT else t[:MAX_TEXT] + f"\n… cut at {MAX_TEXT} characters: ask for less."
+
+
+def crash(err: str) -> str:
+    """An error the engine did not raise itself: the model needs the last line, not six lines of traceback."""
+    lines = [x for x in err.splitlines() if x.strip()]
+    return f"error: the engine crashed ({lines[-1].strip() if lines else 'no output'}). " \
+           "That is not your arguments: retry once, then answer with what you already have."
+
+
+def run_engine(brain: Path, vault: Path, args: list[str], timeout: float) -> tuple[bool, str]:
+    """-> (ok, text). The engine's stdout is the answer; its exit code says who was wrong.
+
+    brain.py prefixes with ✖ every error it raises itself and returns that error's code: 1 wrong arguments, 2 a
+    budget or a limit spent. argparse exits 2 too, on a call it cannot parse, and argparse never prints the ✖ -
+    so the mark is what separates "you asked wrong, fix it" from "the vault is spent, stop reading".
+    """
+    try:
+        r = subprocess.run([sys.executable, str(brain), "--vault", str(vault), *args], cwd=str(vault.parent),
+                           # beside the vault, never inside it: a stray relative path cannot write in the vault
+                           capture_output=True, text=True, timeout=timeout, encoding="utf-8")
+    except subprocess.TimeoutExpired:
+        return False, f"error: the engine took over {timeout:.0f} seconds and was stopped. Try a narrower query."
+    except OSError as e:
+        return False, f"error: cannot run {brain}: {e}"
+    out, err = (r.stdout or "").strip(), (r.stderr or "").strip()
+    if r.returncode == 0:
+        return True, out or "(the engine answered nothing)"
+    if "Traceback (most recent call last)" in err:
+        return False, crash(err)
+    if r.returncode == 2 and err.startswith(ENGINE_MARK):   # the engine's own limit, not a malformed call
+        note = ("The vault has enough pending learnings: write this one to _inbox instead." if args[0] == "learn"
+                else "Budget or limit spent: stop reading and answer now.")
+        return False, "\n".join(x for x in (out, err, note) if x)
+    if r.returncode == 2:                               # argparse: it never prints the ✖, and it means ask again
+        return False, "\n".join(x for x in (err or out, "The arguments were wrong: fix them and retry.") if x)
+    return False, err or out or "error: the engine failed without saying why"
+
+
+def call(vault: Path, brain: Path, by: str | None, timeout: float, a: dict,
+         gate: threading.Semaphore | None = None) -> tuple[bool, str]:
+    """One call to one vault's engine. The gate serializes them inside this process: every read call writes the
+    automatic session and the telemetry, and the vault lock covers neither, so two calls at once would trample
+    each other's bookkeeping. Another agent on the same vault is another process, and nothing here waits for it."""
+    try:
+        args = argv_for(a, by)
+    except BadCall as e:
+        return False, f"error: {e}"
+    if gate is not None and not gate.acquire(timeout=max(1.0, timeout)):
+        return False, "error: another call to this vault is still running: try again in a moment"
+    try:
+        return run_engine(brain, vault, args, timeout)
+    finally:
+        if gate is not None:
+            gate.release()
+
+
+
+# ---- combined actions: several engine calls under one gate, one round trip for the agent
+SIG = re.compile(r"^\[L\d\]\s+(?:(?P<vault>[^:\n]+?)::)?(?P<title>.+?)\s+—\s")
+
+
+def sibling(st, name) -> Path:
+    """A sibling vault by its folder name: beside this one, with its own engine. Never this vault's parent itself."""
+    if not isinstance(name, str) or not name.strip() or "/" in name or "\\" in name or name.startswith("."):
+        raise BadCall("vault takes a sibling vault's name, such as Agents Cortex")
+    v = st.vault.parent / name
+    if v == st.vault:
+        return v
+    if not (v / "_brain" / "scripts" / "brain.py").is_file():
+        sibs = sorted(x.name for x in st.vault.parent.iterdir() if (x / "_brain/scripts/brain.py").is_file())
+        raise BadCall(f"no vault named {name}; the vaults beside this one: {', '.join(sibs)}")
+    return v
+
+
+def one(st, a: dict, vault: Path | None = None) -> tuple[bool, str]:
+    """One simple action on one vault, the gate already held."""
+    vault = vault or st.vault
+    args = argv_for(a, st.by if vault == st.vault else None)
+    return run_engine(vault / "_brain" / "scripts" / "brain.py", vault, args, st.timeout)
+
+
+def titles_from(recall_text: str, n: int) -> list[tuple[str | None, str]]:
+    out = []
+    for line in recall_text.splitlines():
+        m = SIG.match(line.strip())
+        if m:
+            out.append((m.group("vault"), m.group("title")))
+        if len(out) >= n:
+            break
+    return out
+
+
+def ask(st, a: dict, vault: Path) -> tuple[bool, str]:
+    """recall, then read what it points at unless it already handed the answer over."""
+    q = {"action": "recall", "query": text(a, "query")}
+    if a.get("all"):
+        q["all"] = True
+    ok, got = one(st, q, vault)
+    parts = [f"## recall\n{got}"]
+    if not ok or "# answer:" in got:
+        return ok, "\n\n".join(parts)
+    n = a.get("reads", 1)
+    if not isinstance(n, int) or isinstance(n, bool) or not 0 <= n <= 2:
+        raise BadCall("ask's reads is 0, 1 or 2")
+    picks = [(None, t) for t in words(a, "titles")][:2] if a.get("titles") else titles_from(got, n)
+    for vname, title in picks:
+        where = sibling(st, vname) if vname else vault
+        ok2, body = one(st, {"action": "read", "title": title}, where)
+        parts.append(f"## read {title}\n{body}")
+        if not ok2:
+            break
+    return True, "\n\n".join(parts)
+
+
+def finish(st, a: dict) -> tuple[bool, str]:
+    parts, ok = [], True
+    if a.get("used"):
+        ok, got = one(st, {"action": "credit", "used": words(a, "used")})
+        parts.append(f"## credit\n{got}")
+    ls = a.get("learnings") or []
+    if not isinstance(ls, list):
+        raise BadCall("finish's learnings is a list of objects")
+    for i, l in enumerate(ls[:5], 1):
+        if not isinstance(l, dict):
+            raise BadCall("each learning is an object with learn's fields")
+        okl, got = one(st, dict(l, action="learn"))
+        parts.append(f"## learn {i}: {l.get('title', '?')}\n{got}")
+        ok = ok and okl
+        if not okl and "stop" in got.lower():
+            break
+    if not parts:
+        raise BadCall("finish needs used, learnings or both")
+    return ok, "\n\n".join(parts)
+
+
+def health(st, vault: Path) -> tuple[bool, str]:
+    brain = vault / "_brain" / "scripts" / "brain.py"
+    parts = []
+    for label, argv in (("stats", ["stats"]), ("session", ["session", "status"]), ("lint", ["lint", "--quiet"]),
+                        ("externals", ["externals"])):
+        ok, got = run_engine(brain, vault, argv, st.timeout)
+        if label == "externals":
+            broken = got.count("BROKEN")
+            got = f"{broken} broken references" + ("\n" + "\n".join(x for x in got.splitlines() if "BROKEN" in x)
+                                                   if broken else "")
+        parts.append(f"## {label}{'' if ok else ' (failed)'}\n{got}")
+    return True, "\n\n".join(parts)
+
+
+def run(st, a: dict, depth: int = 0) -> tuple[bool, str]:
+    """The cortex tool: one action, simple or combined. Holds the gate for the whole call (see call)."""
+    if not isinstance(a, dict):
+        return False, "error: arguments must be an object"
+    if depth == 0:
+        if not st.gate.acquire(timeout=max(1.0, st.timeout)):
+            return False, "error: another call to this vault is still running: try again in a moment"
+        try:
+            return run(st, a, 1)
+        finally:
+            st.gate.release()
+    try:
+        act = a.get("action")
+        vault = st.vault
+        if a.get("vault"):
+            if act not in SIBLING_OK:
+                raise BadCall(f"{act} runs only on this vault; vault= is for reads")
+            vault = sibling(st, a["vault"])
+        if act == "ask":
+            return ask(st, {k: v for k, v in a.items() if k != "vault"}, vault)
+        if act == "finish":
+            return finish(st, a)
+        if act == "health":
+            return health(st, vault)
+        if act == "batch":
+            steps = a.get("steps")
+            if not isinstance(steps, list) or not steps:
+                raise BadCall("batch needs steps as a list of objects")
+            if len(steps) > MAX_STEPS:
+                raise BadCall(f"batch runs at most {MAX_STEPS} steps")
+            parts = []
+            for i, step in enumerate(steps, 1):
+                if not isinstance(step, dict) or step.get("action") == "batch":
+                    return False, "\n\n".join(parts + [f"## step {i}\nerror: a step is an object, never a batch"])
+                ok, got = curate(st, step) if "verb" in step else run(st, step, depth + 1)
+                name = step.get("verb") or step.get("action")
+                parts.append(f"## step {i}: {name}{'' if ok else ' (failed: the batch stopped here)'}\n{got}")
+                if not ok:
+                    return False, "\n\n".join(parts)
+            return True, "\n\n".join(parts)
+        return one(st, {k: v for k, v in a.items() if k != "vault"}, vault)
+    except BadCall as e:
+        return False, f"error: {e}"
+
+
+def curate(st, a: dict) -> tuple[bool, str]:
+    """The cortex_curate tool: one of the engine's other verbs, or create (new and its links), on this vault only."""
+    if st.role != "curator":
+        return False, "error: this server was started with --role reader: it does not curate"
+    try:
+        verb, args = a.get("verb"), a.get("args") or {}
+        if verb == "create":
+            if not isinstance(args, dict):
+                raise BadCall("args must be an object")
+            links = args.get("links") or []
+            new = {k: v for k, v in args.items() if k != "links"}
+            argv = curate_argv(st.spec, "new", new, st.allow_consolidate)
+            if not isinstance(links, list) or not all(isinstance(x, dict) for x in links):
+                raise BadCall("create's links is a list of {target, type, reason}")
+            link_argv = [curate_argv(st.spec, "link", dict(l, source=new.get("title")), False) for l in links[:7]]
+            ok, got = run_engine(st.brain, st.vault, argv, st.timeout)
+            parts = [f"## new\n{got}"]
+            for la in link_argv:
+                if not ok:
+                    break
+                ok, got = run_engine(st.brain, st.vault, la, st.timeout)
+                parts.append(f"## link {la[2]}\n{got}")
+            return ok, "\n\n".join(parts)
+        return run_engine(st.brain, st.vault, curate_argv(st.spec, verb, args, st.allow_consolidate), st.timeout)
+    except BadCall as e:
+        return False, f"error: {e}"
+
+
+def curate_schema(spec: dict) -> dict:
+    sigs = "\n".join(signature(v, s) for v, s in sorted(spec.items()))
+    return {"name": "cortex_curate",
+            "description": ("Cortex vault curator verbs: the engine's own commands that shape the graph. "
+                            "verb names the command, args holds its fields by name (lists as arrays, flags as true). "
+                            "verb=create runs new and then link for each of args.links ([{target, type, reason}], "
+                            "at most 7) in one call. Only the vault's owner marks a node consolidated. "
+                            "isError means fix the arguments; the engine's own message says what was wrong.\n" + sigs),
+            "inputSchema": {"type": "object", "required": ["verb"], "additionalProperties": False,
+                            "properties": {"verb": {"type": "string", "enum": sorted(spec) + ["create"],
+                                                    "description": "the engine command"},
+                                           "args": {"type": "object", "description": "its fields by name"}}}}
+
+def tool_schema() -> dict:
+    """One tool with an action enum, so an agent carries one schema instead of five."""
+    names = set().union(*(set(spec) for spec in ARGS.values()))
+    props = {"action": {"type": "string", "enum": list(ACTIONS + COMBINED), "description": "what to do"}}
+    for n in sorted(names):
+        d = SHARED.get(n) or next(spec[n] for spec in ARGS.values() if n in spec)
+        if n in BOOLS:
+            props[n] = {"type": "boolean", "description": d}
+        elif n in LISTS:
+            props[n] = {"type": "array", "items": {"type": "string"}, "description": d}
+        elif n in INTS:
+            props[n] = {"type": "integer", "minimum": 0, "maximum": 2, "description": d}
+        elif n in OBJS:
+            props[n] = {"type": "array", "items": {"type": "object"}, "description": d}
+        elif n == "truth":
+            props[n] = {"type": "string", "enum": ["current", "historical"], "description": d}
+        else:
+            props[n] = {"type": "string", "description": d}
+    return {"name": "cortex", "description": describe(),
+            "inputSchema": {"type": "object", "properties": props, "required": ["action"],
+                            "additionalProperties": False}}
+
+
+def result(rid, obj: dict) -> dict:
+    return {"jsonrpc": "2.0", "id": rid, "result": obj}
+
+
+def failure(rid, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
+
+
+def answer(msg: dict, st) -> dict | None:
+    """-> the reply to a request, or None for a notification (a notification gets no answer)."""
+    method, rid, p = msg.get("method"), msg.get("id"), msg.get("params") or {}
+    if rid is None:
+        return None
+    if method == "initialize":
+        asked = p.get("protocolVersion")
+        return result(rid, {"protocolVersion": asked if asked in KNOWN else PROTOCOL,
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "cortex", "version": st.version}})
+    if method == "tools/list":
+        tools = [tool_schema()]
+        if st.role == "curator" and st.spec:
+            tools.append(curate_schema(st.spec))
+        return result(rid, {"tools": tools})
+    if method == "ping":
+        return result(rid, {})
+    if method == "tools/call":
+        name, args = p.get("name"), p.get("arguments") or {}
+        if name == "cortex":
+            ok, text = run(st, args)
+        elif name == "cortex_curate" and st.role == "curator" and st.spec:
+            if not st.gate.acquire(timeout=max(1.0, st.timeout)):
+                ok, text = False, "error: another call to this vault is still running: try again in a moment"
+            else:
+                try:
+                    ok, text = curate(st, args)
+                finally:
+                    st.gate.release()
+        else:
+            offered = "cortex and cortex_curate" if st.role == "curator" and st.spec else "one tool, cortex"
+            return failure(rid, -32602, f"this server has {offered} (not {name})")
+        return result(rid, {"content": [{"type": "text", "text": cap(text)}], "isError": not ok})
+    return failure(rid, -32601, f"this server answers initialize, tools/list, tools/call and ping (not {method})")
+
+
+class Server:
+    """One process per vault: where its engine is, what the vault is called, who authors its learnings."""
+
+    def __init__(self, vault: Path, by: str | None, timeout: float, role: str = "curator",
+                 allow_consolidate: bool = False):
+        self.vault, self.brain, self.by, self.timeout = vault, vault / "_brain" / "scripts" / "brain.py", by, timeout
+        self.role, self.allow_consolidate = role, allow_consolidate
+        self.spec = engine_spec(self.brain) if role == "curator" else {}
+        self.gate = threading.Semaphore(1)             # one engine call at a time in this process (see call)
+        try:  # the name the vault calls itself, the way the installer reads it (wire_agent.py)
+            self.name = json.loads((vault / "_brain" / "config.json").read_text(encoding="utf-8")).get("vault") \
+                        or vault.name
+        except (OSError, ValueError):
+            self.name = vault.name
+        self.version = engine_version(self.brain)
+
+
+def engine_version(brain: Path) -> str:
+    """What this vault's own engine reports, so the client can see which engine answered."""
+    try:
+        r = subprocess.run([sys.executable, str(brain), "--version"], capture_output=True, text=True, timeout=30)
+        return (r.stdout or "").split()[-1].strip()
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        return "unknown"
+
+
+def serve(st: Server) -> None:
+    for f in (sys.stdin, sys.stdout, sys.stderr):
+        f.reconfigure(encoding="utf-8")            # MCP's stdio is UTF-8 whatever the console's code page is
+    out = threading.Lock()
+
+    def reply(msg):
+        r = answer(msg, st)
+        if r is not None:
+            with out:
+                sys.stdout.write(json.dumps(r, ensure_ascii=False) + "\n")
+                sys.stdout.flush()
+
+    threads = []
+    deadline = time.time() + st.timeout + 5        # a call already running gets to finish after stdin closes
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            with out:
+                sys.stdout.write(json.dumps(failure(None, -32700, "that line is not json")) + "\n")
+                sys.stdout.flush()
+            continue
+        if msg.get("method") == "tools/call":      # a slow call must not hold up the client's other requests
+            threads = [t for t in threads if t.is_alive()]
+            t = threading.Thread(target=reply, args=(msg,))
+            threads.append(t)
+            t.start()
+        else:
+            reply(msg)
+    for t in threads:
+        if time.time() > deadline:
+            break
+        t.join(max(0.0, deadline - time.time()))
+
+
+
+# ---- one service for every agent: MCP's streamable HTTP on localhost, one path per vault, one gate per vault
+class Hub:
+    """Every vault under one folder, served by one process. The gate is per vault and shared by every agent, so two
+    agents reading the same vault wait for each other instead of trampling its session and telemetry."""
+
+    def __init__(self, root: Path, timeout: float):
+        self.root, self.timeout = root, timeout
+        self.gates: dict[Path, threading.Semaphore] = {}
+        self.servers: dict[tuple, Server] = {}
+        self.lock = threading.Lock()
+
+    def vaults(self) -> dict[str, Path]:
+        """slug -> vault: the folder name's first word in lower case (claude, hermes) and the full name both work."""
+        out = {}
+        for v in sorted(self.root.iterdir()):
+            if (v / "_brain" / "scripts" / "brain.py").is_file() and not v.name.startswith("."):
+                out[v.name.split()[0].lower()] = v
+                out[v.name] = v
+        return out
+
+    def server(self, slug: str, by: str | None, role: str) -> Server | None:
+        v = self.vaults().get(slug)
+        if v is None:
+            return None
+        key = (v, by, role)
+        with self.lock:
+            if key not in self.servers:
+                st = Server(v, by, self.timeout, role)
+                st.gate = self.gates.setdefault(v, threading.Semaphore(1))
+                self.servers[key] = st
+            return self.servers[key]
+
+
+LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
+
+
+def http_handler(hub: Hub):
+    from http.server import BaseHTTPRequestHandler
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "cortex-mcp"
+
+        def log_message(self, fmt, *args):            # one line per call on stderr, the journal's
+            sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
+
+        def send(self, code: int, body: dict | list | None = None, extra: dict | None = None):
+            data = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            if body is not None:
+                self.send_header("Content-Type", "application/json")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def target(self):
+            u = urlsplit(self.path)
+            parts = [unquote(x) for x in u.path.strip("/").split("/")]
+            q = {k: v[-1] for k, v in parse_qs(u.query).items()}
+            return parts, q
+
+        def origin_ok(self) -> bool:
+            o = self.headers.get("Origin")
+            return o is None or bool(LOCAL_ORIGIN.match(o))
+
+        def do_GET(self):
+            parts, _ = self.target()
+            if parts == ["health"]:
+                names = sorted({v.name for v in hub.vaults().values()})
+                return self.send(200, {"ok": True, "vaults": names})
+            self.send(405, None, {"Allow": "POST"})     # no server-initiated stream: every answer rides its POST
+
+        def do_DELETE(self):
+            self.send(405, None, {"Allow": "POST"})
+
+        def do_POST(self):
+            if not self.origin_ok():
+                return self.send(403, failure(None, -32600, "origin not allowed: this service is for local agents"))
+            parts, q = self.target()
+            if len(parts) != 2 or parts[0] != "mcp":
+                return self.send(404, failure(None, -32601, "post to /mcp/<vault>, such as /mcp/claude"))
+            role = q.get("role", "curator")
+            if role not in ("reader", "curator"):
+                return self.send(400, failure(None, -32602, "role is reader or curator"))
+            st = hub.server(parts[1], q.get("by"), role)
+            if st is None:
+                names = sorted({v.name for v in hub.vaults().values()})
+                return self.send(404, failure(None, -32602, f"no vault {parts[1]}; served here: {', '.join(names)}"))
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                msg = json.loads(self.rfile.read(n).decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return self.send(400, failure(None, -32700, "that body is not json"))
+            msgs = msg if isinstance(msg, list) else [msg]
+            replies = []
+            for m in msgs:
+                r = answer(m, st) if isinstance(m, dict) else failure(None, -32600, "a message is an object")
+                if r is not None:
+                    replies.append(r)
+            if not replies:
+                return self.send(202)                     # notifications only: accepted, nothing to answer
+            self.send(200, replies if isinstance(msg, list) else replies[0])
+
+    return H
+
+
+def serve_http(hub: Hub, host: str, port: int) -> None:
+    from http.server import ThreadingHTTPServer
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        sys.exit("cortex_mcp: the service listens on localhost only")
+    httpd = ThreadingHTTPServer((host, port), http_handler(hub))
+    httpd.daemon_threads = True
+    sys.stderr.write(f"cortex_mcp: serving {', '.join(sorted({v.name for v in hub.vaults().values()}))} "
+                     f"on http://{host}:{port}/mcp/<vault>\n")
+    httpd.serve_forever()
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="The Cortex read funnel as an MCP server (stdio, one vault per process)")
+    ap.add_argument("--vault", help="the vault this server answers for (stdio)")
+    ap.add_argument("--http", metavar="HOST:PORT", help="serve every vault under --vaults over MCP's streamable HTTP")
+    ap.add_argument("--vaults", default="~/Vaults", help="with --http: the folder holding the vaults")
+    ap.add_argument("--by", help="who authors its learnings (default: the vault's config learner, else the engine's)")
+    ap.add_argument("--timeout", type=float, default=60.0, help="seconds to wait for one engine call")
+    ap.add_argument("--role", choices=["reader", "curator"], default="curator",
+                    help="reader: only the cortex tool; curator (default): also cortex_curate, the engine's other verbs")
+    ap.add_argument("--allow-consolidate", action="store_true",
+                    help="let status mark a node consolidated (the vault owner's own server only)")
+    ap.add_argument("--check", action="store_true", help="print what this server offers and exit")
+    a = ap.parse_args()
+    if a.http:
+        host, _, port = a.http.rpartition(":")
+        serve_http(Hub(Path(a.vaults).expanduser().resolve(), a.timeout), host or "127.0.0.1", int(port))
+        return 0
+    if not a.vault:
+        ap.error("--vault or --http is required")
+    st = Server(Path(a.vault).expanduser().resolve(), a.by, a.timeout, a.role, a.allow_consolidate)
+    if not st.brain.is_file():
+        sys.exit(f"cortex_mcp: no _brain/scripts/brain.py in {st.vault}")
+    if a.check:
+        tools = [tool_schema()] + ([curate_schema(st.spec)] if st.spec else [])
+        print(json.dumps({"vault": st.name, "engine": st.version, "role": st.role, "tools": tools},
+                         ensure_ascii=False, indent=2))
+        return 0
+    serve(st)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

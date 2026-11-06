@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.13.0"
+VERSION = "2.14.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -223,8 +223,11 @@ def decay(instant: dt.datetime, half_life: float, reference: dt.datetime | None 
 
 
 def write_atomic(path: Path, text: str) -> None:
+    """A name unique to this write, not one shared by every writer of the path: the lock-free state files (the
+    automatic session pointer, telemetry, the cache) are written by any read call, so two agents reading the same
+    vault at the same moment would otherwise truncate each other's tmp and the loser's os.replace raised."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f".{path.name}.{os.urandom(2).hex()}.tmp")
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
     os.replace(tmp, path)
@@ -1732,6 +1735,16 @@ def cmd_session(v: Vault, a) -> int:
         print(sid)
         print(f"# mode {a.mode}: {m['bodies']} bodies per query · {m['session_bodies']} per session · {m['queries']} queries")
     else:
+        if not a.session:   # the automatic session, looked at without touching it: a look must not keep it alive
+            try:
+                cur = json.loads((s.dir / "auto.json").read_text(encoding="utf-8"))
+                a.session = cur["sid"] if time.time() - cur.get("touched", 0) <= AUTO_IDLE else None
+                s.load(a.session or "")
+            except (OSError, ValueError, KeyError, BrainError):
+                a.session = None
+            if not a.session:
+                print("no automatic session open: the next recall or read opens one with the whole budget")
+                return 0
         d = s.load(a.session)
         m = MODES[d["mode"]]
         print(f"session {a.session} · mode {d['mode']} · queries {d['queries']}/{m['queries']} · "
@@ -3208,7 +3221,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("session", help="creates or inspects a read session (budgets)")
     p.add_argument("action", choices=["new", "status"])
     p.add_argument("--mode", choices=list(MODES), default="normal")
-    p.add_argument("--session")
+    p.add_argument("--session", help="status: default the automatic session, if one is open")
     p.set_defaults(func=cmd_session)
 
     p = sub.add_parser("stats", help="token sizes and cumulative tokens read")

@@ -4,8 +4,10 @@ import contextlib
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -486,6 +488,20 @@ class LearningTests(Base):
         self.assertGreater(brain.Telemetry(brain.Vault(self.v)).count("used").get(
             brain.Vault(self.v).node("Late orders went to the wrong wave").key, 0), 0)
 
+    def test_session_status_shows_the_automatic_session_without_keeping_it_alive(self):
+        self.seed()
+        self.assertIn("no automatic session open", self.ok("session", "status"))
+        self.ok("recall", "cutoff")
+        ptr = self.v / "_brain" / "state" / "sessions" / "auto.json"
+        before = json.loads(ptr.read_text(encoding="utf-8"))
+        out = self.ok("session", "status")
+        self.assertIn(f"session {before['sid']}", out)
+        self.assertIn("queries 1/", out)
+        self.assertEqual(json.loads(ptr.read_text(encoding="utf-8")), before, "a look does not touch the pointer")
+        before["touched"] -= brain.AUTO_IDLE + 1
+        ptr.write_text(json.dumps(before), encoding="utf-8")
+        self.assertIn("no automatic session open", self.ok("session", "status"))
+
     def test_snapshot_sees_an_edited_node(self):
         self.seed()
         self.ok("recall", "cutoff")  # writes the snapshot and the index
@@ -672,6 +688,51 @@ class HotMemoryTests(Base):
         doctor = run(self.v, "doctor")[1]
         self.assertIn("1 answers from the Hot list with no read", doctor,
                       "a credit that makes a node hot was not answered from the list: it was not on show yet")
+
+
+class ConcurrencyTests(Base):
+    """What the reads write (the automatic session pointer, the telemetry) is not under the vault lock, so it has
+    to survive two agents — or two threads here — touching one vault in the same moment."""
+
+    def test_parallel_writes_of_one_path_keep_their_own_tmp(self):
+        path = self.v / "_brain" / "state" / "sessions" / "auto.json"
+        texts = [f'{{"n": {i}}}' for i in range(24)]
+        errs = []
+
+        def write(t):
+            try:
+                brain.write_atomic(path, t)
+            except Exception as e:  # noqa: BLE001 — the whole point is that no writer raises
+                errs.append(repr(e))
+
+        threads = [threading.Thread(target=write, args=(t,)) for t in texts]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errs, [], "two writers fought over one tmp file")
+        self.assertIn(path.read_text(encoding="utf-8"), texts, "a write landed as somebody else's content")
+        self.assertEqual(list(path.parent.glob("*.tmp")), [], "a writer left its tmp behind")
+
+    def test_two_agents_reading_one_vault_finish_without_crashing(self):
+        self.seed()
+        self.ok("recall", "cutoff")                      # the first call makes the session pointer exist
+        brain_py = HERE.parent / "brain.py"
+        done = []
+
+        def read(i):
+            r = subprocess.run([sys.executable, str(brain_py), "--vault", str(self.v), "recall", f"cutoff wave {i}"],
+                               capture_output=True, text=True, timeout=60)
+            done.append((r.returncode, r.stderr))
+
+        threads = [threading.Thread(target=read, args=(i,)) for i in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(done), 6)
+        for code, err in done:
+            self.assertEqual(code, 0, f"a concurrent read exited {code}: {err.strip()[:500]}")
 
 
 if __name__ == "__main__":

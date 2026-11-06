@@ -104,6 +104,46 @@ Roles:
 
 Run the installer yourself. An agent should not rewrite another agent's configuration. Restart the agent afterwards, then test it by asking something only the vault knows, without naming the vault.
 
+**The MCP service (optional, for work that does not need speed).** `scripts/cortex_mcp.py` speaks MCP and runs one vault's own `brain.py` for every call, so an agent that reaches tools by name gets the engine without a shell. Run it once for every agent, as a user service on localhost, or as one stdio process per vault for a client that speaks only stdio.
+
+```bash
+python3 scripts/cortex_mcp.py --http 127.0.0.1:8777 --vaults ~/vaults        # every vault, one process
+curl -s http://127.0.0.1:8777/health                                          # the vaults it serves
+python3 scripts/cortex_mcp.py --vault ~/vaults/fern-cortex --check            # what one vault offers, as json
+```
+
+Each agent registers its own vault's path, `http://127.0.0.1:8777/mcp/<vault>?by=<agent>`: `<vault>` is the folder's first word in lower case (`fern` for `fern-cortex`, `claude` for `Claude Cortex`) or its full name, and `?role=reader` hides the curator tool. The service answers MCP's streamable HTTP with plain JSON (no event stream, no server-initiated messages), listens on localhost only and refuses a browser `Origin` that is not local. One gate per vault is shared by every agent, so two agents reading one vault queue instead of racing its session and telemetry.
+
+Two tools. `cortex` is the funnel — `recall`, `read`, `credit`, `stats`, `learn`, `session` — plus combined actions that save round trips: `ask` (recall, then the reads it points at, unless it already handed the answer over), `finish` (credit, then up to five learnings), `health` (stats, session, lint and broken sibling references) and `batch` (up to 12 calls in order, stopping at the first failure). `vault=<sibling>` runs a read on a sibling vault; writes stay on the agent's own. `cortex_curate` carries every other verb of the vault's engine, read from its own parser when the service first serves that vault, so a new engine verb appears with no change to the service; `create` runs `new` and then `link` for each of its links. `status consolidated` is refused unless a stdio server is started with `--allow-consolidate`: only the vault's owner consolidates. `--by <name>` (or `?by=`) sets who authors the learnings; without it the vault's config `learner` does.
+
+| the engine exits | the tool answers |
+|---|---|
+| 0 | its text, `isError: false` |
+| 1 | its `✖` line, `isError: true`: the arguments were wrong, fix them and retry |
+| 2 | its limit line, plus what to do with it: stop reading and answer with what you have |
+
+`argparse` exits 2 too and never prints the `✖`, so a call it cannot parse comes back as wrong arguments rather than as a spent budget. A call the engine does not answer in time is stopped and reported the same way.
+
+Nothing here keeps an engine alive between calls: one costs about 0.04 seconds and 17 MB (timed twice on Alastor, 2026-11-03, engine 2.13.0). One call runs at a time per vault, because every read writes the automatic session and the telemetry and the vault lock covers neither. Agents behind the HTTP service share that gate; agents on separate stdio processes do not, and still share the session of §5.
+
+A client that reads Claude Desktop's `mcpServers` block — as Strata's does — takes it verbatim:
+
+```json
+{"mcpServers": {"cortex": {"command": "python3",
+                          "args": ["/absolute/path/cortex/scripts/cortex_mcp.py", "--vault", "/absolute/path/vault"]}}}
+```
+
+Claude Code names the tool `mcp__cortex__cortex`, Strata names it `cortex__cortex`. Restart the client after registering. Test it without one first: the third line must come back with the vault's own counts.
+
+```bash
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+              '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+              '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cortex","arguments":{"action":"stats"}}}' \
+  | python3 scripts/cortex_mcp.py --vault ~/vaults/fern-cortex
+```
+
+Tests: `python3 -m unittest scripts/test_cortex_mcp.py`.
+
 ## 5. The daily loop (any agent)
 
 **Read: the budgeted funnel.**
@@ -337,10 +377,12 @@ The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lex
 | `doctor`: `"X" runs vX with different files` | engine copies diverged | run `scripts/upgrade_engine.py` on every sibling |
 | lint `expected location: ...` | a node's folder does not match its `up` | `B move "<title>" --up "<parent>"`, never by hand |
 | lint `not_english` warning | a Spanish title or summary | translate it. Put proper nouns in `aliases` |
+| the MCP tool answers `another call to this vault is still running` | the previous call in that server process is still going | retry once: the server keeps one engine call at a time on purpose |
+| a read crashed with `auto.json.tmp: No such file or directory` | two processes wrote one session file in the same moment, on an engine copy older than this repository's | `python3 scripts/upgrade_engine.py` on every sibling (§10) |
 
 ## 12. Reference
 
-Commands: `session`, `recall`, `read`, `credit`, `learn`, `new`, `link`, `unlink`, `move`, `promote`, `demote`, `rename`, `status`, `questions`, `lint`, `build`, `precommit`, `consolidate`, `external`, `externals`, `doctor`. Global flags: `--vault <path>` and `--version`.
+Commands, in the order the parser takes them: `session`, `stats`, `recall`, `read`, `credit`, `new`, `learn`, `link`, `unlink`, `move`, `promote`, `demote`, `rename`, `status`, `activity`, `questions`, `lint`, `build`, `precommit`, `consolidate`, `external`, `externals`, `doctor`. Global flags: `--vault <path>` and `--version`. Over MCP (§4): one tool `cortex`, with `action` among `recall`, `read`, `credit`, `stats`, `learn`.
 
 Exit codes: 0 ok · 1 usage or validation error · 2 budget or limit spent.
 
