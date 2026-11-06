@@ -540,6 +540,14 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.post("/mcp/my", {"jsonrpc": "2.0", "id": 1, "method": "ping"},
                                    {"Origin": "http://evil.example"})[0], 403)
 
+    def test_get_is_405_on_a_vault_path_and_404_elsewhere(self):
+        import urllib.error
+        import urllib.request
+        for path, code in (("/mcp/my", 405), ("/.well-known/oauth-protected-resource", 404)):
+            with self.assertRaises(urllib.error.HTTPError) as got:
+                urllib.request.urlopen(self.url + path, timeout=10)
+            self.assertEqual(got.exception.code, code, path)
+
     def test_two_agents_on_one_vault_share_one_gate(self):
         hub = cortex_mcp.Hub(self.tmp, 10.0)
         self.assertIs(hub.server("my", "codex", "curator").gate, hub.server("my", "hermes", "reader").gate)

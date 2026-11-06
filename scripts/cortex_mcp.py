@@ -733,7 +733,9 @@ def http_handler(hub: Hub):
             if parts == ["health"]:
                 names = sorted({v.name for v in hub.vaults().values()})
                 return self.send(200, {"ok": True, "vaults": names})
-            self.send(405, None, {"Allow": "POST"})     # no server-initiated stream: every answer rides its POST
+            if len(parts) == 2 and parts[0] == "mcp":
+                return self.send(405, None, {"Allow": "POST"})   # no server-initiated stream: answers ride their POST
+            self.send(404, {"error": "not found"})      # e.g. an OAuth discovery probe: this service needs no sign-in
 
         def do_DELETE(self):
             self.send(405, None, {"Allow": "POST"})
@@ -757,6 +759,12 @@ def http_handler(hub: Hub):
             except (ValueError, UnicodeDecodeError):
                 return self.send(400, failure(None, -32700, "that body is not json"))
             msgs = msg if isinstance(msg, list) else [msg]
+            for m in msgs:                                # one journal line per tool call: what was asked of which vault
+                if isinstance(m, dict) and m.get("method") == "tools/call":
+                    pa = m.get("params") or {}
+                    ar = pa.get("arguments") or {}
+                    what = ar.get("verb") or ar.get("action") if isinstance(ar, dict) else None
+                    sys.stderr.write(f"call {st.vault.name} by={st.by or '-'} {pa.get('name')} {what}\n")
             replies = []
             for m in msgs:
                 r = answer(m, st) if isinstance(m, dict) else failure(None, -32600, "a message is an object")
@@ -773,7 +781,15 @@ def serve_http(hub: Hub, host: str, port: int) -> None:
     from http.server import ThreadingHTTPServer
     if host not in ("127.0.0.1", "localhost", "::1"):
         sys.exit("cortex_mcp: the service listens on localhost only")
-    httpd = ThreadingHTTPServer((host, port), http_handler(hub))
+    class Quiet(ThreadingHTTPServer):
+        def handle_error(self, request, client_address):   # a client that hangs up is one line, not a traceback
+            e = sys.exc_info()[1]
+            if isinstance(e, (ConnectionResetError, BrokenPipeError, TimeoutError)):
+                sys.stderr.write(f"{client_address[0]} hung up: {type(e).__name__}\n")
+            else:
+                super().handle_error(request, client_address)
+
+    httpd = Quiet((host, port), http_handler(hub))
     httpd.daemon_threads = True
     sys.stderr.write(f"cortex_mcp: serving {', '.join(sorted({v.name for v in hub.vaults().values()}))} "
                      f"on http://{host}:{port}/mcp/<vault>\n")
