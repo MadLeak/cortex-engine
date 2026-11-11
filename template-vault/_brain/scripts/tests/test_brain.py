@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -733,6 +734,43 @@ class ConcurrencyTests(Base):
         self.assertEqual(len(done), 6)
         for code, err in done:
             self.assertEqual(code, 0, f"a concurrent read exited {code}: {err.strip()[:500]}")
+
+
+class PrivacyTests(unittest.TestCase):
+    """A vault is never public: the pre-push guard reads the forge's anonymous answer."""
+
+    def test_parse_remote_forms(self):
+        self.assertEqual(brain.parse_remote("git@github.com:MadLeak/claude-cortex.git"), ("github.com", "MadLeak/claude-cortex"))
+        self.assertEqual(brain.parse_remote("https://github.com/MadLeak/claude-cortex.git"), ("github.com", "MadLeak/claude-cortex"))
+        self.assertEqual(brain.parse_remote("ssh://git@gitlab.com:22/group/sub/vault"), ("gitlab.com", "group/sub/vault"))
+        self.assertIsNone(brain.parse_remote("/srv/git/vault.git"))
+        self.assertIsNone(brain.parse_remote("C:\\backups\\vault"))
+
+    def test_visibility_from_status(self):
+        url = "https://github.com/someone/vault.git"
+        self.assertEqual(brain.remote_visibility(url, fetch=lambda u: 200), "public")
+        self.assertEqual(brain.remote_visibility(url, fetch=lambda u: 404), "private")
+        self.assertEqual(brain.remote_visibility(url, fetch=lambda u: 403), "unknown")   # rate limit, not proof
+        def down(u):
+            raise OSError("offline")
+        self.assertEqual(brain.remote_visibility(url, fetch=down), "unknown")
+        self.assertEqual(brain.remote_visibility("git@git.home.lan:me/vault.git", fetch=lambda u: 200), "self-hosted")
+        self.assertEqual(brain.remote_visibility("/srv/git/vault.git"), "self-hosted")
+
+    def test_gitlab_path_is_quoted(self):
+        asked = []
+        brain.remote_visibility("https://gitlab.com/group/sub/vault.git", fetch=lambda u: asked.append(u) or 404)
+        self.assertEqual(asked, ["https://gitlab.com/api/v4/projects/group%2Fsub%2Fvault"])
+
+    def test_prepush_policy(self):
+        import types
+        from unittest import mock
+        a = types.SimpleNamespace(remote="origin", url="https://github.com/someone/vault.git")
+        for seen, env, expected in (("public", "1", 1), ("private", "", 0), ("unknown", "", 1), ("unknown", "1", 0), ("self-hosted", "", 0)):
+            with mock.patch.object(brain, "remote_visibility", return_value=seen), \
+                 mock.patch.dict(os.environ, {"CORTEX_ALLOW_UNVERIFIED_PUSH": env}), \
+                 mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=io.StringIO()):
+                self.assertEqual(brain.cmd_prepush(None, a), expected, (seen, env))
 
 
 if __name__ == "__main__":

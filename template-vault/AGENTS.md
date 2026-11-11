@@ -37,4 +37,4 @@ Stored knowledge is English. Query in English; a Spanish query is translated thr
 1. `recall "<English query>"` → signatures, and the body when one answer is clear. 2. Otherwise `read` at most the two bodies you need. 3. Stop when you can answer, after 2 useless reads, or on exit 2. 4. Cite [[Title]]. 5. `credit` what helped.
 
 ## Never
-Mark a node consolidated (only {{OWNER}}) · edit generated files (MAP.md, _brain/Panel.*, _brain/generated/, _brain/state/) · store credentials or personal data · skip the hook.
+Mark a node consolidated (only {{OWNER}}) · edit generated files (MAP.md, _brain/Panel.*, _brain/generated/, _brain/state/) · store credentials or personal data · skip a hook · publish the vault: no public repository, upload, paste or share of its notes, graph or panels anywhere on the internet, because the graph exposes what its agents learned about {{OWNER}}.

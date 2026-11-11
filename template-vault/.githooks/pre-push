@@ -1,0 +1,15 @@
+#!/bin/sh
+# A cortex is never published: refuses to push to a repository that a public forge serves without a login.
+# Git passes the remote's name and URL.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+PY=""
+for c in python py python3; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >/dev/null 2>&1; then
+    PY="$c"; break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "pre-push: Python 3.10+ not found; cannot check that the remote is private" >&2
+  exit 1
+fi
+exec "$PY" _brain/scripts/brain.py prepush "$1" "$2"

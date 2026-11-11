@@ -36,6 +36,14 @@ for raw in a.vaults:
     for f in changed:
         shutil.copy2(SRC / f, dest / f)
     shutil.copytree(SRC / "tests", dest / "tests", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+    hooks = dest.parents[1] / ".githooks"
+    for hook in (SRC.parents[1] / ".githooks").iterdir():
+        target = hooks / hook.name
+        if not target.exists() or target.read_bytes() != hook.read_bytes():
+            hooks.mkdir(exist_ok=True)
+            shutil.copy2(hook, target)
+            target.chmod(target.stat().st_mode | 0o111)
+            print(f"       hook {hook.name} installed")
 for raw in ([] if a.dry_run else a.vaults):
     brain = Path(raw).expanduser().resolve() / "_brain" / "scripts" / "brain.py"
     if brain.is_file():

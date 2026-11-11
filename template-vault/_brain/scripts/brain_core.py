@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.14.0"
+VERSION = "2.15.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -3160,6 +3160,72 @@ def cmd_build(v: Vault, a, findings: list | None = None) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- privacy: a vault is never public
+# A cortex holds what its agent learned about a person, atomized and linked: published, the graph exposes far more
+# than any single note. The pre-push hook refuses any remote that a public forge serves to anyone without a login.
+PUBLIC_FORGES = {
+    "github.com": "https://api.github.com/repos/{path}",
+    "gitlab.com": "https://gitlab.com/api/v4/projects/{quoted}",
+    "codeberg.org": "https://codeberg.org/api/v1/repos/{path}",
+    "bitbucket.org": "https://api.bitbucket.org/2.0/repositories/{path}",
+}
+
+
+def parse_remote(url: str) -> tuple[str, str] | None:
+    """(host, owner/name) of a git remote URL on any host, or None for a local path."""
+    url = url.strip()
+    m = re.match(r"^(?:[a-z+]+://)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/](.+?)(?:\.git)?/?$", url, re.I)
+    if not m or url.startswith(("/", ".", "file:")) or re.match(r"^[A-Za-z]:[\\/]", url):
+        return None
+    return m.group(1).lower(), m.group(2).strip("/")
+
+
+def remote_visibility(url: str, fetch=None) -> str:
+    """public, private, unknown (a forge we could not ask) or self-hosted (no public forge)."""
+    parsed = parse_remote(url)
+    if not parsed:
+        return "self-hosted"
+    host, path = parsed
+    if host not in PUBLIC_FORGES:
+        return "self-hosted"
+    import urllib.parse
+    api = PUBLIC_FORGES[host].format(path=path, quoted=urllib.parse.quote(path, safe=""))
+    if fetch is None:
+        import urllib.error
+        import urllib.request
+
+        def fetch(u):
+            req = urllib.request.Request(u, method="GET", headers={"User-Agent": "cortex-privacy-guard"})
+            try:
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                return e.code
+    try:
+        status = fetch(api)
+    except Exception:
+        return "unknown"
+    # asked without credentials: 200 means anyone can read it; 404 (or 401) means only its members can
+    return "public" if status == 200 else "private" if status in (401, 404) else "unknown"
+
+
+def cmd_prepush(v: Vault, a) -> int:
+    """Run by the pre-push hook: refuses to push the vault to a public repository."""
+    unverified_ok = os.environ.get("CORTEX_ALLOW_UNVERIFIED_PUSH") == "1"
+    seen = remote_visibility(a.url)
+    if seen == "public":
+        print(f"✖ push refused: {a.url} is public. A cortex is never published: its graph exposes personal "
+              "information its agents learned. Make the repository private, then push.", file=sys.stderr)
+        return 1
+    if seen == "unknown" and not unverified_ok:
+        print(f"✖ push refused: could not confirm that {a.url} is private (no answer from the forge). Try again online, "
+              "or set CORTEX_ALLOW_UNVERIFIED_PUSH=1 for this push once you have checked it yourself.", file=sys.stderr)
+        return 1
+    if seen == "self-hosted":
+        print(f"privacy: {a.url} is not on a public forge; keep it private (a cortex is never published)")
+    return 0
+
+
 # --------------------------------------------------------------------------- doctor
 def cmd_doctor(v: Vault, a) -> int:
     failures = 0
@@ -3183,6 +3249,13 @@ def cmd_doctor(v: Vault, a) -> int:
     check(bool(git("config", "user.email")), f"Git identity: {git('config', 'user.name')} <{git('config', 'user.email')}>")
     check(git("config", "core.hooksPath") == ".githooks", "core.hooksPath = .githooks")
     check((v.root / ".githooks" / "pre-commit").exists(), "pre-commit hook present")
+    check((v.root / ".githooks" / "pre-push").exists(), "pre-push hook present (a cortex is never pushed to a public repository)")
+    for line in (git("remote", "-v") or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == "(push)":
+            seen = remote_visibility(parts[1])
+            if seen != "unknown":
+                check(seen != "public", f"remote {parts[0]} is {seen} (a cortex is never public)")
     check(v.cfg_path.exists(), "_brain/config.json")
     check((v.root / "CLAUDE.md").exists(), "CLAUDE.md (L0)")
     check((v.root / ".obsidian").is_dir(), "Obsidian configuration")
@@ -3343,6 +3416,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("precommit", help="blocking lint + build (used by the Git hook)")
     p.set_defaults(func=cmd_precommit)
+
+    p = sub.add_parser("prepush", help="refuses a push to a public repository (used by the Git hook)")
+    p.add_argument("remote")
+    p.add_argument("url")
+    p.set_defaults(func=cmd_prepush)
 
     p = sub.add_parser("consolidate", help="sleep-cycle proposals / applies the marked mechanical ones")
     p.add_argument("--apply", action="store_true")

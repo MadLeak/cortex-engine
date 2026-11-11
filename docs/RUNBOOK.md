@@ -58,15 +58,17 @@ Optional `config.json` keys: `half_life_days` (30), `confirm_sessions` (3), `con
 
 ## 3. Git and the hook
 
-Every vault is a git repository whose pre-commit hook (`.githooks/pre-commit`) does two things:
+Every vault is a git repository with two hooks. The pre-commit hook (`.githooks/pre-commit`) does two things:
 1. **Validates.** It runs `B precommit`, which is `lint`: errors block the commit. Errors include secrets, a missing summary, a summary over 140 characters, a broken synapse, a synapse with no reason, more than 7 synapses, a wrong parent layer, a duplicate title or id, and a cycle.
 2. **Regenerates.** It rebuilds and stages `MAP.md`, `_brain/Panel.md`, `_brain/Panel.html`, `_brain/generated/` and `_brain/state/history.csv` (plus `_brain/proposals.md` if present).
+
+The pre-push hook (`.githooks/pre-push`) runs `B prepush <remote> <url>`: **a vault is never published**, because its graph exposes what the agents learned about their person. It asks the forge (GitHub, GitLab, Codeberg, Bitbucket) without credentials whether the repository is readable by anyone and refuses the push if it is. If the forge does not answer, the push is refused too; `CORTEX_ALLOW_UNVERIFIED_PUSH=1 git push` overrides that case once you have checked the repository yourself. A self-hosted remote passes with a reminder. `B doctor` also flags any public remote.
 
 Setup on a fresh clone of a vault:
 
 ```bash
 git config core.hooksPath .githooks
-chmod +x .githooks/pre-commit          # git does not always keep the executable bit
+chmod +x .githooks/pre-commit .githooks/pre-push   # git does not always keep the executable bit
 git config user.name  "Your Name"      # local identity, if you have no global one
 git config user.email "you@example.org"
 B doctor
@@ -341,7 +343,7 @@ The LAN access key: `cat ~/Vaults/.cortex-hub/access.key` on the hub's machine (
 ## 9. Backups
 
 A vault is a git repository with no remote by default. Choose one:
-- `git remote add backup <url-or-path> && git push backup main` to a private remote or a bare repository on another disk, or
+- `git remote add backup <url-or-path> && git push backup main` to a **private** remote (the pre-push hook refuses a public one) or a bare repository on another disk, or
 - copy the vault folder. `_brain/state/` caches rebuild themselves; only `usage.jsonl` (the usage log behind weights and Hot) is lost if you skip it.
 
 Restore by cloning or copying, then follow §3 (hooksPath, `chmod +x`, identity) and run `B doctor`. The vault contains no secrets by construction: the hook blocks them.

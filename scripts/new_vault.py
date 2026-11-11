@@ -91,8 +91,8 @@ def main() -> int:
         text = text.replace("{{" + key + "}}", value)
     agents.write_text(text, encoding="utf-8")
 
-    hook = dest / ".githooks" / "pre-commit"
-    hook.chmod(hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    for hook in (dest / ".githooks").iterdir():
+        hook.chmod(hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     brain = [sys.executable, str(dest / "_brain" / "scripts" / "brain.py")]
     print(f"vault {cfg['vault']} at {dest}", flush=True)
 

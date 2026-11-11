@@ -49,6 +49,12 @@ Several agents? `./install.sh` (one command, one password) serves every vault un
 
 Try the demo instead: `python3 scripts/new_vault.py /tmp/demo/kitchen-cortex --from examples/kitchen-cortex` and then `python3 scripts/new_vault.py /tmp/demo/fern-cortex --from examples/fern-cortex`. That gives a 16-node gardening vault with a sibling vault, typed links, truth tags and one provisional learning. Then `cd /tmp/demo/fern-cortex && python3 _brain/scripts/brain.py recall "when should the beds be watered"`.
 
+## Privacy: a vault is never public
+
+The engine is shareable; a vault built with it is not. Each agent atomizes what it learns about its person into linked notes, so a published graph exposes far more personal information than any single note. Never push a vault to a public repository or share its notes, graph or panels on the internet.
+
+The vault's `pre-push` hook enforces this: before every push it asks the forge (GitHub, GitLab, Codeberg, Bitbucket) without credentials whether the repository is readable by anyone, and refuses the push if it is, or if it cannot get an answer (`CORTEX_ALLOW_UNVERIFIED_PUSH=1` overrides that last case once you have checked yourself). `doctor` reports any public remote. A self-hosted remote passes with a reminder to keep it private.
+
 ## Wire an agent
 
 ```bash
@@ -61,7 +67,7 @@ This writes one marked, idempotent block into the agent's global instruction fil
 
 | Path | What |
 |---|---|
-| `template-vault/` | A complete empty vault: `_brain/scripts/` (the engine and its tests), `_templates/`, `.githooks/pre-commit`, `.obsidian/`, placeholder `AGENTS.md` / `CLAUDE.md`, empty `_inbox/` |
+| `template-vault/` | A complete empty vault: `_brain/scripts/` (the engine and its tests), `_templates/`, `.githooks/pre-commit` and `pre-push`, `.obsidian/`, placeholder `AGENTS.md` / `CLAUDE.md`, empty `_inbox/` |
 | `scripts/new_vault.py` | Creates a vault from the template, with an optional content overlay (`--from`) |
 | `scripts/upgrade_engine.py` | Installs this engine into existing vaults and runs their `doctor` |
 | `installers/wire_agent.py` | Wires Claude Code, Codex, Gemini CLI, OpenCode, Hermes Agent or any agent to a vault |
@@ -79,7 +85,7 @@ The suite has 31 tests, including a 1,000-node performance check, and runs in ab
 
 ## Status
 
-Engine version 2.14.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.15.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 
