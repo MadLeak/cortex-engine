@@ -6,7 +6,7 @@ name: cortex
 services:
   hub:
     build: .
-    image: cortex-hub:2.11.0
+    image: cortex-hub:2.15.0
     restart: unless-stopped
     user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
     read_only: true
