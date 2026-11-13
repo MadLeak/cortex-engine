@@ -142,6 +142,7 @@ label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6
 .sig.contradicts, .sig-glow.contradicts { fill: var(--critical); }
 .sig.query, .sig-glow.query { fill: var(--ink); }
 .ripple { fill: none; stroke-width: 2; }
+.bolt { stroke: var(--ink); stroke-linecap: round; fill: none; pointer-events: none; } .bolt-node { fill: var(--ink); pointer-events: none; }
 .ripple.query { stroke: var(--ink); } .ripple.validated { stroke: var(--good); }
 .ripple.L1 { stroke: var(--l1); } .ripple.L2 { stroke: var(--l2); } .ripple.L3 { stroke: var(--l3); }
 /* the life cycle: violet while it dreams, gray while it rests or lets go, amber while it measures */
@@ -928,6 +929,7 @@ footer .credit a { color: inherit; }
   const lerp = (a, b, p) => ({ x: a.x + (b.x - a.x) * p, y: a.y + (b.y - a.y) * p });
   function clearSignals() {
     signals.splice(0).forEach(s => { s.dot.remove(); s.glow.remove(); });
+    bolts.splice(0).forEach(b => { b.segs.forEach(g => { g.glow.remove(); g.core.remove(); }); b.dots.forEach(d => d.el.remove()); });
     ripples.splice(0).forEach(r => r.c.remove());
     sweeps.splice(0).forEach(w => w.el.remove());
   }
@@ -962,7 +964,40 @@ footer .credit a { color: inherit; }
     c.style.display = 'none';
     ripples.push({ n, c, t0: performance.now() + delay, dur, grow });
   }
+  // a read lights its branch: the lines from the node up to MAP light one after another in a blink, in the query
+  // signal's colour, covering the nodes they cross, then fade out together
+  const BOLT = { step: 20, hold: 80, fade: 220 };
+  const bolts = [];
+  function bolt(n, delay = 0) {
+    if (!signalsOn) return;
+    const path = chainTo(n).reverse(), segs = [], dots = [];
+    for (let i = 1; i < path.length; i++) segs.push({ a: path[i - 1], b: path[i],
+      glow: svgEl('line', { class: 'bolt', 'stroke-width': 18 }, gSig), core: svgEl('line', { class: 'bolt', 'stroke-width': 3 }, gSig) });
+    for (const m of path) dots.push({ m, el: svgEl('circle', { class: 'bolt-node' }, gSig) });
+    [...segs.flatMap(g => [g.glow, g.core]), ...dots.map(d => d.el)].forEach(e => { e.style.opacity = '0'; });
+    bolts.push({ segs, dots, t0: performance.now() + delay });
+  }
+  function stepBolts(now) {
+    for (let i = bolts.length - 1; i >= 0; i--) {
+      const b = bolts[i], t = now - b.t0, full = BOLT.step * b.segs.length;
+      if (t < 0) continue;
+      const k = t < full + BOLT.hold ? 1 : 1 - (t - full - BOLT.hold) / BOLT.fade;
+      if (k <= 0) { b.segs.forEach(g => { g.glow.remove(); g.core.remove(); }); b.dots.forEach(d => d.el.remove()); bolts.splice(i, 1); continue; }
+      b.segs.forEach((g, j) => {
+        const p = Math.min(1, Math.max(0, (t - j * BOLT.step) / BOLT.step)), x2 = g.a.x + (g.b.x - g.a.x) * p, y2 = g.a.y + (g.b.y - g.a.y) * p;
+        for (const [e, o] of [[g.glow, 0.22], [g.core, 1]]) {
+          e.setAttribute('x1', f1(g.a.x)); e.setAttribute('y1', f1(g.a.y)); e.setAttribute('x2', f1(x2)); e.setAttribute('y2', f1(y2));
+          e.style.opacity = p > 0 ? String(o * k) : '0';
+        }
+      });
+      b.dots.forEach((d, j) => {
+        d.el.setAttribute('cx', f1(d.m.x)); d.el.setAttribute('cy', f1(d.m.y)); d.el.setAttribute('r', f1(d.m.r || 6));
+        d.el.style.opacity = t >= j * BOLT.step ? String(k) : '0';
+      });
+    }
+  }
   function stepSignals(now) {
+    stepBolts(now);
     const anchor = selected || hovered, focus = anchor ? neighborhood(anchor) : null;
     for (let i = signals.length - 1; i >= 0; i--) {
       const s = signals[i], p = (now - s.t0) / s.dur;
@@ -1170,8 +1205,8 @@ footer .credit a { color: inherit; }
     if (PHASES[e.e]) { life(e.e, { titles: e.titles, alarm: e.alarm }, delay); return; }
     if (view === 'sphere') { sphere.play(e, n, delay); return; }
     if (!n) return;
-    if (e.e === 'activated') { ripple(n, 'query', { delay, grow: 12, dur: 600 }); climb(n, 'query', { r: 3.5, delay, grow: 8 }); }
-    else if (e.e === 'read') { ripple(n, 'query', { delay, grow: 24 }); setTimeout(() => flash(n), delay); climb(n, 'query', { r: 6, delay, grow: 20 }); }
+    if (e.e === 'activated') bolt(n, delay);
+    else if (e.e === 'read') { setTimeout(() => flash(n), delay); bolt(n, delay); }
     else if (e.e === 'used') climb(n, `L${n.layer}`, { r: 6, delay, grow: 26 });
     else if (e.e === 'validated') ripple(n, 'validated', { delay, grow: 30, dur: 1400 });
   }
@@ -1443,7 +1478,7 @@ footer .credit a { color: inherit; }
     };
 
     // ---- signals: the same feeding and query events as the orbit, riding 3D routes ----
-    const sigs = [], rips = [];
+    const sigs = [], rips = [], bolts3 = [];
     let qText = '', qUntil = 0, flashUntil = 0;
     const ease = p => 0.5 - Math.cos(Math.PI * p) / 2;
     const lerp3 = (a, b, p) => [a[0] + (b[0] - a[0]) * p, a[1] + (b[1] - a[1]) * p, a[2] + (b[2] - a[2]) * p];
@@ -1502,6 +1537,24 @@ footer .credit a { color: inherit; }
         ctx.globalAlpha = faded ? 0.04 : 0.22 * k; ctx.beginPath(); ctx.arc(q[0], q[1], r * 2.6, 0, 2 * Math.PI); ctx.fill();
         ctx.globalAlpha = faded ? 0.15 : k; ctx.beginPath(); ctx.arc(q[0], q[1], r, 0, 2 * Math.PI); ctx.fill();
       }
+      ctx.lineCap = 'round';
+      for (let i = bolts3.length - 1; i >= 0; i--) {   // a read lights its branch up to MAP in a blink (see bolt in the orbit)
+        const b = bolts3[i], t = now - b.t0, n = b.path.length - 1, full = BOLT.step * n;
+        if (t < 0) continue;
+        const k = t < full + BOLT.hold ? 1 : 1 - (t - full - BOLT.hold) / BOLT.fade;
+        if (k <= 0) { bolts3.splice(i, 1); continue; }
+        const pts = b.path.map(m => proj(posOf(m)));
+        ctx.strokeStyle = ctx.fillStyle = COL.ink;
+        for (let j = 0; j < n; j++) {
+          const p = Math.min(1, Math.max(0, (t - j * BOLT.step) / BOLT.step));
+          if (p <= 0) break;
+          const a = pts[j], c = pts[j + 1], x2 = a[0] + (c[0] - a[0]) * p, y2 = a[1] + (c[1] - a[1]) * p;
+          for (const [w, o] of [[18, 0.22], [3, 1]]) { ctx.lineWidth = w; ctx.globalAlpha = o * k; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(x2, y2); ctx.stroke(); }
+        }
+        ctx.globalAlpha = k;
+        pts.forEach((q, j) => { if (t >= j * BOLT.step) { ctx.beginPath(); ctx.arc(q[0], q[1], 6 * Math.max(0.6, q[3] * cam.dist / F), 0, 2 * Math.PI); ctx.fill(); } });
+      }
+      ctx.lineCap = 'butt';
       ctx.strokeStyle = COL.ink2; ctx.lineWidth = 1.6; ctx.setLineDash([5, 4]);
       for (const g of ghosts) {
         const p = (now - g.t0) / 1200;
@@ -1554,7 +1607,7 @@ footer .credit a { color: inherit; }
         for (let i = sigs.length - 1; i >= 0; i--) if (now - sigs[i].t0 >= sigs[i].dur) { const s = sigs.splice(i, 1)[0]; if (s.onArrive) s.onArrive(); }
         for (let i = rips.length - 1; i >= 0; i--) if (now - rips[i].t0 >= rips[i].dur) rips.splice(i, 1);
         for (let i = ghosts.length - 1; i >= 0; i--) if (now - ghosts[i].t0 >= 1200) ghosts.splice(i, 1);
-        if (sigs.length || rips.length || ghosts.length || now < qUntil || now < flashUntil + 100) dirty = true;
+        if (sigs.length || rips.length || bolts3.length || ghosts.length || now < qUntil || now < flashUntil + 100) dirty = true;
         if (pulsing && !reduced && now - lastPulse > 66) { lastPulse = now; dirty = true; }   // planted nodes pulse at ~15 fps
         if (dirty && W) { draw(now); dirty = false; }
       }
@@ -1598,11 +1651,11 @@ footer .credit a { color: inherit; }
     requestAnimationFrame(frame);
     return {
       refresh() { dirty = true; },
-      setActive(v) { active = v; dirty = true; if (!v) { sigs.length = 0; rips.length = 0; } },
+      setActive(v) { active = v; dirty = true; if (!v) { sigs.length = 0; rips.length = 0; bolts3.length = 0; } },
       focus: focusOn,
       zoom(k) { anim = null; cam.dist = clamp(cam.dist * k, 560, 2800); dirty = true; },
       reset() { anim = { from: { ...cam }, to: { ...HOME }, t0: performance.now(), ms: reduced ? 1 : 600 }; },
-      clear() { sigs.length = 0; rips.length = 0; dirty = true; },
+      clear() { sigs.length = 0; rips.length = 0; bolts3.length = 0; dirty = true; },
       get spin() { return spin; },
       set spin(v) { spin = v; store.set('spin', v); },
       toggle(k) { show[k] = !show[k]; store.set(k, show[k]); dirty = true; return show[k]; },
@@ -1695,8 +1748,8 @@ footer .credit a { color: inherit; }
             launch3(path3([a, b]), cls, { r, dur: LEG, delay: t, ends: [n], onArrive: () => ripple3(b, cls, b === ROOT ? { grow } : { grow: 10, dur: 500 }) });
           }
         };
-        if (e.e === 'activated') { ripple3(n, 'query', { delay, grow: 12, dur: 600 }); climb3('query', { r: 3.5, grow: 8 }); }
-        else if (e.e === 'read') { ripple3(n, 'query', { delay, grow: 24 }); setTimeout(lit, delay); climb3('query', { r: 6, grow: 20 }); }
+        if (e.e === 'activated') { if (signalsOn) bolts3.push({ path: chain(n).reverse(), t0: performance.now() + delay }); }
+        else if (e.e === 'read') { setTimeout(lit, delay); if (signalsOn) bolts3.push({ path: chain(n).reverse(), t0: performance.now() + delay }); }
         else if (e.e === 'used') climb3(`L${n.layer}`, { r: 6, grow: 26 });
         else if (e.e === 'validated') ripple3(n, 'validated', { delay, grow: 30, dur: 1400 });
       },
