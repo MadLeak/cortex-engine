@@ -22,12 +22,17 @@ if (-not (Test-Path .env)) {
     -replace '(?m)^CORTEX_GIT_NAME=.*$', "CORTEX_GIT_NAME=$name" -replace '(?m)^CORTEX_GIT_EMAIL=.*$', "CORTEX_GIT_EMAIL=$email"
   $addr = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)' -and $_.PrefixOrigin -ne 'WellKnown' } |
     Sort-Object InterfaceMetric | Select-Object -First 1).IPAddress
+  $files = 'compose.yaml;compose.trusted.yaml'
   if (-not $NoLan -and $addr) {
     $hostName = $env:COMPUTERNAME.ToLower() -replace '[^a-z0-9-]', '-'
-    $text += "`n# LAN listener, found by install.ps1`nCORTEX_LAN_ADDRESS=$addr`nCORTEX_LAN_HOST=$hostName`nCOMPOSE_PATH_SEPARATOR=;`nCOMPOSE_FILE=compose.yaml;compose.lan.yaml`n"
+    $text += "`n# LAN listener, found by install.ps1`nCORTEX_LAN_ADDRESS=$addr`nCORTEX_LAN_HOST=$hostName`n"
+    $files += ';compose.lan.yaml'
     "LAN: https://<agent>.$hostName.cortex.home on $addr (only the cortexes you mark LAN)" }
+  $text += "`n# host-trusted mode, set up by install.ps1`nCORTEX_DOMAIN=cortex.local`nCORTEX_PORT=443`nCORTEX_HTTP_PORT=80`nCORTEX_DNS_ADDRESS=127.0.0.153`nCOMPOSE_PATH_SEPARATOR=;`nCOMPOSE_FILE=$files`n"
   Set-Content -Path .env -Value $text -NoNewline
   'wrote .env' }
+if (-not (Select-String -Path .env -Pattern 'compose.trusted.yaml' -Quiet)) {
+  throw '.env predates compose.trusted.yaml: add it to COMPOSE_FILE (see .env.example)' }
 
 $vaults = Get-EnvValue CORTEX_VAULTS; if (-not $vaults) { $vaults = Join-Path $env:USERPROFILE 'Vaults' }
 New-Item -ItemType Directory -Force -Path $vaults | Out-Null

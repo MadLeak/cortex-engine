@@ -28,12 +28,16 @@ if [ ! -f .env ]; then
   sed -e "s/^CORTEX_UID=.*/CORTEX_UID=$(id -u)/" -e "s/^CORTEX_GID=.*/CORTEX_GID=$(id -g)/" \
       -e "s/^CORTEX_OWNER=.*/CORTEX_OWNER=${name:-the owner}/" \
       -e "s/^CORTEX_GIT_NAME=.*/CORTEX_GIT_NAME=$name/" -e "s/^CORTEX_GIT_EMAIL=.*/CORTEX_GIT_EMAIL=$email/" .env.example > .env
+  files=compose.yaml:compose.trusted.yaml
   if [ "$LAN" = 1 ] && [ -n "$addr" ]; then
-    printf '\n# LAN listener, found by install.sh\nCORTEX_LAN_ADDRESS=%s\nCORTEX_LAN_HOST=%s\nCOMPOSE_FILE=compose.yaml:compose.lan.yaml\n' "$addr" "$host" >> .env
+    printf '\n# LAN listener, found by install.sh\nCORTEX_LAN_ADDRESS=%s\nCORTEX_LAN_HOST=%s\n' "$addr" "$host" >> .env
+    files=$files:compose.lan.yaml
     echo "LAN: https://<agent>.$host.cortex.home on $addr (only the cortexes you mark LAN)"
   fi
+  printf '\n# host-trusted mode, set up by install.sh\nCORTEX_DOMAIN=cortex.local\nCORTEX_PORT=443\nCORTEX_HTTP_PORT=80\nCORTEX_DNS_ADDRESS=127.0.0.153\nCOMPOSE_FILE=%s\n' "$files" >> .env
   echo "wrote .env"
 fi
+grep -q 'compose.trusted.yaml' .env || { echo ".env predates compose.trusted.yaml: add it to COMPOSE_FILE (see .env.example)"; exit 1; }
 
 vaults=$(sed -n 's/^CORTEX_VAULTS=//p' .env | tail -1); vaults=${vaults:-$HOME/Vaults}
 mkdir -p "$vaults"   # before docker would create it as root

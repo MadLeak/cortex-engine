@@ -21,7 +21,8 @@ itself · /api/review the verdicts (scripts/review_prep.py), POST /api/review/ap
 Scope, chosen by the address browsers reach it at (--address, default --host): a loopback address is the localhost
 scope; a private one is the LAN scope, which needs --data and signs browsers in with the access key in
 DATA/access.key. Public addresses are refused. Requests naming any other host are refused too (DNS rebinding).
-With --data the hub speaks HTTPS with a certificate from its own CA (scripts/hub_tls.py), limited to those names.
+With --data the hub speaks HTTPS with a certificate from its own CA (scripts/hub_tls.py), limited to those names;
+--local-http keeps this machine's listener in plain HTTP (nothing to trust on the host) and HTTPS for the LAN only.
 """
 import argparse
 import hmac
@@ -286,6 +287,8 @@ class Hub(BaseHTTPRequestHandler):
     data: Path | None = None        # the hub's data folder: CA, access key, scopes.json
     lan_domain: str | None = None   # set when the hub also has a LAN listener: <machine>.cortex.home
     lan_ip: str | None = None       # the LAN listener's address, for the by-IP links (/v/<agent>/)
+    lan_tls = False                 # whether the LAN listener speaks HTTPS (it does whenever there is one)
+    lan_public_port = 443           # the port LAN browsers use, for the links to the LAN listener
     owner = os.environ.get("CORTEX_OWNER", "the owner")
     csrf = secrets.token_urlsafe(24)
     sessions: dict[str, float] = {}
@@ -343,14 +346,16 @@ class Hub(BaseHTTPRequestHandler):
         label = h[:-len(d) - 1]
         return next((v for n, v in self.visible().items() if subdomain(n) == label), None)
 
-    def url(self, host: str) -> str:
-        return f"https://{host}" + ("" if self.public_port == 443 else f":{self.public_port}") if self.tls else \
-            f"http://{host}:{self.public_port}"
+    def url(self, host: str, lan: bool = False) -> str:
+        """A link to this listener, or with lan=True to the LAN listener: the two may differ in scheme and port
+        (--local-http: plain HTTP on this machine, HTTPS on the local network)."""
+        tls, port = (self.lan_tls, self.lan_public_port) if lan else (self.tls is not None, self.public_port)
+        return f"https://{host}" + ("" if port == 443 else f":{port}") if tls else f"http://{host}:{port}"
 
     def vault_url(self, name: str, scope: str) -> str | None:
-        """Where a vault's panel lives for its scope: https://claude.cortex.local/ or https://claude.cortex.home/."""
+        """Where a vault's panel lives for its scope: http://claude.cortex.localhost:8790/ or https://claude.alastor.cortex.home/."""
         d = self.lan_domain if scope == "lan" else (self.domain if self.scope == "localhost" else None)
-        return self.url(f"{subdomain(name)}.{d}") + "/" if d and "." in d else None
+        return self.url(f"{subdomain(name)}.{d}", lan=scope == "lan") + "/" if d and "." in d else None
 
     def gate(self, path: str) -> bool:
         """Refuses foreign Host names and, in the LAN scope, anyone not signed in. True when it answered."""
@@ -481,7 +486,7 @@ class Hub(BaseHTTPRequestHandler):
                 if d["scope"] == "lan" and self.lan_domain:
                     d["lan_url"] = self.vault_url(d["name"], "lan")
                 if self.lan_ip and d["scope"] == "lan":
-                    d["ip_url"] = self.url(self.lan_ip) + f"/v/{subdomain(d['name'])}/"
+                    d["ip_url"] = self.url(self.lan_ip, lan=True) + f"/v/{subdomain(d['name'])}/"
             hub = {"scope": self.scope, "tls": self.tls is not None, "login": self.key is not None, "domain": self.domain,
                    "lan": self.lan_domain if self.scope == "localhost" else None,
                    "connect": self.scope == "localhost" and wire_agent is not None and (ENGINE / "scripts/new_vault.py").is_file()}
@@ -1153,6 +1158,9 @@ def main() -> None:
     ap.add_argument("--address", help="address browsers reach the hub at, when it differs from --host (a container)")
     ap.add_argument("--domain", default="localhost", help="host name browsers use; the certificate covers it")
     ap.add_argument("--data", help="folder for the local CA and the access key; turns HTTPS on")
+    ap.add_argument("--local-http", action="store_true",
+                    help="with --data, keep this machine's listener in plain HTTP (no CA to trust: browsers already "
+                         "treat localhost as secure); only the LAN listener speaks HTTPS")
     ap.add_argument("--host-root", help="the vault root as the agents' machine writes it, for the prompts")
     ap.add_argument("--public-port", type=int, help="port browsers use, when it differs from --port (443: none in the links)")
     ap.add_argument("--redirect-port", type=int, help="also listen here in plain HTTP and send browsers to HTTPS")
@@ -1163,6 +1171,7 @@ def main() -> None:
                      help="this machine's name: the LAN domain is <name>.<--lan-domain> (alastor.cortex.home)")
     lan.add_argument("--lan-domain", default=env("CORTEX_LAN_DOMAIN") or "cortex.home")
     lan.add_argument("--lan-port", type=int, default=9443)
+    lan.add_argument("--lan-public-port", type=int, default=443, help="port LAN browsers use (443: none in the links)")
     lan.add_argument("--lan-redirect-port", type=int)
     lan.add_argument("--lan-dns-port", type=int)
     a = ap.parse_args()
@@ -1181,13 +1190,16 @@ def main() -> None:
         sys.exit(str(e))
     if (scope == "lan" or a.lan_address) and not a.data:
         sys.exit("the LAN scope needs --data: HTTPS and an access key")
+    if a.local_http and scope != "localhost":
+        sys.exit("--local-http is for a loopback --address: the local network always gets HTTPS")
     Hub.root, Hub.data = Path(a.root).expanduser(), Path(a.data).expanduser() if a.data else None
     Hub.host_root = a.host_root or str(Hub.root)
     Hub.public_port = a.public_port or a.port
     Hub.lan_domain = lan_dns[0] if a.lan_address else None
     Hub.lan_ip = a.lan_address
+    Hub.lan_public_port = a.lan_public_port
     ctx, scheme = None, "http"
-    if Hub.data:
+    if Hub.data and not (a.local_http and not a.lan_address):   # --local-http with no LAN listener: no CA at all
         names = dns + (lan_dns if a.lan_address else [])
         zones = list(dict.fromkeys([dns[0], a.lan_domain, "localhost"]))   # the LAN zone even before a LAN listener
         crt, crt_key, done = hub_tls.ensure(Hub.data / "tls", list(dict.fromkeys(names)),
@@ -1197,7 +1209,7 @@ def main() -> None:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(crt, crt_key)
-        Hub.tls, scheme = Hub.data / "tls", "https"
+        Hub.tls, Hub.lan_tls, scheme = Hub.data / "tls", True, "https"
         key = None
         if scope == "lan" or a.lan_address:
             kf = Hub.data / "access.key"
@@ -1208,9 +1220,13 @@ def main() -> None:
                 print(f"new access key in {kf}: read it on this machine to sign in", flush=True)
             key = kf.read_text(encoding="utf-8").strip()
     own = lambda names: {d for d in names if not d.startswith("*.")}
+    main_ctx = None if a.local_http else ctx
+    if a.local_http:
+        scheme = "http"
     main_hub = type("MainHub", (Hub,), {"scope": scope, "domain": dns[0], "allowed": own(dns) | set(ips),
-                                        "key": key if scope == "lan" else None})
-    httpd = listen(main_hub, a.host, a.port, ctx, a.redirect_port)
+                                        "key": key if scope == "lan" else None,
+                                        "tls": Hub.tls if main_ctx else None})
+    httpd = listen(main_hub, a.host, a.port, main_ctx, a.redirect_port)
     print(f"cortex hub, {scope} scope, {scheme} for {', '.join(dns + ips)} · listening on {a.host}:{a.port} · "
           f"{len(vaults(Hub.root))} vaults under {Hub.root}", flush=True)
     if a.dns_port:
@@ -1220,7 +1236,7 @@ def main() -> None:
         print(f"DNS on {a.host}:{a.dns_port}/udp: " + ", ".join(f"*.{d} = {ip}" for d, ip in zones.items()), flush=True)
     if a.lan_address:
         lan_hub = type("LanHub", (Hub,), {"scope": "lan", "domain": lan_dns[0], "key": key,
-                                          "allowed": own(lan_dns) | set(lan_ips)})
+                                          "allowed": own(lan_dns) | set(lan_ips), "public_port": a.lan_public_port})
         lan_httpd = listen(lan_hub, a.host, a.lan_port, ctx, a.lan_redirect_port)
         threading.Thread(target=lan_httpd.serve_forever, daemon=True).start()
         print(f"LAN listener for {', '.join(lan_dns + lan_ips)} on {a.host}:{a.lan_port}: the vaults marked lan, "

@@ -223,6 +223,23 @@ Otros hallazgos de la fase 1:
   (decisión 5).
 - El README dice 31 tests del motor; hoy son 50.
 
+### Resultados de la fase 2 (2026-11-18)
+
+- **Por defecto, nada en el host:** `docker compose up -d` publica solo `127.0.0.1:8790` en HTTP. El hub vive en
+  `http://cortex.localhost:8790` y cada agente en `http://<agente>.cortex.localhost:8790`: los navegadores resuelven
+  `*.localhost` a la propia máquina sin DNS y lo tratan como contexto seguro. Sin puertos 80/443/53, sin CA.
+- **`--local-http`** (nuevo en `cortex_hub.py`): con `--data`, la escucha local queda en HTTP y solo la LAN usa
+  HTTPS. Sin LAN no se genera ninguna CA. Los enlaces a la LAN llevan su propio esquema y puerto
+  (`lan_tls`, `--lan-public-port`), y un test nuevo lo cubre.
+- **`compose.trusted.yaml`:** el modo anterior (`https://cortex.local`, DNS propio, CA en el host) pasa a ser un
+  override opcional. `install.ps1` e `install.sh` lo añaden al `.env` que escriben, así que siguen haciendo lo de
+  antes; con un `.env` anterior se paran y piden añadirlo.
+- **Verificado en vivo** con los vaults demo: hub y panel por agente cargan en el navegador, solo se publica
+  `127.0.0.1:8790`, un `Host` ajeno recibe 421 y no se crea `.cortex-hub/tls`. Tests: 4 de 4 suites (hub 15).
+- **Sin verificar en vivo:** el listener LAN con `--local-http` (solo cubierto por el test de enlaces) y los
+  instaladores reescritos.
+- **Pendiente para la fase 6:** el formulario "Connect an agent" sigue dando el prompt de Python en el host.
+
 **Fase nueva (después de la 3):** "MCP moderno": `2026-07-28` + `server/discover` + extensión Skills, con tests de
 compatibilidad para clientes `2025-06-18`. MCP Apps como fase opcional posterior.
 

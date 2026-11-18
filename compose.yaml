@@ -50,18 +50,18 @@ services:
       CORTEX_LAN_DOMAIN: ${CORTEX_LAN_DOMAIN:-cortex.home}
     volumes:
       - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
-    # published only on the chosen address: 127.0.0.1 = this machine, a private LAN address = the local network
+    # Nothing to set up on the host: one high port on 127.0.0.1, plain HTTP, and names under .localhost, which
+    # browsers resolve to this machine by themselves: http://cortex.localhost:8790 and http://<agent>.cortex.localhost:8790.
+    # compose.lan.yaml adds the local network (HTTPS); compose.trusted.yaml brings back https://cortex.local
+    # with its own DNS and a CA trusted on the host (what install.ps1 / install.sh set up).
     ports:
-      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_PORT:-443}:8443"
-      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_HTTP_PORT:-80}:8080"   # plain HTTP, only to send browsers to HTTPS
-      - "${CORTEX_DNS_ADDRESS:-127.0.0.153}:53:5353/udp"   # DNS for the domain alone; the system routes it here
+      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_PORT:-8790}:8443"
     command:
       - --address=${CORTEX_ADDRESS:-127.0.0.1}
-      - --domain=${CORTEX_DOMAIN:-localhost}
+      - --domain=${CORTEX_DOMAIN:-cortex.localhost}
       - --host-root=${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}
-      - --public-port=${CORTEX_PORT:-443}
-      - --redirect-port=8080
-      - --dns-port=5353
+      - --public-port=${CORTEX_PORT:-8790}
+      - --local-http
       - --lan-port=9443
       - --lan-redirect-port=9080
       - --lan-dns-port=5354

@@ -91,6 +91,18 @@ class HubTest(unittest.TestCase):
             cortex_hub.Hub.domain = None
         self.assertEqual(cortex_hub.subdomain("OpenCode Cortex"), "opencode")
 
+    def test_local_http_links_lan_vaults_over_https(self):
+        """--local-http: plain HTTP on this machine, HTTPS on the LAN listener, each with its own port in the links."""
+        local = type("LocalHttp", (cortex_hub.Hub,), {"domain": "cortex.localhost", "tls": None, "public_port": 8790,
+                                                       "lan_domain": "alastor.cortex.home", "lan_ip": "192.168.1.20",
+                                                       "lan_tls": True, "lan_public_port": 443})
+        h = local.__new__(local)
+        self.assertEqual(h.vault_url("Fern Cortex", "local"), "http://fern.cortex.localhost:8790/")
+        self.assertEqual(h.vault_url("Fern Cortex", "lan"), "https://fern.alastor.cortex.home/")
+        self.assertEqual(h.url("192.168.1.20", lan=True), "https://192.168.1.20")
+        local.lan_public_port = 8443
+        self.assertEqual(h.vault_url("Fern Cortex", "lan"), "https://fern.alastor.cortex.home:8443/")
+
     def test_connect_needs_same_origin_and_the_page_token(self):
         body = json.dumps({"agent": "Fern", "kind": "codex", "vault": "Fern Cortex", "role": "reader"}).encode()
         self.assertEqual(self.post("/api/connect", body, {"Origin": "https://evil.example"})[0], 403)
