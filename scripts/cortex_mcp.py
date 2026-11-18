@@ -723,17 +723,26 @@ def git_dirty(vault: Path) -> set[str] | None:
 ENGINE_STATE = "_brain/state/"
 
 
-def fix_filemode(vault: Path) -> None:
-    """A folder shared from Windows into a container shows every file executable: when this vault's file system does
-    not keep the bit, git must not record it (core.fileMode false), or every file looks changed to the host's git."""
-    probe = vault / ".git" / "cortex-mode-probe"
+def windows_share(path: Path) -> bool:
+    """Whether path lives on a folder shared from Windows into a Linux container (Docker Desktop mounts it as 9p with
+    aname=drvfs): files made on the Windows side show up as mode 0777, so their executable bit means nothing."""
     try:
-        probe.write_text("", encoding="utf-8")
-        if os.access(probe, os.X_OK) and git(vault, "config", "core.fileMode").stdout.strip() != "false":
-            git(vault, "config", "core.fileMode", "false")
-        probe.unlink()
+        best, share = "", False
+        target = str(path.resolve())
+        for line in Path("/proc/self/mounts").read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and (target == parts[1] or target.startswith(parts[1].rstrip("/") + "/"))                     and len(parts[1]) > len(best):
+                best, share = parts[1], parts[2] == "9p" and "drvfs" in parts[3]
+        return share
     except OSError:
-        pass
+        return False
+
+
+def fix_filemode(vault: Path) -> None:
+    """On a Windows share git must not record the executable bit (core.fileMode false): otherwise every file the
+    Windows side wrote looks changed, to the container's git and to the host's."""
+    if windows_share(vault) and git(vault, "config", "core.fileMode").stdout.strip() != "false":
+        git(vault, "config", "core.fileMode", "false")
 
 
 def agent_commit(vault: Path, by: str | None, titles: list[str], before: set[str]) -> str:
