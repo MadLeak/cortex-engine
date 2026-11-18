@@ -335,3 +335,18 @@ modelo (segundos) no compensa ahora: queda como mejora futura, medida con `scrip
 - **Sin verificar:** con un cliente real que hable 2026-07-28 o Skills (el soporte en clientes aún es parcial).
   Fuente: spec 2026-07-28 (changelog, `server/discover`, transporte HTTP) y SEP-2640, leídas el 2026-11-18.
 - Tests: MCP 89 (14 nuevos), 4 de 4 suites.
+
+### Resultados de las fases 4 y 5 (2026-11-18)
+
+- **Fase 4, CLI:** `./cortex.sh` / `.\cortex.ps1` → `docker compose run --rm cli`: `list`, `new` (plantilla o
+  ejemplo), `brain`, `doctor`, `upgrade`, `token [--rotate]`, `commit` (como el dueño, `CORTEX_GIT_NAME/EMAIL`) y
+  `precommit`. Probado de punta a punta en una carpeta de Windows.
+- **Hallazgos al probarla, ya corregidos:** la imagen salía con CRLF (el worktree tiene `core.autocrlf=true`): el
+  repo pasa a `* text=auto eol=lf`. Y en la carpeta compartida (montaje `9p`/`drvfs`) lo que escribe Windows aparece
+  como `0777`: git registraba `100755` y el git de Windows veía todo modificado. Ahora `fix_filemode` detecta ese
+  montaje y pone `core.fileMode false` (al crear el vault y antes de cada commit del agente o de la CLI). La línea
+  del token va ya en el `.gitignore` de la plantilla.
+- **Fase 5, hook:** el `pre-commit` del vault usa Python del host si lo hay; si no (o con `CORTEX_HOOK_DOCKER=1`),
+  corre la misma validación en la imagen `cortex-hub` sobre la carpeta del vault. Probado desde el git de Windows:
+  commit en ~2,7 s, y un secreto en una nota se bloquea igual por los dos caminos. Motor a v2.16.1 para que el hub
+  reparta el hook nuevo a los vaults existentes.

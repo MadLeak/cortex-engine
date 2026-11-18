@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.16.0"
+VERSION = "2.16.1"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
