@@ -1,3 +1,8 @@
+# Everything is LF, even on a Windows checkout: the image is built from this tree and copies its templates
+# into vaults, so a Windows build must not carry CRLF into them
+* text=auto eol=lf
+*.png binary
+
 # Shell scripts and git hooks run inside Linux containers and on Linux/macOS hosts: LF even on a Windows checkout
 *.sh text eol=lf
 template-vault/.githooks/* text eol=lf

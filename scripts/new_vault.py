@@ -102,6 +102,11 @@ def main() -> int:
         return 0
     git(dest, "init", "-q", "-b", "main")
     git(dest, "config", "core.hooksPath", ".githooks")
+    probe = dest / ".cortex-mode-probe"   # a folder shared from Windows into a container shows every file executable:
+    probe.write_text("", encoding="utf-8")   # git must not record that as the files' mode
+    if os.access(probe, os.X_OK):
+        git(dest, "config", "core.fileMode", "false")
+    probe.unlink()
     if a.git_name:
         git(dest, "config", "user.name", a.git_name)
     if a.git_email:

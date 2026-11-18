@@ -723,6 +723,19 @@ def git_dirty(vault: Path) -> set[str] | None:
 ENGINE_STATE = "_brain/state/"
 
 
+def fix_filemode(vault: Path) -> None:
+    """A folder shared from Windows into a container shows every file executable: when this vault's file system does
+    not keep the bit, git must not record it (core.fileMode false), or every file looks changed to the host's git."""
+    probe = vault / ".git" / "cortex-mode-probe"
+    try:
+        probe.write_text("", encoding="utf-8")
+        if os.access(probe, os.X_OK) and git(vault, "config", "core.fileMode").stdout.strip() != "false":
+            git(vault, "config", "core.fileMode", "false")
+        probe.unlink()
+    except OSError:
+        pass
+
+
 def agent_commit(vault: Path, by: str | None, titles: list[str], before: set[str]) -> str:
     """Commits what this task changed, and only that: paths that were already changed before it (the owner's own
     edits, say) are left alone, and nothing is committed while something else is staged. The author and committer
@@ -736,6 +749,7 @@ def agent_commit(vault: Path, by: str | None, titles: list[str], before: set[str
         return "nothing changed on disk: nothing committed"
     if git(vault, "diff", "--cached", "--name-only").stdout.strip():
         return "something else is already staged in this vault: left uncommitted for its owner"
+    fix_filemode(vault)
     name = by or "cortex-agent"
     email = (re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "agent") + "@cortex.local"
     env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_COMMITTER_NAME": name,

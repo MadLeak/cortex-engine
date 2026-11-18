@@ -32,6 +32,24 @@ services:
     security_opt: ["no-new-privileges:true"]
     entrypoint: ["python3", "/opt/cortex/scripts/bench_calls.py", "--dir", "/tmp/bench"]
 
+  # the command line, in the container: ./cortex.sh <command> (Windows: .\cortex.ps1), see scripts/cortex_cli.py
+  cli:
+    profiles: [tools]
+    build: .
+    image: cortex-hub:2.16.0
+    user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CORTEX_OWNER: ${CORTEX_OWNER:-the owner}
+      CORTEX_GIT_NAME: ${CORTEX_GIT_NAME:-}
+      CORTEX_GIT_EMAIL: ${CORTEX_GIT_EMAIL:-}
+    volumes:
+      - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
+    entrypoint: ["python3", "/opt/cortex/scripts/cortex_cli.py"]
+
   hub:
     build: .
     image: cortex-hub:2.16.0
