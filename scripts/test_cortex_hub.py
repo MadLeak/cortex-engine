@@ -110,6 +110,32 @@ class HubTest(unittest.TestCase):
             cortex_hub.Hub.mcp_hub, cortex_hub.Hub.mcp_require_token = None, False
             cortex_hub.Hub.mcp_tokens = {}
 
+    def test_a_scope_is_saved_even_before_the_data_folder_exists(self):
+        data = cortex_hub.Hub.root / ".cortex-hub"
+        cortex_hub.save_scope(data, "Fern Cortex", "local")
+        self.assertEqual(cortex_hub.load_scopes(data), {"Fern Cortex": "local"})
+
+    def test_with_mcp_connecting_gives_the_clients_config_not_a_python_prompt(self):
+        cortex_hub.Hub.mcp_hub = cortex_hub.cortex_mcp.Hub(cortex_hub.Hub.root, 10.0)
+        cortex_hub.Hub.domain, cortex_hub.Hub.public_port = "cortex.localhost", 8790
+        try:
+            status, out = self.post("/api/connect", json.dumps(
+                {"agent": "Fern", "kind": "claude-code", "vault": "Fern Cortex", "role": "curator"}).encode(),
+                {"Host": "localhost:8790", "Origin": "http://localhost:8790"})
+        finally:
+            cortex_hub.Hub.mcp_hub, cortex_hub.Hub.domain, cortex_hub.Hub.public_port = None, None, 443
+        self.assertEqual(status, 200, out)
+        out = json.loads(out)
+        token = cortex_hub.cortex_mcp.token_path(cortex_hub.Hub.root / "Fern Cortex").read_text(encoding="utf-8").strip()
+        p = out["prompt"]
+        self.assertTrue(out["mcp"])
+        self.assertIn('claude mcp add --transport http --scope user fern-cortex "http://cortex.localhost:8790/mcp/'
+                      'Fern%20Cortex?by=fern" --header "Authorization: Bearer ' + token + '"', p)
+        self.assertIn('"httpUrl"', cortex_hub.mcp_setup("Fern", "Fern Cortex", "gemini", "reader", "fern",
+                                                        "http://x", "t"))
+        self.assertIn("docker exec -i", p)
+        self.assertNotIn("brain.py", p)
+
     def test_local_http_links_lan_vaults_over_https(self):
         """--local-http: plain HTTP on this machine, HTTPS on the LAN listener, each with its own port in the links."""
         local = type("LocalHttp", (cortex_hub.Hub,), {"domain": "cortex.localhost", "tls": None, "public_port": 8790,

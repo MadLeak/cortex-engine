@@ -350,3 +350,18 @@ modelo (segundos) no compensa ahora: queda como mejora futura, medida con `scrip
   corre la misma validación en la imagen `cortex-hub` sobre la carpeta del vault. Probado desde el git de Windows:
   commit en ~2,7 s, y un secreto en una nota se bloquea igual por los dos caminos. Motor a v2.16.1 para que el hub
   reparta el hook nuevo a los vaults existentes.
+
+### Resultados de la fase 6 (2026-11-18)
+
+- Con `--mcp`, "Connect an agent" ya no da el prompt de Python en el host: crea (o elige) el vault, asegura su token
+  y devuelve la configuración MCP del cliente elegido (`claude mcp add --transport http ... --header
+  "Authorization: Bearer ..."`, el bloque de `~/.codex/config.toml`, el de `~/.gemini/settings.json` o el de
+  `opencode.json`), más un JSON `mcpServers` genérico y un puente stdio por `docker exec` para cualquier otro
+  cliente. No se escribe nada en los archivos de instrucciones del agente: basta con decirle una vez que use
+  `brief` y `finish`. Sin `--mcp` el formulario sigue como antes.
+- Los formatos de Codex, Gemini y OpenCode salen de su documentación pública; solo el de Claude Code se probó.
+- **Bug encontrado en vivo y corregido:** desde la fase 2, sin LAN no se creaba la carpeta de datos del hub y crear
+  un vault desde el formulario cortaba la conexión. Ahora se crea al guardar el ámbito, y un error de disco devuelve
+  un 500 con el mensaje. Test nuevo.
+- Verificado en vivo: vault creado desde el formulario, limpio para el git de Windows, y `brief` responde con la URL
+  y el token devueltos.

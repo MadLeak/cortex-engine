@@ -210,6 +210,42 @@ def agent_prompt(name: str, folder: str, kind: str, role: str, by: str, py: str,
     return text
 
 
+CONTAINER = os.environ.get("CORTEX_CONTAINER", "cortex-hub-1")   # the hub's container, for the stdio bridge
+
+
+def mcp_setup(name: str, folder: str, kind: str, role: str, by: str, base: str, token: str) -> str:
+    """What the person runs or pastes so the agent reaches its cortex over MCP: one line for its own client, nothing
+    installed on the machine, nothing written to the agent's instruction files (the tool says how to use it)."""
+    server = wire_agent.slug(name)
+    server = server if "cortex" in server else f"cortex-{server}"   # the MCP server's name in the client: fern-cortex
+    url = f"{base}/mcp/{quote(folder)}?by={quote(by)}" + ("&role=reader" if role == "reader" else "")
+    auth = f"Bearer {token}"
+    j = lambda o: json.dumps(o, indent=2)   # noqa: E731
+    lines = {
+        "claude-code": f'claude mcp add --transport http --scope user {server} "{url}" --header "Authorization: {auth}"',
+        "codex": f'# ~/.codex/config.toml\n[mcp_servers.{server}]\nurl = "{url}"\n'
+                 f'http_headers = {{ Authorization = "{auth}" }}',
+        "gemini": '# ~/.gemini/settings.json, inside "mcpServers"\n' +
+                  j({server: {"httpUrl": url, "headers": {"Authorization": auth}}}),
+        "opencode": '# opencode.json, inside "mcp"\n' +
+                    j({server: {"type": "remote", "url": url, "headers": {"Authorization": auth}}}),
+    }
+    generic = j({"mcpServers": {server: {"type": "http", "url": url, "headers": {"Authorization": auth}}}})
+    stdio = (f'docker exec -i {CONTAINER} python3 /opt/cortex/scripts/cortex_mcp.py --vault "/vaults/{folder}" '
+             f'--by {by}' + (" --role reader" if role == "reader" else ""))
+    text = (f'Connect {by} to its long-term memory, the Cortex vault "{name}", over MCP. It is the {role}.\n'
+            "Nothing to install: the vault and its engine live in the Cortex container. The token below is this "
+            "vault's key: keep it private (a new one: ./cortex.sh token <vault> --rotate).\n\n")
+    if kind in lines:
+        text += f"===== {kind} =====\n{lines[kind]}\n\n"
+    text += (f"===== any other MCP client (streamable HTTP) =====\n{generic}\n\n"
+             f"===== a client that only speaks stdio =====\n{stdio}\n\n"
+             'Then tell the agent once: "Use the cortex tool: start each task with action=brief and end it with '
+             'action=finish." The tool\'s own description carries the rest; finish commits what it learned under '
+             f"its name ({by}).\n")
+    return text
+
+
 def review_dir(root: Path, data: Path | None) -> Path:
     """Where scripts/review_prep.py leaves Strata's verdicts, one <vault>.jsonl each, and progress.json."""
     return (data or root / ".cortex-hub") / "review"
@@ -247,13 +283,14 @@ def load_scopes(data: Path | None) -> dict[str, str]:
 def save_scope(data: Path, name: str, scope: str) -> None:
     scopes = load_scopes(data)
     scopes[name] = scope
+    data.mkdir(parents=True, exist_ok=True)   # with --local-http and no LAN, no CA made the folder first
     tmp = data / "scopes.json.tmp"
     tmp.write_text(json.dumps(scopes, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(data / "scopes.json")
 
 
 def connect(root: Path, host_root: str, form: dict, owner: str, lock: threading.Lock,
-            data: Path | None = None, lan: bool = False) -> dict:
+            data: Path | None = None, lan: bool = False, mcp_base: str | None = None) -> dict:
     """Validates the connect form, creates the vault when asked, and returns the agent's prompt. ValueError = bad input."""
     if wire_agent is None or not (ENGINE / "scripts/new_vault.py").is_file():
         raise ValueError("this hub runs outside the engine repository: connect agents with installers/wire_agent.py")
@@ -296,8 +333,12 @@ def connect(root: Path, host_root: str, form: dict, owner: str, lock: threading.
     cfg = read_json(v / "_brain/config.json", {})
     name = cfg.get("vault") or folder
     committed = subprocess.run(["git", "-C", str(v), "rev-parse", "-q", "--verify", "HEAD"], capture_output=True).returncode == 0
-    prompt = agent_prompt(name, folder, kind, role, by, py, host_root, committed)
-    return {"vault": name, "folder": folder, "scope": scope, "created": created, "log": log, "prompt": prompt}
+    if mcp_base:   # the hub serves MCP: the agent connects to it, nothing runs on this machine
+        prompt = mcp_setup(name, folder, kind, role, by, mcp_base, cortex_mcp.ensure_token(v))
+    else:
+        prompt = agent_prompt(name, folder, kind, role, by, py, host_root, committed)
+    return {"vault": name, "folder": folder, "scope": scope, "created": created, "log": log, "prompt": prompt,
+            "mcp": bool(mcp_base)}
 
 
 class Server(ThreadingHTTPServer):
@@ -486,11 +527,13 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                 return self.send(HTTPStatus.FORBIDDEN, b"stale page: reload it", TEXT)
             try:
                 out = connect(self.root, self.host_root or str(self.root), json.loads(raw or b"{}"), self.owner, self.creating,
-                              self.data, self.lan_domain is not None)
+                              self.data, self.lan_domain is not None,
+                              self.url(self.domain if self.domain and "." in self.domain else "localhost")
+                              if self.mcp_hub is not None else None)
                 out["url"] = self.vault_url(out["folder"], out["scope"])
             except ValueError as e:
                 return self.send(HTTPStatus.BAD_REQUEST, json.dumps({"error": str(e)}).encode(), "application/json")
-            except (RuntimeError, subprocess.TimeoutExpired) as e:
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
                 return self.send(HTTPStatus.INTERNAL_SERVER_ERROR, json.dumps({"error": str(e)}).encode(), "application/json")
             return self.send(200, json.dumps(out).encode(), "application/json")
         self.send(404, b"not found", TEXT)
