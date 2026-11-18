@@ -20,9 +20,11 @@ formatting and its exit codes stay the contract: 0 the text is the answer · 1 t
 ✖ line comes back as a tool error, so the model fixes them and retries) · 2 the read budget or the provisional
 limit is spent (stop reading and answer with what you have).
 
-No --session is passed: the engine keeps one automatic session per vault, renewed after 10 idle minutes, so the
-budget spent here is the budget a brain.py call spends in the same window, and the engine's automatic credit of a
-closed session still happens. Only learn writes; the engine takes the vault's own lock and waits about 10 seconds
+Sessions (engine 2.16+): brief opens the agent's task session (session new --by <agent>) and returns its id; the
+agent's calls use it with or without session=<id>, and finish credits, stores, closes it and, when the server was
+started to (the Cortex hub), commits what the task learned under the agent's own name. A call with no task session
+open uses the agent's fallback session, closed after the vault's auto_idle_minutes. Older engines keep the single
+automatic session per vault. Only learn writes; the engine takes the vault's own lock and waits about 10 seconds
 for it, because a curator or a consolidation timer can be writing at the same time.
 
 Every read call also touches the automatic session and the telemetry, which the vault lock does not cover, so this
@@ -73,8 +75,9 @@ def describe() -> str:
             "fact you just learned (English title and summary; a current one needs verify_intent, verify_keywords "
             "and, when it can be rechecked, verify lines - or truth=historical). "
             "isError means fix the arguments, or - when it says budget or limit - stop reading and answer with what "
-            "you already have. Anything else is the engine's own failure: retry once. The budget belongs to the "
-            "vault and is shared with any brain.py call in the same 10 minutes. Cite what you used as [[Title]]. "
+            "you already have. Anything else is the engine's own failure: retry once. "
+            "A task starts with action=brief, which opens its session and gives its id, and ends with action=finish, "
+            "which closes it: pass session=<id> on every call when you run tasks in parallel. Cite what you used as [[Title]]. "
             "Never store secrets, credentials or personal data. "
             "Combined actions save round trips: action=brief(query optional) at the start of a task gives the Hot "
             "nodes and the budget left, and with a query answers it like ask; action=ask(query, reads 0-2 or titles) is recall plus the reads it "
@@ -114,12 +117,14 @@ D = {"all": "also search the sibling vaults",
      "verify_keywords": "3 to 6 words a search for this note would use",
      "verify": "one read-only check a script could rerun without a model, such as 'path <p>', 'key a.b in <file> "
                "= <value>' or 'grep <regex> in <file>' (up to five, none when nothing can be checked)"}
+D["session"] = "this task's session id, from brief (needed only when you run tasks in parallel)"
 ARGS = {"recall": {"query": "what to look for, in English", "all": D["all"], "no_body": D["no_body"],
-                   "mode": "the session's reading mode, when the engine offers more than normal"},
-        "read": {"title": "the exact title of the node", "full": D["full"], "cold": D["cold"]},
-        "credit": {"used": "the titles that helped"},
+                   "mode": "the session's reading mode, when the engine offers more than normal",
+                   "session": D["session"]},
+        "read": {"title": "the exact title of the node", "full": D["full"], "cold": D["cold"], "session": D["session"]},
+        "credit": {"used": "the titles that helped", "session": D["session"]},
         "stats": {},
-        "session": {},
+        "session": {"session": D["session"]},
         "learn": {"up": "the L2 concept it belongs under", "title": "a short English title",
                   "summary": "one English line saying what is true", "content": "what is true",
                   "evidence": "how you know: a file, a command, a date",
@@ -130,12 +135,12 @@ ARGS = {"recall": {"query": "what to look for, in English", "all": D["all"], "no
                                    "code, rule or behavior",
                   "system": D["system"], "verify_keywords": D["verify_keywords"], "verify": D["verify"],
                   "by": D["by"]}}
-ARGS["ask"] = {"query": ARGS["recall"]["query"], "all": D["all"],
+ARGS["ask"] = {"query": ARGS["recall"]["query"], "all": D["all"], "session": D["session"],
                "reads": "how many top signatures to read when recall gives no clear answer (0-2, default 1)",
                "titles": "exact titles to read after the recall, instead of the top signatures (at most 2)"}
 ARGS["brief"] = {"query": "optional: the task's question, answered in the same call as an ask",
                  "all": D["all"], "reads": "with query: how many top signatures to read (0-2, default 1)"}
-ARGS["finish"] = {"used": "the titles that helped (credited first)",
+ARGS["finish"] = {"used": "the titles that helped (credited first)", "session": D["session"],
                   "learnings": "learn calls to run after the credit: each one an object with learn's fields"}
 ARGS["health"] = {}
 ARGS["batch"] = {"steps": "up to 12 calls run in order, each an object with its own action (or verb and args for "
@@ -153,8 +158,9 @@ SHARED = {"vault": "a sibling vault's name, such as Agents Cortex, to read there
           "title": "read: the exact title of the node. learn: a short English title for the node it creates"}
 
 
-def argv_for(a: dict, by: str | None) -> list[str]:
-    """The engine's own command line for a tool call: one argument per title, query or line, never a shell."""
+def argv_for(a: dict, by: str | None, sessions: bool = False) -> list[str]:
+    """The engine's own command line for a tool call: one argument per title, query or line, never a shell.
+    sessions: the vault's engine has task sessions (2.16+), so reads name their agent and may name a session."""
     act = a.get("action")
     if act not in ACTIONS:
         raise BadCall(f"action must be one of: {', '.join(ACTIONS)}")
@@ -181,7 +187,17 @@ def argv_for(a: dict, by: str | None) -> list[str]:
         cmd = ["stats"]
     elif act == "session":
         cmd = ["session", "status"]
-    else:
+    if act in ("recall", "read", "credit", "session") and sessions:
+        if a.get("session"):
+            cmd += ["--session", text(a, "session")]
+        if by:
+            cmd += ["--by", by]
+        return cmd
+    if act in ("recall", "read", "credit", "session"):
+        if a.get("session"):
+            raise BadCall("this vault's engine predates task sessions: leave session out")
+        return cmd
+    if act == "learn":
         cmd = ["learn", "--up", text(a, "up"), "--title", text(a, "title"), "--summary", text(a, "summary"),
                "--content", text(a, "content"), "--evidence", text(a, "evidence")]
         for key, flag in (("type", "--type"), ("truth", "--truth"), ("contradicts", "--contradicts"),
@@ -535,10 +551,34 @@ def sibling(st, name) -> Path:
     return v
 
 
+_ENGINE_VERSIONS: dict = {}
+
+
+def engine_at_least(vault: Path, want: tuple[int, ...]) -> bool:
+    """Whether the vault's own engine is this version or newer (read from its brain_core.py, cached by mtime)."""
+    f = vault / "_brain" / "scripts" / "brain_core.py"
+    try:
+        s = f.stat()
+        stamp = (s.st_mtime_ns, s.st_size)
+        if _ENGINE_VERSIONS.get(f, (None,))[0] != stamp:
+            m = VERSION_LINE.search(f.read_text(encoding="utf-8", errors="replace"))
+            _ENGINE_VERSIONS[f] = (stamp, tuple(int(x) for x in re.findall(r"\d+", m.group(1))[:3]) if m else ())
+        return _ENGINE_VERSIONS[f][1] >= want
+    except OSError:
+        return False
+
+
+def has_sessions(vault: Path) -> bool:
+    return engine_at_least(vault, (2, 16, 0))
+
+
 def one(st, a: dict, vault: Path | None = None) -> tuple[bool, str]:
-    """One simple action on one vault, the gate already held."""
+    """One simple action on one vault, the gate already held. On a sibling vault the agent reads without its name:
+    its task session belongs to its own vault."""
     vault = vault or st.vault
-    args = argv_for(a, st.by if vault == st.vault else None)
+    own = vault == st.vault
+    args = argv_for(a if own else {k: v for k, v in a.items() if k != "session"}, st.by if own else None,
+                    has_sessions(vault) and own)
     return run_engine(vault / "_brain" / "scripts" / "brain.py", vault, args, st.timeout)
 
 
@@ -558,6 +598,8 @@ def ask(st, a: dict, vault: Path) -> tuple[bool, str]:
     q = {"action": "recall", "query": text(a, "query")}
     if a.get("all"):
         q["all"] = True
+    if a.get("session"):
+        q["session"] = a["session"]
     ok, got = one(st, q, vault)
     parts = [f"## recall\n{got}"]
     if not ok or "# answer:" in got:
@@ -568,7 +610,8 @@ def ask(st, a: dict, vault: Path) -> tuple[bool, str]:
     picks = [(None, t) for t in words(a, "titles")][:2] if a.get("titles") else titles_from(got, n)
     for vname, title in picks:
         where = sibling(st, vname) if vname else vault
-        ok2, body = one(st, {"action": "read", "title": title}, where)
+        r = {"action": "read", "title": title, **({"session": a["session"]} if a.get("session") else {})}
+        ok2, body = one(st, r, where)
         parts.append(f"## read {title}\n{body}")
         if not ok2:
             break
@@ -594,42 +637,120 @@ def hot(vault: Path) -> str:
 
 
 def brief(st, a: dict, vault: Path) -> tuple[bool, str]:
-    """Start of a task in one call: the Hot nodes, the budget left, and with a query the ask as well."""
-    ok, ses = one(st, {"action": "session"}, vault)
+    """Start of a task in one call: the Hot nodes, the task's own session (engine 2.16+, with the agent's name: it
+    closes the agent's previous one) and with a query the ask as well."""
+    sid = None
+    if vault == st.vault and st.by and has_sessions(vault):
+        ok, ses = run_engine(st.brain, vault, ["session", "new", "--by", st.by], st.timeout)
+        sid = ses.splitlines()[0].strip() if ok and ses.strip() else None
+        ses = (f"{ses}\nThis task's session is {sid}: your calls use it; pass session={sid} only when you run "
+               "tasks in parallel. End the task with action=finish.") if sid else ses
+    else:
+        ok, ses = one(st, {"action": "session"}, vault)
     parts = [f"## hot (when a summary here answers, answer from it and credit it)\n{hot(vault)}",
              f"## session\n{ses if ok else 'unknown: ' + ses}"]
     if a.get("query"):
-        okq, got = ask(st, {k: v for k, v in a.items() if k in ("query", "all", "reads")}, vault)
+        q = {k: v for k, v in a.items() if k in ("query", "all", "reads")}
+        okq, got = ask(st, dict(q, session=sid) if sid else q, vault)
         parts.append(got)
         return okq, "\n\n".join(parts)
     return True, "\n\n".join(parts)
 
 
 def finish(st, a: dict) -> tuple[bool, str]:
-    parts, ok = [], True
-    if a.get("used"):
-        ok, got = one(st, {"action": "credit", "used": words(a, "used")})
-        parts.append(f"## credit\n{got}")
+    """End of a task in one call: credit, the learnings, the session closed and, on a server that commits (the Cortex
+    hub), one commit of what this task changed, under the agent's own name."""
     ls = a.get("learnings") or []
     if not isinstance(ls, list):
         raise BadCall("finish's learnings is a list of objects")
+    if not a.get("used") and not ls:
+        raise BadCall("finish needs used, learnings or both")
+    before = git_dirty(st.vault) if st.commit and ls else None
+    parts, ok, learned = [], True, []
+    sid = {"session": a["session"]} if a.get("session") else {}
+    if a.get("used"):
+        ok, got = one(st, {"action": "credit", "used": words(a, "used"), **sid})
+        parts.append(f"## credit\n{got}")
     for i, l in enumerate(ls[:5], 1):
         if not isinstance(l, dict):
             raise BadCall("each learning is an object with learn's fields")
         okl, got = one(st, dict(l, action="learn"))
         parts.append(f"## learn {i}: {l.get('title', '?')}\n{got}")
         ok = ok and okl
+        if okl:
+            learned.append(str(l.get("title") or "?"))
         if not okl and "stop" in got.lower():
             break
-    if not parts:
-        raise BadCall("finish needs used, learnings or both")
+    if has_sessions(st.vault) and (a.get("session") or st.by):
+        close = ["session", "close"] + (["--session", text(a, "session")] if a.get("session") else []) + \
+                (["--by", st.by] if st.by else [])
+        _, got = run_engine(st.brain, st.vault, close, st.timeout)
+        parts.append(f"## session\n{got}")
+    if before is not None and learned:
+        parts.append(f"## commit\n{agent_commit(st.vault, st.by, learned, before)}")
     return ok, "\n\n".join(parts)
+
+
+def git(vault: Path, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(vault), *args], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=120, env=env)
+
+
+def git_dirty(vault: Path) -> set[str] | None:
+    """The paths git sees as changed or new in the vault (None when it is not a git repository)."""
+    r = git(vault, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if r.returncode != 0:
+        return None
+    out, items, i = set(), r.stdout.split("\0"), 0
+    while i < len(items):
+        e = items[i]
+        if len(e) > 3:
+            out.add(e[3:])
+            if e[0] in "RC":           # a rename or copy: its source path follows
+                i += 1
+        i += 1
+    return out
+
+
+ENGINE_STATE = "_brain/state/"
+
+
+def agent_commit(vault: Path, by: str | None, titles: list[str], before: set[str]) -> str:
+    """Commits what this task changed, and only that: paths that were already changed before it (the owner's own
+    edits, say) are left alone, and nothing is committed while something else is staged. The author and committer
+    are the agent, by name; the vault's pre-commit hook validates the commit as it does any other."""
+    after = git_dirty(vault)
+    if after is None:
+        return "not a git repository: nothing committed"
+    # the engine's own bookkeeping (_brain/state/) is never the owner's edit: it goes with the task that read
+    mine = sorted((after - before) | {p for p in before & after if p.startswith(ENGINE_STATE)})
+    if not mine:
+        return "nothing changed on disk: nothing committed"
+    if git(vault, "diff", "--cached", "--name-only").stdout.strip():
+        return "something else is already staged in this vault: left uncommitted for its owner"
+    name = by or "cortex-agent"
+    email = (re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "agent") + "@cortex.local"
+    env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_COMMITTER_NAME": name,
+           "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_EMAIL": email}
+    left = sorted(p for p in before & after if not p.startswith(ENGINE_STATE))
+    if git(vault, "add", "--", *mine).returncode != 0:
+        return "git add failed: nothing committed"
+    subject = "learning: " + "; ".join(titles)
+    subject = subject if len(subject) <= 72 else subject[:69] + "..."
+    r = git(vault, "commit", "-q", "-m", subject, "-m", f"by {name} through the Cortex MCP", env=env)
+    if r.returncode != 0:
+        git(vault, "reset", "-q", "--", *mine)
+        return "the commit was refused, the changes stay on disk: " + (r.stderr or r.stdout).strip()[-600:]
+    head = git(vault, "log", "-1", "--format=%h").stdout.strip()
+    return (f"committed {head} as {name} <{email}>: {len(mine)} files" +
+            (f" · left alone, already changed before this task: {', '.join(left[:5])}" if left else ""))
 
 
 def health(st, vault: Path) -> tuple[bool, str]:
     brain = vault / "_brain" / "scripts" / "brain.py"
     parts = []
-    for label, argv in (("stats", ["stats"]), ("session", ["session", "status"]), ("lint", ["lint", "--quiet"]),
+    ses = ["session", "status"] + (["--by", st.by] if st.by and vault == st.vault and has_sessions(vault) else [])
+    for label, argv in (("stats", ["stats"]), ("session", ses), ("lint", ["lint", "--quiet"]),
                         ("externals", ["externals"])):
         ok, got = run_engine(brain, vault, argv, st.timeout)
         if label == "externals":
@@ -802,6 +923,7 @@ class Server:
                  allow_consolidate: bool = False):
         self.vault, self.brain, self.by, self.timeout = vault, vault / "_brain" / "scripts" / "brain.py", by, timeout
         self.role, self.allow_consolidate = role, allow_consolidate
+        self.commit = False                            # finish commits what the task learned (the Cortex hub sets it)
         self.spec = engine_spec(self.brain) if role == "curator" else {}
         self.gate = threading.Semaphore(1)             # one engine call at a time in this process (see call)
         try:  # the name the vault calls itself, the way the installer reads it (wire_agent.py)
@@ -864,8 +986,8 @@ class Hub:
     """Every vault under one folder, served by one process. The gate is per vault and shared by every agent, so two
     agents reading the same vault wait for each other instead of trampling its session and telemetry."""
 
-    def __init__(self, root: Path, timeout: float):
-        self.root, self.timeout = root, timeout
+    def __init__(self, root: Path, timeout: float, commit: bool = False):
+        self.root, self.timeout, self.commit = root, timeout, commit
         self.gates: dict[Path, threading.Semaphore] = {}
         self.servers: dict[tuple, Server] = {}
         self.lock = threading.Lock()
@@ -888,6 +1010,7 @@ class Hub:
             if key not in self.servers:
                 st = Server(v, by, self.timeout, role)
                 st.gate = self.gates.setdefault(v, threading.Semaphore(1))
+                st.commit = self.commit
                 self.servers[key] = st
             return self.servers[key]
 

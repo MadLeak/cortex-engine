@@ -156,7 +156,7 @@ Tests: `python3 -m unittest scripts/test_cortex_mcp.py`.
 4. Cite `[[Title]]`.
 5. `B credit --used "<title>" ["<title>" ...]` for the nodes that helped.
 
-Sessions are automatic. `recall`, `read` and `credit` share one until 10 minutes of idle time. If a session read bodies and credited none, the engine credits the last body it read when the session closes. For an explicit session, run `B session new [--mode quick|normal|deep]` and pass `--session <id>`.
+Sessions follow the task. `B session new --by <agent>` opens the agent's task session: its `recall`, `read` and `credit` with `--by <agent>` use it with no idle limit until `B session close --by <agent>` or the agent's next `session new` (the MCP's `brief` and `finish` do both). Calls with no task session open use a fallback session, one per agent (`--by`) or one for the vault (no `--by`), renewed after `auto_idle_minutes` (config, default 30) with no call; a spent one is not renewed, so the query limit says to answer. If a session read bodies and credited none, the engine credits the last body it read when the session closes. Any session can also be named with `--session <id>`.
 
 | Mode | Bodies per query | Bodies per session | Queries | Recall output cap |
 |---|---|---|---|---|
@@ -367,7 +367,7 @@ The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lex
 | `pre-commit: Python 3.10+ not found` | the hook tries `python`, `py` and `python3` in that order | install Python 3.10+ or put it on PATH |
 | `✖ query budget exhausted`, exit 2 | per-query body budget spent | answer, or run a new `recall` if the question changed |
 | `✖ session budget exhausted`, exit 2 | per-session body budget spent | answer, or delegate to a subagent in deep mode |
-| `✖ limit of N queries in this session`, exit 2 | query limit reached | answer. The automatic session renews after 10 idle minutes |
+| `✖ limit of N queries in this session`, exit 2 | query limit reached | answer. The next task (`session new`, the MCP's `brief`) starts a new budget; a fallback session renews after `auto_idle_minutes` |
 | `✖ "X" was already read in this session`, exit 2 | the body is already in your context | use it. `read --full` only applies after an excerpt |
 | `learn` → `summary of 141 characters (max 140)` | summaries are signatures | shorten it |
 | `learn` → `possible email address` | an address with a real TLD (anything but `.local`) | replace the person with a role. Keep a deliberate sender in `allowed_addresses` |

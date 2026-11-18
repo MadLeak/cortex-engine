@@ -622,6 +622,7 @@ def real_vault(tmp: Path, name: str = "Real Cortex") -> Path:
     v = tmp / name
     shutil.copytree(TEMPLATE / "_brain", v / "_brain", ignore=shutil.ignore_patterns("__pycache__", "tests"))
     shutil.copytree(TEMPLATE / "_templates", v / "_templates")
+    shutil.copy(TEMPLATE / ".gitignore", v / ".gitignore")   # as a real vault: engine state stays out of git
     cfg = json.loads((v / "_brain" / "config.json").read_text(encoding="utf-8"))
     (v / "_brain" / "config.json").write_text(json.dumps(dict(cfg, vault=name)), encoding="utf-8")
     brain = v / "_brain" / "scripts" / "brain.py"
@@ -713,3 +714,85 @@ class ResidentTests(unittest.TestCase):
             t.join()
         self.assertTrue(ok)
         self.assertIsNone(getattr(sys.stderr.local, "buf", None))
+
+
+GIT_ID = {"GIT_AUTHOR_NAME": "Owner", "GIT_AUTHOR_EMAIL": "owner@example.com",
+          "GIT_COMMITTER_NAME": "Owner", "GIT_COMMITTER_EMAIL": "owner@example.com"}
+
+
+class TaskSessionTests(unittest.TestCase):
+    """brief opens the agent's task session; finish credits, learns, closes it and commits only what the task
+    changed, under the agent's name (engine 2.16+, a server that commits)."""
+
+    def setUp(self):
+        import os
+        self.tmp = Path(tempfile.mkdtemp(prefix="cortex-task-"))
+        self.v = real_vault(self.tmp)
+        self.env = {**os.environ, **GIT_ID}
+        self.git("init", "-q")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "seed")
+        self.st = cortex_mcp.Server(self.v, "claude-code", 30.0)
+        self.st.commit = True
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.v), *args], capture_output=True, text=True, env=self.env)
+
+    def learning(self, title):
+        return {"up": "Water before 9 am", "title": title, "summary": "Compost is turned every week to keep it warm.",
+                "content": "Turn the compost every Sunday.", "evidence": "the owner said so on 2026-11-18",
+                "truth": "historical"}
+
+    def test_brief_opens_the_task_session_and_finish_closes_and_commits_it(self):
+        ok, got = cortex_mcp.run(self.st, {"action": "brief", "query": "when are the beds watered"})
+        self.assertTrue(ok, got)
+        sid = re.search(r"This task's session is (s[\w-]+)", got).group(1)
+        task = self.v / "_brain" / "state" / "sessions" / "task-claude-code.json"
+        self.assertEqual(json.loads(task.read_text(encoding="utf-8"))["sid"], sid)
+        (self.v / "Garden" / "Owner note.md").write_text("the owner's own edit\n", encoding="utf-8")
+        mark = self.v / "_brain" / "state" / "bookkeeping.txt"   # engine bookkeeping that a vault tracks in git
+        mark.write_text("1\n", encoding="utf-8")
+        self.git("add", "-f", "_brain/state/bookkeeping.txt")
+        self.git("commit", "-q", "-m", "track bookkeeping")
+        mark.write_text("2\n", encoding="utf-8")                  # changed during the task, before finish
+        ok, got = cortex_mcp.run(self.st, {"action": "finish", "used": ["Water before 9 am"],
+                                           "learnings": [self.learning("Compost is turned weekly")]})
+        self.assertTrue(ok, got)
+        self.assertIn(f"session {sid} closed", got)
+        self.assertFalse(task.exists())
+        self.assertRegex(got, r"committed \w+ as claude-code <claude-code@cortex\.local>")
+        self.assertIn("left alone, already changed before this task: Garden/Owner note.md", got)
+        log = self.git("log", "-1", "--format=%an <%ae>|%s|%b").stdout.strip()
+        self.assertTrue(log.startswith("claude-code <claude-code@cortex.local>|learning: Compost is turned weekly|"), log)
+        self.assertNotIn("Co-Authored-By", log)
+        files = self.git("show", "--name-only", "--format=", "HEAD").stdout.split("\n")
+        self.assertNotIn("Garden/Owner note.md", files)
+        self.assertIn("_brain/state/bookkeeping.txt", files, "the engine's bookkeeping goes with the task")
+        self.assertIn('?? "Garden/Owner note.md"', self.git("status", "--porcelain").stdout, "the owner's edit stays")
+
+    def test_nothing_is_committed_while_something_else_is_staged(self):
+        (self.v / "staged.md").write_text("x\n", encoding="utf-8")
+        self.git("add", "staged.md")
+        ok, got = cortex_mcp.run(self.st, {"action": "finish", "learnings": [self.learning("Mulch is laid in May")]})
+        self.assertTrue(ok, got)
+        self.assertIn("something else is already staged", got)
+        self.assertEqual(self.git("log", "--format=%s").stdout.split("\n")[0], "seed")
+
+    def test_a_server_that_does_not_commit_leaves_git_alone(self):
+        self.st.commit = False
+        ok, got = cortex_mcp.run(self.st, {"action": "finish", "learnings": [self.learning("Beans climb the fence")]})
+        self.assertTrue(ok, got)
+        self.assertNotIn("## commit", got)
+        self.assertEqual(self.git("log", "--format=%s").stdout.split("\n")[0], "seed")
+
+    def test_session_is_refused_on_an_older_engine(self):
+        core = self.v / "_brain" / "scripts" / "brain_core.py"
+        core.write_text(re.sub(r'VERSION = "[^"]+"', 'VERSION = "2.15.0"', core.read_text(encoding="utf-8")),
+                        encoding="utf-8")
+        with self.assertRaises(cortex_mcp.BadCall):
+            cortex_mcp.argv_for({"action": "recall", "query": "x", "session": "s1"}, "claude-code",
+                                cortex_mcp.has_sessions(self.v))
+        self.assertEqual(cortex_mcp.argv_for({"action": "recall", "query": "x"}, "claude-code", False), ["recall", "x"])

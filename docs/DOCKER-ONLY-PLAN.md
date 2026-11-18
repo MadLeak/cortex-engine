@@ -283,3 +283,29 @@ Bajar de 50 ms exige el "estado en memoria" (sesiones, telemetría y snapshot si
 cambia el motor (`brain_core.py`) y por tanto su versión: queda como paso propio después de 3c.
 
 Tests: 4 de 4 suites (motor 50, hub 16, MCP 71, review 4).
+
+### Resultados de la fase 3, paso 3c (2026-11-18)
+
+**Sesiones por tarea (motor v2.16.0).** `session new --by <agente>` abre la sesión de la tarea y cierra la anterior
+del mismo agente; `session close` la cierra con el crédito automático. Las llamadas con `--by` y sin `--session`
+usan la sesión abierta del agente, sin idle. Sin tarea abierta hay una sesión de respaldo por agente, renovada tras
+`auto_idle_minutes` (config del vault, 30 por defecto). Agotar las consultas ya no renueva en silencio: devuelve el
+código 2. Sin `--by`, el motor se comporta como antes (una sesión automática por vault).
+
+**MCP.** `brief` abre la sesión y devuelve su id (opcional pasarlo como `session=`, solo hace falta con tareas en
+paralelo); `ask` y las lecturas lo llevan; `finish` acredita, guarda, cierra la sesión y, en el hub, hace **un
+commit por tarea con la identidad del agente** (`<agente> <agente@cortex.local>`). Ese commit lleva solo lo que
+cambió la tarea: las ediciones del dueño hechas antes se dejan fuera (y se dicen), la contabilidad del motor
+(`_brain/state/`) va con la tarea, y si hay algo más preparado en el índice no se commitea nada. El hook
+`pre-commit` del vault lo valida como cualquier otro commit. Con un motor anterior a 2.16 el MCP se comporta como
+antes.
+
+**Motor actualizado al arrancar (decisión 9).** El hub pasa los vaults con un motor más viejo al suyo
+(`upgrade_engine.py`) y lo commitea como `Cortex hub <hub@cortex.local>`; un vault sin commits o con algo preparado
+se actualiza pero se deja sin commitear para su dueño, y uno con un motor más nuevo no se toca.
+
+**Verificado en vivo** con una copia del vault demo con historial: el arranque dejó `engine: v2.16.0` por
+Cortex hub; `brief` → `finish` como `claude-code` y luego como `codex` dejaron un commit de cada uno, y el vault
+quedó sin cambios pendientes. Tests: 4 de 4 suites (motor 53, hub 17, MCP 75, review 4). RUNBOOK §5 y §11 al día.
+
+Pendiente de la fase 3: el estado en memoria para bajar de ~140 ms a < 50 ms por llamada.

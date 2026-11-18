@@ -342,3 +342,32 @@ class LanTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpgradeTest(unittest.TestCase):
+    """On start the hub puts every older vault on its own engine and commits that as the Cortex hub."""
+
+    def test_an_older_engine_is_upgraded_and_committed_by_the_hub(self):
+        import os
+        import re
+        import shutil
+        engine = Path(__file__).resolve().parents[1] / "template-vault"
+        with tempfile.TemporaryDirectory() as tmp:
+            v = Path(tmp) / "Old Cortex"
+            shutil.copytree(engine / "_brain", v / "_brain", ignore=shutil.ignore_patterns("__pycache__"))
+            core = v / "_brain" / "scripts" / "brain_core.py"
+            want = re.search(r'VERSION = "([^"]+)"', core.read_text(encoding="utf-8")).group(1)
+            core.write_text(core.read_text(encoding="utf-8").replace(f'VERSION = "{want}"', 'VERSION = "2.0.0"'),
+                            encoding="utf-8")
+            env = {**os.environ, "GIT_AUTHOR_NAME": "Owner", "GIT_AUTHOR_EMAIL": "o@example.com",
+                   "GIT_COMMITTER_NAME": "Owner", "GIT_COMMITTER_EMAIL": "o@example.com"}
+            git = lambda *a: subprocess.run(["git", "-C", str(v), *a], capture_output=True, text=True, env=env)  # noqa: E731
+            git("init", "-q")
+            git("add", "-A")
+            git("commit", "-q", "-m", "seed")
+            lines = cortex_hub.upgrade_engines(Path(tmp), want)
+            self.assertEqual(lines, [f"Old Cortex: engine v2.0.0 -> v{want}"])
+            self.assertIn(f'VERSION = "{want}"', core.read_text(encoding="utf-8"))
+            self.assertEqual(git("log", "-1", "--format=%an <%ae>|%s").stdout.strip(),
+                             f"Cortex hub <hub@cortex.local>|engine: v{want}")
+            self.assertEqual(cortex_hub.upgrade_engines(Path(tmp), want), [], "current: nothing to do")

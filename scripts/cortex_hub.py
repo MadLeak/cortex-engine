@@ -74,6 +74,48 @@ def vaults(root: Path) -> dict[str, Path]:
     return {p.name: p for p in sorted(root.iterdir()) if (p / "_brain/scripts/brain.py").is_file()}
 
 
+HUB_IDENTITY = {"GIT_AUTHOR_NAME": "Cortex hub", "GIT_AUTHOR_EMAIL": "hub@cortex.local",
+                "GIT_COMMITTER_NAME": "Cortex hub", "GIT_COMMITTER_EMAIL": "hub@cortex.local"}
+
+
+def version_tuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:3])
+
+
+def upgrade_engines(root: Path, want: str) -> list[str]:
+    """Every vault on the hub's own engine: an older one gets this engine (scripts/upgrade_engine.py) and, when the
+    vault has commits and nothing else staged, one commit `engine: v<version>` by the hub. A newer one is left alone,
+    and the resident engine does not serve it (it runs its own brain.py)."""
+    out = []
+    for name, v in vaults(root).items():
+        try:
+            m = cortex_mcp.VERSION_LINE.search((v / "_brain/scripts/brain_core.py").read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        have = m.group(1) if m else "?"
+        if version_tuple(have) >= version_tuple(want):
+            if version_tuple(have) > version_tuple(want):
+                out.append(f"{name}: engine v{have} is newer than the hub's v{want}: left alone")
+            continue
+        r = subprocess.run([sys.executable, str(ENGINE / "scripts/upgrade_engine.py"), str(v)],
+                           capture_output=True, text=True, timeout=300)
+        if "update" not in r.stdout:
+            out.append(f"{name}: upgrade from v{have} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+            continue
+        g = lambda *a: cortex_mcp.git(v, *a, env={**os.environ, **HUB_IDENTITY})   # noqa: E731
+        if g("rev-parse", "-q", "--verify", "HEAD").returncode != 0:
+            out.append(f"{name}: engine v{have} -> v{want} (no first commit yet: left for its owner to commit)")
+            continue
+        if g("diff", "--cached", "--name-only").stdout.strip():
+            out.append(f"{name}: engine v{have} -> v{want} (something else is staged: left uncommitted)")
+            continue
+        g("add", "--", "_brain/scripts", ".githooks")
+        c = g("commit", "-q", "-m", f"engine: v{want}", "-m", "upgraded by the Cortex hub on start")
+        out.append(f"{name}: engine v{have} -> v{want}" + ("" if c.returncode == 0 else
+                                                         f" (the commit was refused: {(c.stderr or c.stdout).strip()[-200:]})"))
+    return out
+
+
 def read_json(path: Path, default):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -1249,9 +1291,11 @@ def main() -> None:
     print(f"cortex hub, {scope} scope, {scheme} for {', '.join(dns + ips)} · listening on {a.host}:{a.port} · "
           f"{len(vaults(Hub.root))} vaults under {Hub.root}", flush=True)
     if a.mcp:
-        Hub.mcp_hub, Hub.mcp_require_token = cortex_mcp.Hub(Hub.root, 60.0), True
+        Hub.mcp_hub, Hub.mcp_require_token = cortex_mcp.Hub(Hub.root, 60.0, commit=True), True
         cortex_mcp.RESIDENT = cortex_mcp.Resident(ENGINE / "template-vault" / "_brain" / "scripts",
                                                   scan_seconds=float(env("CORTEX_SCAN_SECONDS") or 5))
+        for line in upgrade_engines(Hub.root, cortex_mcp.RESIDENT.version):
+            print(line, flush=True)
         for v in vaults(Hub.root).values():
             cortex_mcp.ensure_token(v)
         port = "" if (scheme, Hub.public_port) in (("https", 443), ("http", 80)) else f":{Hub.public_port}"
