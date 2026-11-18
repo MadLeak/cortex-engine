@@ -136,6 +136,17 @@ class HubTest(unittest.TestCase):
         self.assertIn("docker exec -i", p)
         self.assertNotIn("brain.py", p)
 
+    def test_the_page_knows_when_the_hub_serves_mcp(self):
+        self.assertFalse(json.loads(self.get("/api/vaults")[1])["hub"]["mcp"])
+        cortex_hub.Hub.mcp_hub = cortex_hub.cortex_mcp.Hub(cortex_hub.Hub.root, 10.0)
+        try:
+            self.assertTrue(json.loads(self.get("/api/vaults")[1])["hub"]["mcp"])
+        finally:
+            cortex_hub.Hub.mcp_hub = None
+        page = self.get("/connect")[1]
+        for hook in ('id="c-python-row"', 'id="c-sub"', 'id="c-custom"', 'id="c-out-lead"', "function mode()"):
+            self.assertIn(hook, page)
+
     def test_local_http_links_lan_vaults_over_https(self):
         """--local-http: plain HTTP on this machine, HTTPS on the LAN listener, each with its own port in the links."""
         local = type("LocalHttp", (cortex_hub.Hub,), {"domain": "cortex.localhost", "tls": None, "public_port": 8790,

@@ -590,7 +590,8 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                     d["ip_url"] = self.url(self.lan_ip, lan=True) + f"/v/{subdomain(d['name'])}/"
             hub = {"scope": self.scope, "tls": self.tls is not None, "login": self.key is not None, "domain": self.domain,
                    "lan": self.lan_domain if self.scope == "localhost" else None,
-                   "connect": self.scope == "localhost" and wire_agent is not None and (ENGINE / "scripts/new_vault.py").is_file()}
+                   "connect": self.scope == "localhost" and wire_agent is not None and (ENGINE / "scripts/new_vault.py").is_file(),
+                   "mcp": self.scope == "localhost" and self.mcp_hub is not None}
             return self.send(200, json.dumps({"vaults": data, "hub": hub, "t": datetime.now().isoformat(timespec="seconds")}).encode(),
                              "application/json")
         if re.fullmatch(r"/v/[^/]+", path):
@@ -805,14 +806,14 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
 <dialog id="connect" aria-labelledby="c-title">
   <form id="c-form" class="form-wrap">
     <h2 id="c-title">Connect an agent</h2>
-    <div class="sub">The hub prepares the cortex; the agent wires itself from the prompt you paste to it.</div>
+    <div class="sub" id="c-sub">The hub prepares the cortex; the agent wires itself from the prompt you paste to it.</div>
     <div class="form">
       <label>Agent name <input name="agent" required maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9 ._\-]*" placeholder="Codex" autocomplete="off"></label>
       <label>Agent
         <select name="kind">
           <option value="claude-code">Claude Code</option><option value="codex">Codex CLI</option>
           <option value="gemini">Gemini CLI</option><option value="opencode">OpenCode</option>
-          <option value="hermes">Hermes Agent</option><option value="custom">Another agent (it names its own instruction file)</option>
+          <option value="hermes">Hermes Agent</option><option value="custom" id="c-custom">Another agent (it names its own instruction file)</option>
         </select></label>
       <label>Cortex <select name="vault" id="c-vault"><option value="">A new cortex for this agent</option></select></label>
       <label id="c-scope-row">Domain scope
@@ -826,14 +827,14 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
           <option value="curator">Curator: reads, learns and tends the cortex</option>
           <option value="reader">Reader: reads and learns; another agent tends it</option>
         </select></label>
-      <label>Python on the agent's machine
+      <label id="c-python-row">Python on the agent's machine
         <select name="python"><option>python3</option><option>python</option><option value="py">py (Windows launcher)</option></select></label>
     </div>
     <p class="err" id="c-err" role="alert"></p>
     <div class="row"><button type="button" id="c-cancel">Cancel</button><button type="submit" class="primary" id="c-go">Create the prompt</button></div>
   </form>
   <div id="c-out" hidden>
-    <h2>Paste this to <span id="c-who"></span></h2>
+    <h2><span id="c-out-lead">Paste this to</span> <span id="c-who"></span><span id="c-out-tail"></span></h2>
     <textarea id="c-text" readonly aria-label="Prompt for the agent"></textarea>
     <div class="row"><button type="button" id="c-copy" class="primary">Copy</button><button type="button" id="c-done">Done</button></div>
   </div>
@@ -1034,7 +1035,21 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     $('#c-err').textContent = ''; cform.hidden = false; $('#c-out').hidden = true;
     dlg.showModal(); cform.agent.focus();
   }
+  function mode() {
+    // a hub that serves MCP: the person adds a config line to the agent's MCP client, nothing runs on this machine
+    const mcp = !!hubInfo.mcp;
+    $('#c-python-row').hidden = mcp;
+    $('#c-sub').textContent = mcp
+      ? 'The hub prepares the cortex and its token. Add the config it gives you to the agent\'s MCP client: nothing is installed or written on this machine.'
+      : 'The hub prepares the cortex; the agent wires itself from the prompt you paste to it.';
+    $('#c-custom').textContent = mcp ? 'Another MCP client (generic config)' : 'Another agent (it names its own instruction file)';
+    $('#c-go').textContent = mcp ? 'Create the config' : 'Create the prompt';
+    $('#c-out-lead').textContent = mcp ? 'Add this to' : 'Paste this to';
+    $('#c-out-tail').textContent = mcp ? '\u2019s MCP client' : '';
+    $('#c-text').setAttribute('aria-label', mcp ? 'MCP configuration for the agent\'s client' : 'Prompt for the agent');
+  }
   function sync() {
+    mode();
     const isNew = !cform.vault.value;
     $('#c-name-row').hidden = !isNew;
     const short = (cform.vault.value || cform.name.value.trim() || `${cform.agent.value.trim() || 'Codex'} Cortex`)
