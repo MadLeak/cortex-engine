@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.15.0"
+VERSION = "2.16.1"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -63,9 +63,10 @@ EXCERPT_KEEP = 0.35
 # fired on 46 of 240 at 92.1% right, where the old rule (cover ≥ 0.7, runner-up below) fired on 21 at 100%.
 GATE = {"bias": 0.9537, "w": (-0.2875, 0.8957, -0.0917, 0.0454, 0.1065), "mu": (0.7825, 0.3733, 0.2288, 1.8907, 0.5),
         "sd": (0.1797, 0.2641, 0.2178, 0.2798, 0.5), "threshold": 0.8678}
-# a recall or read without --session uses the automatic session; after AUTO_IDLE seconds idle the next call opens a
-# new one, and a session that read bodies but credited none credits the last body it read (the funnel stopped there)
-AUTO_IDLE = 600
+# a recall or read without --session uses the agent's task session (session new --by) or, with none open, a fallback
+# session; after AUTO_IDLE seconds idle (config auto_idle_minutes) the next call opens a new fallback, and a session
+# that read bodies but credited none credits the last body it read (the funnel stopped there)
+AUTO_IDLE = 1800
 FORBIDDEN = set(':?/\\#^[]|*"<>')
 CHILD_SECTION = {1: "Branches", 2: "Details"}
 TEMPLATES = {1: "L1 Domain.md", 2: "L2 Concept.md", 3: "L3 Detail.md"}
@@ -943,21 +944,75 @@ class Sessions:
                         "query_bodies": 0, "total_bodies": 0, "visited": [], "credited": False})
         return sid
 
-    def auto(self, mode: str | None = None, touch: bool = True) -> tuple[str, list[str]]:
-        """The automatic session: reused while calls keep coming, renewed after AUTO_IDLE seconds idle or when a
-        call needs a deeper mode. Returns its id and the notes to print (an automatic credit of the previous one)."""
-        ptr, notes = self.dir / "auto.json", []
+    def idle_seconds(self) -> float:
+        """How long the fallback session waits for a call before the next one opens a new one (config auto_idle_minutes)."""
+        try:
+            return max(1.0, float(self.v.cfg.get("auto_idle_minutes", AUTO_IDLE / 60)) * 60)
+        except (TypeError, ValueError):
+            return float(AUTO_IDLE)
+
+    def task_pointer(self, by: str | None) -> Path | None:
+        return self.dir / f"task-{agent_slug(by)}.json" if by else None
+
+    def open_task(self, by: str | None) -> str | None:
+        """The session this agent opened for its task (session new --by) and has not closed, if any."""
+        ptr = self.task_pointer(by)
+        try:
+            sid = json.loads(ptr.read_text(encoding="utf-8"))["sid"]
+            return sid if not self.load(sid).get("closed") else None
+        except (AttributeError, OSError, ValueError, KeyError, BrainError):
+            return None
+
+    def open(self, mode: str, by: str | None) -> tuple[str, list[str]]:
+        """A task's session: closes this agent's previous one, if still open, and points the agent at the new one."""
+        notes = self.close(None, by) if by and self.open_task(by) else []
+        sid = self.new(mode)
+        if by:
+            data = self.load(sid)
+            data["by"] = by
+            self.save(sid, data)
+            write_atomic(self.task_pointer(by), json.dumps({"sid": sid}))
+        return sid, notes
+
+    def close(self, sid: str | None, by: str | None) -> list[str]:
+        """Ends a session (sid, else this agent's task session): the automatic credit when nothing was credited."""
+        sid = sid or self.open_task(by)
+        if not sid:
+            return []
+        data = self.load(sid)
+        if data.get("closed"):
+            return []
+        notes = auto_credit(self.v, sid, data)
+        data["closed"] = True
+        self.save(sid, data)
+        ptr = self.task_pointer(by or data.get("by"))
+        try:
+            if ptr and json.loads(ptr.read_text(encoding="utf-8")).get("sid") == sid:
+                ptr.unlink()
+        except (OSError, ValueError):
+            pass
+        return notes
+
+    def auto(self, mode: str | None = None, touch: bool = True, by: str | None = None) -> tuple[str, list[str]]:
+        """The session a call without --session uses. With --by: the agent's task session while it is open (no idle,
+        it ends with session close or the agent's next session new); otherwise a fallback session of its own, one per
+        agent (auto.json with no --by). The fallback is renewed after auto_idle_minutes with no call, or when a call
+        needs a deeper mode; a spent one is not renewed: recall then says to answer (exit 2), as an explicit session
+        does. Returns its id and the notes to print (an automatic credit of the previous one)."""
+        task = self.open_task(by)
+        if task:
+            return task, []
+        ptr, notes = (self.dir / f"auto-{agent_slug(by)}.json" if by else self.dir / "auto.json"), []
         try:
             cur = json.loads(ptr.read_text(encoding="utf-8"))
             data = self.load(cur["sid"])
         except (OSError, ValueError, KeyError, BrainError):
             cur, data = None, None
-        idle = cur is None or time.time() - cur.get("touched", 0) > AUTO_IDLE
+        idle = cur is None or time.time() - cur.get("touched", 0) > self.idle_seconds()
         deeper = data is not None and mode and MODES[mode]["bodies"] > MODES[data["mode"]]["bodies"]
-        spent = data is not None and data["queries"] >= MODES[data["mode"]]["queries"]
-        if cur and data and (idle or deeper or spent):
+        if cur and data and (idle or deeper):
             notes += auto_credit(self.v, cur["sid"], data)
-        if not cur or not data or idle or deeper or spent:
+        if not cur or not data or idle or deeper:
             cur = {"sid": self.new(mode or "normal")}
         if touch:
             cur["touched"] = time.time()
@@ -980,6 +1035,11 @@ class Sessions:
         for p in self.dir.glob("*.json"):
             if p.stat().st_mtime < limit:
                 p.unlink()
+
+
+def agent_slug(by: str | None) -> str:
+    """An agent's name as a file name part: claude-code, codex, my-agent."""
+    return re.sub(r"[^a-z0-9]+", "-", (by or "").lower()).strip("-")[:40] or "agent"
 
 
 def auto_credit(v: "Vault", sid: str, data: dict) -> list[str]:
@@ -1730,25 +1790,43 @@ def traverse(v: Vault, query: str, mode: dict, weights: dict, co: dict, label: s
 def cmd_session(v: Vault, a) -> int:
     s = Sessions(v)
     if a.action == "new":
-        sid = s.new(a.mode)
+        sid, notes = s.open(a.mode, a.by)
         m = MODES[a.mode]
         print(sid)
-        print(f"# mode {a.mode}: {m['bodies']} bodies per query · {m['session_bodies']} per session · {m['queries']} queries")
-    else:
-        if not a.session:   # the automatic session, looked at without touching it: a look must not keep it alive
-            try:
-                cur = json.loads((s.dir / "auto.json").read_text(encoding="utf-8"))
-                a.session = cur["sid"] if time.time() - cur.get("touched", 0) <= AUTO_IDLE else None
-                s.load(a.session or "")
-            except (OSError, ValueError, KeyError, BrainError):
-                a.session = None
-            if not a.session:
-                print("no automatic session open: the next recall or read opens one with the whole budget")
-                return 0
-        d = s.load(a.session)
-        m = MODES[d["mode"]]
-        print(f"session {a.session} · mode {d['mode']} · queries {d['queries']}/{m['queries']} · "
-              f"bodies {d['total_bodies']}/{m['session_bodies']} · read: {len(d['visited'])}")
+        print(f"# mode {a.mode}: {m['bodies']} bodies per query · {m['session_bodies']} per session · {m['queries']} queries"
+              + (f" · the task session of {a.by} until session close or its next session new" if a.by else ""))
+        for line in notes:
+            print(line)
+        return 0
+    if a.action == "close":
+        if not a.session and not a.by:
+            raise BrainError("session close needs --session or --by")
+        if not a.session and not s.open_task(a.by):
+            print(f"no task session open for {a.by}")
+            return 0
+        sid = a.session or s.open_task(a.by)
+        for line in s.close(sid, a.by):
+            print(line)
+        print(f"session {sid} closed")
+        return 0
+    if not a.session:   # the session a call would use, looked at without touching it: a look must not keep it alive
+        a.session = s.open_task(a.by)
+    if not a.session:
+        try:
+            ptr = s.dir / (f"auto-{agent_slug(a.by)}.json" if a.by else "auto.json")
+            cur = json.loads(ptr.read_text(encoding="utf-8"))
+            a.session = cur["sid"] if time.time() - cur.get("touched", 0) <= s.idle_seconds() else None
+            s.load(a.session or "")
+        except (OSError, ValueError, KeyError, BrainError):
+            a.session = None
+        if not a.session:
+            print("no session open: the next recall or read opens one with the whole budget")
+            return 0
+    d = s.load(a.session)
+    m = MODES[d["mode"]]
+    print(f"session {a.session} · mode {d['mode']} · queries {d['queries']}/{m['queries']} · "
+          f"bodies {d['total_bodies']}/{m['session_bodies']} · read: {len(d['visited'])}"
+          + (" · closed" if d.get("closed") else ""))
     return 0
 
 
@@ -1756,7 +1834,7 @@ def cmd_recall(v: Vault, a) -> int:
     ses = Sessions(v)
     notes = []
     if not a.session:
-        a.session, notes = ses.auto(a.mode)
+        a.session, notes = ses.auto(a.mode, by=a.by)
     data = ses.load(a.session)
     mode_name = data["mode"] if data and not a.mode else (a.mode or "normal")
     if data and MODES[mode_name]["bodies"] > MODES[data["mode"]]["bodies"]:
@@ -1954,7 +2032,7 @@ def cmd_stats(v: Vault, a) -> int:
 def cmd_read(v: Vault, a) -> int:
     ses = Sessions(v)
     if not a.session:
-        a.session, notes = ses.auto()
+        a.session, notes = ses.auto(by=a.by)
         for line in notes:
             print(line)
     data = ses.load(a.session)
@@ -2024,7 +2102,7 @@ def cmd_credit(v: Vault, a) -> int:
     keys = list(dict.fromkeys(keys))
     ses = Sessions(v)
     if not a.session:
-        a.session, _ = ses.auto(touch=False)
+        a.session, _ = ses.auto(touch=False, by=a.by)
     try:
         data = ses.load(a.session)
         data["credited"] = True
@@ -3292,9 +3370,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("session", help="creates or inspects a read session (budgets)")
-    p.add_argument("action", choices=["new", "status"])
+    p.add_argument("action", choices=["new", "status", "close"])
     p.add_argument("--mode", choices=list(MODES), default="normal")
-    p.add_argument("--session", help="status: default the automatic session, if one is open")
+    p.add_argument("--session", help="status, close: default the agent's session (--by), else the automatic one")
+    p.add_argument("--by", help="the agent: new opens its task session, which its calls without --session use")
     p.set_defaults(func=cmd_session)
 
     p = sub.add_parser("stats", help="token sizes and cumulative tokens read")
@@ -3304,13 +3383,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query")
     p.add_argument("--mode", choices=list(MODES))
     p.add_argument("--session")
+    p.add_argument("--by", help="the agent: without --session, its task session or its own fallback session")
     p.add_argument("--all", action="store_true", help="include the sibling vaults")
     p.add_argument("--no-body", action="store_true", help="signatures only, even when one answer is clear")
     p.set_defaults(func=cmd_recall)
 
     p = sub.add_parser("read", help="reads a node's body within the budget")
     p.add_argument("title")
-    p.add_argument("--session", help="default: the automatic session")
+    p.add_argument("--session", help="default: the agent's session (--by), else the automatic one")
+    p.add_argument("--by", help="the agent: without --session, its task session or its own fallback session")
     p.add_argument("--cold", help="reason to read a cold-ring note")
     p.add_argument("--full", action="store_true", help="the whole body, not only the part matching the last recall")
     p.set_defaults(func=cmd_read)
@@ -3319,6 +3400,7 @@ def build_parser() -> argparse.ArgumentParser:
     # extend, not store: agents repeat the flag (--used A --used B), and store kept only the last title
     p.add_argument("--used", nargs="+", action="extend", required=True)
     p.add_argument("--session")
+    p.add_argument("--by", help="the agent: without --session, its task session or its own fallback session")
     p.set_defaults(func=cmd_credit)
 
     p = sub.add_parser("new", help="creates a node from its template in its right place")

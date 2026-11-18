@@ -21,7 +21,8 @@ itself · /api/review the verdicts (scripts/review_prep.py), POST /api/review/ap
 Scope, chosen by the address browsers reach it at (--address, default --host): a loopback address is the localhost
 scope; a private one is the LAN scope, which needs --data and signs browsers in with the access key in
 DATA/access.key. Public addresses are refused. Requests naming any other host are refused too (DNS rebinding).
-With --data the hub speaks HTTPS with a certificate from its own CA (scripts/hub_tls.py), limited to those names.
+With --data the hub speaks HTTPS with a certificate from its own CA (scripts/hub_tls.py), limited to those names;
+--local-http keeps this machine's listener in plain HTTP (nothing to trust on the host) and HTTPS for the LAN only.
 """
 import argparse
 import hmac
@@ -48,6 +49,8 @@ try:
     import wire_agent
 except ImportError:   # a hub copied out of the repository: views only, no connect form
     wire_agent = None
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cortex_mcp  # noqa: E402  (the MCP service rides the hub's own port: /mcp/<vault>)
 
 ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
 # the only files of a vault the hub serves, relative to its _brain folder
@@ -69,6 +72,48 @@ def vaults(root: Path) -> dict[str, Path]:
     if not root.is_dir():
         return {}
     return {p.name: p for p in sorted(root.iterdir()) if (p / "_brain/scripts/brain.py").is_file()}
+
+
+HUB_IDENTITY = {"GIT_AUTHOR_NAME": "Cortex hub", "GIT_AUTHOR_EMAIL": "hub@cortex.local",
+                "GIT_COMMITTER_NAME": "Cortex hub", "GIT_COMMITTER_EMAIL": "hub@cortex.local"}
+
+
+def version_tuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:3])
+
+
+def upgrade_engines(root: Path, want: str) -> list[str]:
+    """Every vault on the hub's own engine: an older one gets this engine (scripts/upgrade_engine.py) and, when the
+    vault has commits and nothing else staged, one commit `engine: v<version>` by the hub. A newer one is left alone,
+    and the resident engine does not serve it (it runs its own brain.py)."""
+    out = []
+    for name, v in vaults(root).items():
+        try:
+            m = cortex_mcp.VERSION_LINE.search((v / "_brain/scripts/brain_core.py").read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        have = m.group(1) if m else "?"
+        if version_tuple(have) >= version_tuple(want):
+            if version_tuple(have) > version_tuple(want):
+                out.append(f"{name}: engine v{have} is newer than the hub's v{want}: left alone")
+            continue
+        r = subprocess.run([sys.executable, str(ENGINE / "scripts/upgrade_engine.py"), str(v)],
+                           capture_output=True, text=True, timeout=300)
+        if "update" not in r.stdout:
+            out.append(f"{name}: upgrade from v{have} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+            continue
+        g = lambda *a: cortex_mcp.git(v, *a, env={**os.environ, **HUB_IDENTITY})   # noqa: E731
+        if g("rev-parse", "-q", "--verify", "HEAD").returncode != 0:
+            out.append(f"{name}: engine v{have} -> v{want} (no first commit yet: left for its owner to commit)")
+            continue
+        if g("diff", "--cached", "--name-only").stdout.strip():
+            out.append(f"{name}: engine v{have} -> v{want} (something else is staged: left uncommitted)")
+            continue
+        g("add", "--", "_brain/scripts", ".githooks")
+        c = g("commit", "-q", "-m", f"engine: v{want}", "-m", "upgraded by the Cortex hub on start")
+        out.append(f"{name}: engine v{have} -> v{want}" + ("" if c.returncode == 0 else
+                                                         f" (the commit was refused: {(c.stderr or c.stdout).strip()[-200:]})"))
+    return out
 
 
 def read_json(path: Path, default):
@@ -165,6 +210,42 @@ def agent_prompt(name: str, folder: str, kind: str, role: str, by: str, py: str,
     return text
 
 
+CONTAINER = os.environ.get("CORTEX_CONTAINER", "cortex-hub-1")   # the hub's container, for the stdio bridge
+
+
+def mcp_setup(name: str, folder: str, kind: str, role: str, by: str, base: str, token: str) -> str:
+    """What the person runs or pastes so the agent reaches its cortex over MCP: one line for its own client, nothing
+    installed on the machine, nothing written to the agent's instruction files (the tool says how to use it)."""
+    server = wire_agent.slug(name)
+    server = server if "cortex" in server else f"cortex-{server}"   # the MCP server's name in the client: fern-cortex
+    url = f"{base}/mcp/{quote(folder)}?by={quote(by)}" + ("&role=reader" if role == "reader" else "")
+    auth = f"Bearer {token}"
+    j = lambda o: json.dumps(o, indent=2)   # noqa: E731
+    lines = {
+        "claude-code": f'claude mcp add --transport http --scope user {server} "{url}" --header "Authorization: {auth}"',
+        "codex": f'# ~/.codex/config.toml\n[mcp_servers.{server}]\nurl = "{url}"\n'
+                 f'http_headers = {{ Authorization = "{auth}" }}',
+        "gemini": '# ~/.gemini/settings.json, inside "mcpServers"\n' +
+                  j({server: {"httpUrl": url, "headers": {"Authorization": auth}}}),
+        "opencode": '# opencode.json, inside "mcp"\n' +
+                    j({server: {"type": "remote", "url": url, "headers": {"Authorization": auth}}}),
+    }
+    generic = j({"mcpServers": {server: {"type": "http", "url": url, "headers": {"Authorization": auth}}}})
+    stdio = (f'docker exec -i {CONTAINER} python3 /opt/cortex/scripts/cortex_mcp.py --vault "/vaults/{folder}" '
+             f'--by {by}' + (" --role reader" if role == "reader" else ""))
+    text = (f'Connect {by} to its long-term memory, the Cortex vault "{name}", over MCP. It is the {role}.\n'
+            "Nothing to install: the vault and its engine live in the Cortex container. The token below is this "
+            "vault's key: keep it private (a new one: ./cortex.sh token <vault> --rotate).\n\n")
+    if kind in lines:
+        text += f"===== {kind} =====\n{lines[kind]}\n\n"
+    text += (f"===== any other MCP client (streamable HTTP) =====\n{generic}\n\n"
+             f"===== a client that only speaks stdio =====\n{stdio}\n\n"
+             "Then open a new session: the server tells the agent, as part of its instructions, that this cortex is "
+             "its long-term memory, to start each task with action=brief and to end it with action=finish, which "
+             f"commits what it learned under its name ({by}).\n")
+    return text
+
+
 def review_dir(root: Path, data: Path | None) -> Path:
     """Where scripts/review_prep.py leaves Strata's verdicts, one <vault>.jsonl each, and progress.json."""
     return (data or root / ".cortex-hub") / "review"
@@ -202,13 +283,14 @@ def load_scopes(data: Path | None) -> dict[str, str]:
 def save_scope(data: Path, name: str, scope: str) -> None:
     scopes = load_scopes(data)
     scopes[name] = scope
+    data.mkdir(parents=True, exist_ok=True)   # with --local-http and no LAN, no CA made the folder first
     tmp = data / "scopes.json.tmp"
     tmp.write_text(json.dumps(scopes, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(data / "scopes.json")
 
 
 def connect(root: Path, host_root: str, form: dict, owner: str, lock: threading.Lock,
-            data: Path | None = None, lan: bool = False) -> dict:
+            data: Path | None = None, lan: bool = False, mcp_base: str | None = None) -> dict:
     """Validates the connect form, creates the vault when asked, and returns the agent's prompt. ValueError = bad input."""
     if wire_agent is None or not (ENGINE / "scripts/new_vault.py").is_file():
         raise ValueError("this hub runs outside the engine repository: connect agents with installers/wire_agent.py")
@@ -251,8 +333,12 @@ def connect(root: Path, host_root: str, form: dict, owner: str, lock: threading.
     cfg = read_json(v / "_brain/config.json", {})
     name = cfg.get("vault") or folder
     committed = subprocess.run(["git", "-C", str(v), "rev-parse", "-q", "--verify", "HEAD"], capture_output=True).returncode == 0
-    prompt = agent_prompt(name, folder, kind, role, by, py, host_root, committed)
-    return {"vault": name, "folder": folder, "scope": scope, "created": created, "log": log, "prompt": prompt}
+    if mcp_base:   # the hub serves MCP: the agent connects to it, nothing runs on this machine
+        prompt = mcp_setup(name, folder, kind, role, by, mcp_base, cortex_mcp.ensure_token(v))
+    else:
+        prompt = agent_prompt(name, folder, kind, role, by, py, host_root, committed)
+    return {"vault": name, "folder": folder, "scope": scope, "created": created, "log": log, "prompt": prompt,
+            "mcp": bool(mcp_base)}
 
 
 class Server(ThreadingHTTPServer):
@@ -274,7 +360,7 @@ class Server(ThreadingHTTPServer):
             tls.close()
 
 
-class Hub(BaseHTTPRequestHandler):
+class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
     root: Path = Path.home() / "Vaults"
     host_root: str | None = None   # the root as the agents' machine writes it (the container sees /vaults)
     allowed: set[str] = {"localhost", "127.0.0.1", "::1"}   # Host header names the hub answers to
@@ -286,6 +372,8 @@ class Hub(BaseHTTPRequestHandler):
     data: Path | None = None        # the hub's data folder: CA, access key, scopes.json
     lan_domain: str | None = None   # set when the hub also has a LAN listener: <machine>.cortex.home
     lan_ip: str | None = None       # the LAN listener's address, for the by-IP links (/v/<agent>/)
+    lan_tls = False                 # whether the LAN listener speaks HTTPS (it does whenever there is one)
+    lan_public_port = 443           # the port LAN browsers use, for the links to the LAN listener
     owner = os.environ.get("CORTEX_OWNER", "the owner")
     csrf = secrets.token_urlsafe(24)
     sessions: dict[str, float] = {}
@@ -343,14 +431,16 @@ class Hub(BaseHTTPRequestHandler):
         label = h[:-len(d) - 1]
         return next((v for n, v in self.visible().items() if subdomain(n) == label), None)
 
-    def url(self, host: str) -> str:
-        return f"https://{host}" + ("" if self.public_port == 443 else f":{self.public_port}") if self.tls else \
-            f"http://{host}:{self.public_port}"
+    def url(self, host: str, lan: bool = False) -> str:
+        """A link to this listener, or with lan=True to the LAN listener: the two may differ in scheme and port
+        (--local-http: plain HTTP on this machine, HTTPS on the local network)."""
+        tls, port = (self.lan_tls, self.lan_public_port) if lan else (self.tls is not None, self.public_port)
+        return f"https://{host}" + ("" if port == 443 else f":{port}") if tls else f"http://{host}:{port}"
 
     def vault_url(self, name: str, scope: str) -> str | None:
-        """Where a vault's panel lives for its scope: https://claude.cortex.local/ or https://claude.cortex.home/."""
+        """Where a vault's panel lives for its scope: http://claude.cortex.localhost:8790/ or https://claude.alastor.cortex.home/."""
         d = self.lan_domain if scope == "lan" else (self.domain if self.scope == "localhost" else None)
-        return self.url(f"{subdomain(name)}.{d}") + "/" if d and "." in d else None
+        return self.url(f"{subdomain(name)}.{d}", lan=scope == "lan") + "/" if d and "." in d else None
 
     def gate(self, path: str) -> bool:
         """Refuses foreign Host names and, in the LAN scope, anyone not signed in. True when it answered."""
@@ -376,10 +466,22 @@ class Hub(BaseHTTPRequestHandler):
         o = self.headers.get("Origin")
         return o is not None and (urlsplit(o).hostname or "") in self.allowed
 
+    def is_mcp(self, path: str) -> bool:
+        """/mcp/<vault>: the agents' MCP service, on this machine's listener only (--mcp), behind each vault's token."""
+        return self.mcp_hub is not None and self.scope == "localhost" and path.startswith("/mcp/")
+
+    def do_DELETE(self):
+        path = urlsplit(self.path).path
+        if self.gate(path):
+            return
+        return self.mcp_delete() if self.is_mcp(path) else self.send(405, b"not allowed", TEXT)
+
     def do_POST(self):
         path = urlsplit(self.path).path
         if self.gate(path):
             return
+        if self.is_mcp(path):   # an agent, not a browser: its token stands in for the page's same-origin checks
+            return self.mcp_post()
         if path != "/login" and not self.same_origin():   # sign-in carries the key in the body: no Origin needed
             return self.send(HTTPStatus.FORBIDDEN, b"cross-site request refused", TEXT)
         try:
@@ -425,11 +527,13 @@ class Hub(BaseHTTPRequestHandler):
                 return self.send(HTTPStatus.FORBIDDEN, b"stale page: reload it", TEXT)
             try:
                 out = connect(self.root, self.host_root or str(self.root), json.loads(raw or b"{}"), self.owner, self.creating,
-                              self.data, self.lan_domain is not None)
+                              self.data, self.lan_domain is not None,
+                              self.url(self.domain if self.domain and "." in self.domain else "localhost")
+                              if self.mcp_hub is not None else None)
                 out["url"] = self.vault_url(out["folder"], out["scope"])
             except ValueError as e:
                 return self.send(HTTPStatus.BAD_REQUEST, json.dumps({"error": str(e)}).encode(), "application/json")
-            except (RuntimeError, subprocess.TimeoutExpired) as e:
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
                 return self.send(HTTPStatus.INTERNAL_SERVER_ERROR, json.dumps({"error": str(e)}).encode(), "application/json")
             return self.send(200, json.dumps(out).encode(), "application/json")
         self.send(404, b"not found", TEXT)
@@ -441,6 +545,8 @@ class Hub(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if self.gate(path):
             return
+        if self.is_mcp(path):
+            return self.mcp_get()
         own = self.vault_host()
         if own is not None:   # an agent's own host: its panel at the root
             rel = "Panel.html" if path in ("/", "/Panel.html") else path.lstrip("/")
@@ -481,10 +587,11 @@ class Hub(BaseHTTPRequestHandler):
                 if d["scope"] == "lan" and self.lan_domain:
                     d["lan_url"] = self.vault_url(d["name"], "lan")
                 if self.lan_ip and d["scope"] == "lan":
-                    d["ip_url"] = self.url(self.lan_ip) + f"/v/{subdomain(d['name'])}/"
+                    d["ip_url"] = self.url(self.lan_ip, lan=True) + f"/v/{subdomain(d['name'])}/"
             hub = {"scope": self.scope, "tls": self.tls is not None, "login": self.key is not None, "domain": self.domain,
                    "lan": self.lan_domain if self.scope == "localhost" else None,
-                   "connect": self.scope == "localhost" and wire_agent is not None and (ENGINE / "scripts/new_vault.py").is_file()}
+                   "connect": self.scope == "localhost" and wire_agent is not None and (ENGINE / "scripts/new_vault.py").is_file(),
+                   "mcp": self.scope == "localhost" and self.mcp_hub is not None}
             return self.send(200, json.dumps({"vaults": data, "hub": hub, "t": datetime.now().isoformat(timespec="seconds")}).encode(),
                              "application/json")
         if re.fullmatch(r"/v/[^/]+", path):
@@ -699,14 +806,14 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
 <dialog id="connect" aria-labelledby="c-title">
   <form id="c-form" class="form-wrap">
     <h2 id="c-title">Connect an agent</h2>
-    <div class="sub">The hub prepares the cortex; the agent wires itself from the prompt you paste to it.</div>
+    <div class="sub" id="c-sub">The hub prepares the cortex; the agent wires itself from the prompt you paste to it.</div>
     <div class="form">
       <label>Agent name <input name="agent" required maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9 ._\-]*" placeholder="Codex" autocomplete="off"></label>
       <label>Agent
         <select name="kind">
           <option value="claude-code">Claude Code</option><option value="codex">Codex CLI</option>
           <option value="gemini">Gemini CLI</option><option value="opencode">OpenCode</option>
-          <option value="hermes">Hermes Agent</option><option value="custom">Another agent (it names its own instruction file)</option>
+          <option value="hermes">Hermes Agent</option><option value="custom" id="c-custom">Another agent (it names its own instruction file)</option>
         </select></label>
       <label>Cortex <select name="vault" id="c-vault"><option value="">A new cortex for this agent</option></select></label>
       <label id="c-scope-row">Domain scope
@@ -720,14 +827,14 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
           <option value="curator">Curator: reads, learns and tends the cortex</option>
           <option value="reader">Reader: reads and learns; another agent tends it</option>
         </select></label>
-      <label>Python on the agent's machine
+      <label id="c-python-row">Python on the agent's machine
         <select name="python"><option>python3</option><option>python</option><option value="py">py (Windows launcher)</option></select></label>
     </div>
     <p class="err" id="c-err" role="alert"></p>
     <div class="row"><button type="button" id="c-cancel">Cancel</button><button type="submit" class="primary" id="c-go">Create the prompt</button></div>
   </form>
   <div id="c-out" hidden>
-    <h2>Paste this to <span id="c-who"></span></h2>
+    <h2><span id="c-out-lead">Paste this to</span> <span id="c-who"></span><span id="c-out-tail"></span></h2>
     <textarea id="c-text" readonly aria-label="Prompt for the agent"></textarea>
     <div class="row"><button type="button" id="c-copy" class="primary">Copy</button><button type="button" id="c-done">Done</button></div>
   </div>
@@ -928,7 +1035,21 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     $('#c-err').textContent = ''; cform.hidden = false; $('#c-out').hidden = true;
     dlg.showModal(); cform.agent.focus();
   }
+  function mode() {
+    // a hub that serves MCP: the person adds a config line to the agent's MCP client, nothing runs on this machine
+    const mcp = !!hubInfo.mcp;
+    $('#c-python-row').hidden = mcp;
+    $('#c-sub').textContent = mcp
+      ? 'The hub prepares the cortex and its token. Add the config it gives you to the agent\'s MCP client: nothing is installed or written on this machine.'
+      : 'The hub prepares the cortex; the agent wires itself from the prompt you paste to it.';
+    $('#c-custom').textContent = mcp ? 'Another MCP client (generic config)' : 'Another agent (it names its own instruction file)';
+    $('#c-go').textContent = mcp ? 'Create the config' : 'Create the prompt';
+    $('#c-out-lead').textContent = mcp ? 'Add this to' : 'Paste this to';
+    $('#c-out-tail').textContent = mcp ? '\u2019s MCP client' : '';
+    $('#c-text').setAttribute('aria-label', mcp ? 'MCP configuration for the agent\'s client' : 'Prompt for the agent');
+  }
   function sync() {
+    mode();
     const isNew = !cform.vault.value;
     $('#c-name-row').hidden = !isNew;
     const short = (cform.vault.value || cform.name.value.trim() || `${cform.agent.value.trim() || 'Codex'} Cortex`)
@@ -1153,6 +1274,12 @@ def main() -> None:
     ap.add_argument("--address", help="address browsers reach the hub at, when it differs from --host (a container)")
     ap.add_argument("--domain", default="localhost", help="host name browsers use; the certificate covers it")
     ap.add_argument("--data", help="folder for the local CA and the access key; turns HTTPS on")
+    ap.add_argument("--mcp", action="store_true",
+                    help="also serve MCP at /mcp/<vault> on this machine's listener, each vault behind its own token "
+                         "(<vault>/_brain/state/mcp.token, made on start)")
+    ap.add_argument("--local-http", action="store_true",
+                    help="with --data, keep this machine's listener in plain HTTP (no CA to trust: browsers already "
+                         "treat localhost as secure); only the LAN listener speaks HTTPS")
     ap.add_argument("--host-root", help="the vault root as the agents' machine writes it, for the prompts")
     ap.add_argument("--public-port", type=int, help="port browsers use, when it differs from --port (443: none in the links)")
     ap.add_argument("--redirect-port", type=int, help="also listen here in plain HTTP and send browsers to HTTPS")
@@ -1163,6 +1290,7 @@ def main() -> None:
                      help="this machine's name: the LAN domain is <name>.<--lan-domain> (alastor.cortex.home)")
     lan.add_argument("--lan-domain", default=env("CORTEX_LAN_DOMAIN") or "cortex.home")
     lan.add_argument("--lan-port", type=int, default=9443)
+    lan.add_argument("--lan-public-port", type=int, default=443, help="port LAN browsers use (443: none in the links)")
     lan.add_argument("--lan-redirect-port", type=int)
     lan.add_argument("--lan-dns-port", type=int)
     a = ap.parse_args()
@@ -1181,13 +1309,16 @@ def main() -> None:
         sys.exit(str(e))
     if (scope == "lan" or a.lan_address) and not a.data:
         sys.exit("the LAN scope needs --data: HTTPS and an access key")
+    if a.local_http and scope != "localhost":
+        sys.exit("--local-http is for a loopback --address: the local network always gets HTTPS")
     Hub.root, Hub.data = Path(a.root).expanduser(), Path(a.data).expanduser() if a.data else None
     Hub.host_root = a.host_root or str(Hub.root)
     Hub.public_port = a.public_port or a.port
     Hub.lan_domain = lan_dns[0] if a.lan_address else None
     Hub.lan_ip = a.lan_address
+    Hub.lan_public_port = a.lan_public_port
     ctx, scheme = None, "http"
-    if Hub.data:
+    if Hub.data and not (a.local_http and not a.lan_address):   # --local-http with no LAN listener: no CA at all
         names = dns + (lan_dns if a.lan_address else [])
         zones = list(dict.fromkeys([dns[0], a.lan_domain, "localhost"]))   # the LAN zone even before a LAN listener
         crt, crt_key, done = hub_tls.ensure(Hub.data / "tls", list(dict.fromkeys(names)),
@@ -1197,7 +1328,7 @@ def main() -> None:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(crt, crt_key)
-        Hub.tls, scheme = Hub.data / "tls", "https"
+        Hub.tls, Hub.lan_tls, scheme = Hub.data / "tls", True, "https"
         key = None
         if scope == "lan" or a.lan_address:
             kf = Hub.data / "access.key"
@@ -1208,11 +1339,27 @@ def main() -> None:
                 print(f"new access key in {kf}: read it on this machine to sign in", flush=True)
             key = kf.read_text(encoding="utf-8").strip()
     own = lambda names: {d for d in names if not d.startswith("*.")}
+    main_ctx = None if a.local_http else ctx
+    if a.local_http:
+        scheme = "http"
     main_hub = type("MainHub", (Hub,), {"scope": scope, "domain": dns[0], "allowed": own(dns) | set(ips),
-                                        "key": key if scope == "lan" else None})
-    httpd = listen(main_hub, a.host, a.port, ctx, a.redirect_port)
+                                        "key": key if scope == "lan" else None,
+                                        "tls": Hub.tls if main_ctx else None})
+    httpd = listen(main_hub, a.host, a.port, main_ctx, a.redirect_port)
     print(f"cortex hub, {scope} scope, {scheme} for {', '.join(dns + ips)} · listening on {a.host}:{a.port} · "
           f"{len(vaults(Hub.root))} vaults under {Hub.root}", flush=True)
+    if a.mcp:
+        Hub.mcp_hub, Hub.mcp_require_token = cortex_mcp.Hub(Hub.root, 60.0, commit=True), True
+        cortex_mcp.RESIDENT = cortex_mcp.Resident(ENGINE / "template-vault" / "_brain" / "scripts",
+                                                  scan_seconds=float(env("CORTEX_SCAN_SECONDS") or 5))
+        for line in upgrade_engines(Hub.root, cortex_mcp.RESIDENT.version):
+            print(line, flush=True)
+        for v in vaults(Hub.root).values():
+            cortex_mcp.ensure_token(v)
+        port = "" if (scheme, Hub.public_port) in (("https", 443), ("http", 80)) else f":{Hub.public_port}"
+        print(f"MCP at {scheme}://{dns[0]}{port}/mcp/<vault>, each vault behind the token in "
+              f"<vault>/{cortex_mcp.TOKEN_IGNORE} · resident engine v{cortex_mcp.RESIDENT.version}, "
+              f"file lists refreshed every {cortex_mcp.RESIDENT.scan_seconds:g}s", flush=True)
     if a.dns_port:
         import hub_dns
         zones = {dns[0]: address, **({lan_dns[0]: a.lan_address} if a.lan_address else {})}   # this machine knows both
@@ -1220,7 +1367,7 @@ def main() -> None:
         print(f"DNS on {a.host}:{a.dns_port}/udp: " + ", ".join(f"*.{d} = {ip}" for d, ip in zones.items()), flush=True)
     if a.lan_address:
         lan_hub = type("LanHub", (Hub,), {"scope": "lan", "domain": lan_dns[0], "key": key,
-                                          "allowed": own(lan_dns) | set(lan_ips)})
+                                          "allowed": own(lan_dns) | set(lan_ips), "public_port": a.lan_public_port})
         lan_httpd = listen(lan_hub, a.host, a.lan_port, ctx, a.lan_redirect_port)
         threading.Thread(target=lan_httpd.serve_forever, daemon=True).start()
         print(f"LAN listener for {', '.join(lan_dns + lan_ips)} on {a.host}:{a.lan_port}: the vaults marked lan, "

@@ -9,6 +9,7 @@ _brain/state/usage.jsonl
 _brain/state/.lock
 _brain/state/cache.json
 _brain/state/activity.js
+_brain/state/mcp.token
 _brain/state/*.pickle
 *.tmp
 __pycache__/

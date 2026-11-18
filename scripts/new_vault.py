@@ -102,6 +102,8 @@ def main() -> int:
         return 0
     git(dest, "init", "-q", "-b", "main")
     git(dest, "config", "core.hooksPath", ".githooks")
+    from cortex_mcp import fix_filemode   # a Windows folder in a container: git must not record the executable bit
+    fix_filemode(dest)
     if a.git_name:
         git(dest, "config", "user.name", a.git_name)
     if a.git_email:

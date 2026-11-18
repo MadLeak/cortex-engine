@@ -4,9 +4,55 @@
 name: cortex
 
 services:
+  # every test suite inside the image, nothing on the host: docker compose run --rm test
+  test:
+    profiles: [tools]
+    build: .
+    image: cortex-hub:2.16.1
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:   # the suites commit to throwaway vaults; HOME is a tmpfs with no git identity
+      GIT_AUTHOR_NAME: cortex-test
+      GIT_AUTHOR_EMAIL: test@cortex.local
+      GIT_COMMITTER_NAME: cortex-test
+      GIT_COMMITTER_EMAIL: test@cortex.local
+    entrypoint: ["python3", "/opt/cortex/scripts/run_tests.py"]
+
+  # what one engine call costs, new process against resident engine, on a throwaway 1,000-node vault:
+  # docker compose run --rm bench   (add -n 50 for more calls)
+  bench:
+    profiles: [tools]
+    build: .
+    image: cortex-hub:2.16.1
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["python3", "/opt/cortex/scripts/bench_calls.py", "--dir", "/tmp/bench"]
+
+  # the command line, in the container: ./cortex.sh <command> (Windows: .\cortex.ps1), see scripts/cortex_cli.py
+  cli:
+    profiles: [tools]
+    build: .
+    image: cortex-hub:2.16.1
+    user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CORTEX_OWNER: ${CORTEX_OWNER:-the owner}
+      CORTEX_GIT_NAME: ${CORTEX_GIT_NAME:-}
+      CORTEX_GIT_EMAIL: ${CORTEX_GIT_EMAIL:-}
+    volumes:
+      - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
+    entrypoint: ["python3", "/opt/cortex/scripts/cortex_cli.py"]
+
   hub:
     build: .
-    image: cortex-hub:2.15.0
+    image: cortex-hub:2.16.1
     restart: unless-stopped
     user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
     read_only: true
@@ -22,18 +68,19 @@ services:
       CORTEX_LAN_DOMAIN: ${CORTEX_LAN_DOMAIN:-cortex.home}
     volumes:
       - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
-    # published only on the chosen address: 127.0.0.1 = this machine, a private LAN address = the local network
+    # Nothing to set up on the host: one high port on 127.0.0.1, plain HTTP, and names under .localhost, which
+    # browsers resolve to this machine by themselves: http://cortex.localhost:8790 and http://<agent>.cortex.localhost:8790.
+    # compose.lan.yaml adds the local network (HTTPS); compose.trusted.yaml brings back https://cortex.local
+    # with its own DNS and a CA trusted on the host (what install.ps1 / install.sh set up).
     ports:
-      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_PORT:-443}:8443"
-      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_HTTP_PORT:-80}:8080"   # plain HTTP, only to send browsers to HTTPS
-      - "${CORTEX_DNS_ADDRESS:-127.0.0.153}:53:5353/udp"   # DNS for the domain alone; the system routes it here
+      - "${CORTEX_ADDRESS:-127.0.0.1}:${CORTEX_PORT:-8790}:8443"
     command:
       - --address=${CORTEX_ADDRESS:-127.0.0.1}
-      - --domain=${CORTEX_DOMAIN:-localhost}
+      - --domain=${CORTEX_DOMAIN:-cortex.localhost}
       - --host-root=${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}
-      - --public-port=${CORTEX_PORT:-443}
-      - --redirect-port=8080
-      - --dns-port=5353
+      - --mcp   # agents at /mcp/<vault>, each behind the token in <vault>/_brain/state/mcp.token
+      - --public-port=${CORTEX_PORT:-8790}
+      - --local-http
       - --lan-port=9443
       - --lan-redirect-port=9080
       - --lan-dns-port=5354

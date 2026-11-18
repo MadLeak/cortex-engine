@@ -17,6 +17,7 @@ RUN apt-get update \
 WORKDIR /opt/cortex
 COPY template-vault/ template-vault/
 COPY skills/ skills/
+COPY examples/ examples/
 COPY installers/ installers/
 COPY scripts/ scripts/
 

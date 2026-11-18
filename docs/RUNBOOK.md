@@ -8,7 +8,26 @@ Contents: 1 Install · 2 Create a vault · 3 Git and the hook · 4 Wire an agent
 
 ## 1. Install
 
-Requirements:
+**With Docker alone (recommended).** Docker is the only requirement on the host. `./install.sh` (Windows:
+`install.ps1` in a normal PowerShell) writes `.env` from `.env.example` when there is none, creates `~/Vaults`, starts
+the container and waits for the hub at `http://cortex.localhost:8790`. Nothing on the host changes: one port on
+127.0.0.1, plain HTTP (browsers treat `localhost` as secure), names under `.localhost` that browsers resolve by
+themselves. Options: `--lan` / `-Lan` (the cortexes marked LAN on the local network, HTTPS by the hub's own CA, each
+device accepts it once), `--trusted` / `-Trusted` (administrator: `https://cortex.local` with no warning, §8),
+`--remove` / `-Remove`.
+
+- **Command line:** `./cortex.sh <command>` (Windows `.\cortex.ps1`) runs `scripts/cortex_cli.py` in the container:
+  `list`, `new`, `brain <vault> <engine args>`, `doctor`, `upgrade`, `token <vault> [--rotate]`, `commit <vault> -m`
+  (as `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL`), `precommit`.
+- **Engine versions:** on start the hub upgrades every vault with an older engine and commits it as
+  `Cortex hub <hub@cortex.local>`.
+- **Commits from the host** (Obsidian, git on Windows): the vault's `pre-commit` hook uses the host's Python when there
+  is one, and otherwise runs the same check in the `cortex-hub` image (`CORTEX_HOOK_DOCKER=1` forces it).
+- **Windows folders:** a vault shared from Windows shows every file as executable inside the container; the container
+  sets `core.fileMode false` on such vaults so neither git sees every file as changed.
+- **Tests:** `docker compose --profile tools run --rm test`.
+
+**With Python on the host.** Requirements:
 - **Python 3.10 or newer.** `B doctor` fails below 3.10 and the hook refuses to run. The engine uses only the standard library. The tests were run on Python 3.14.4.
 - **git.** Each vault is its own repository.
 - **Obsidian** (optional), to browse and edit notes as a graph. `.obsidian/` in the template hides the engine folders and colours the layers.
@@ -21,7 +40,7 @@ Check the engine before you use it:
 cd template-vault/_brain/scripts && python3 -m unittest discover -s tests
 ```
 
-Expect `Ran 31 tests ... OK`, plus a timing line for the 1,000-node performance test.
+Expect `Ran 53 tests ... OK`, plus a timing line for the 1,000-node performance test.
 
 ## 2. Create a vault
 
@@ -81,6 +100,20 @@ Never skip the hook with `--no-verify`. It is the only gate that keeps secrets o
 `_brain/state/` holds sessions, the usage log and caches. Most of it is gitignored. `history.csv` and `hot.jsonl` are kept.
 
 ## 4. Wire an agent
+
+**Over MCP (the container).** The hub serves MCP at `/mcp/<vault>` on its own port, each vault behind its own token
+(`<vault>/_brain/state/mcp.token`, never committed; `./cortex.sh token <vault> --rotate` makes a new one and the old one
+stops working). *Connect an agent* gives the chosen client's configuration: `claude mcp add --transport http ...` for
+Claude Code, a `[mcp_servers.<name>]` block for Codex (`~/.codex/config.toml`), an `httpUrl` entry for Gemini CLI
+(`~/.gemini/settings.json`), a `remote` entry for OpenCode, a generic `mcpServers` JSON, and a stdio bridge
+(`docker exec -i cortex-hub-1 python3 /opt/cortex/scripts/cortex_mcp.py --vault /vaults/<vault> --by <agent>`) for any
+client that only speaks stdio. `?by=<agent>` names the agent: its task sessions and its commits carry that name. Nothing
+is written to the agent's instruction files: the `cortex` tool describes its own use, and over MCP 2026-07-28 the
+Skills extension serves the curator skills. The server's `instructions` (sent with `initialize` and `server/discover`,
+which clients put in the model's instructions) tell the agent that this vault is its long-term memory, to start each
+task with `action=brief` and to end it with `action=finish`: nothing to tell it by hand. Only Claude Code's line has been tried against a real client; the others follow each tool's docs.
+
+**With Python on the host:**
 
 An agent uses a vault once its global instructions say how. `installers/wire_agent.py` writes one block between `<!-- cortex:<slug> -->` markers. Re-running it replaces the block, `--remove` takes it out, and every changed file is first copied to `<file>.bak-<timestamp>`. Use `--dry-run` to see the text first.
 
@@ -156,7 +189,7 @@ Tests: `python3 -m unittest scripts/test_cortex_mcp.py`.
 4. Cite `[[Title]]`.
 5. `B credit --used "<title>" ["<title>" ...]` for the nodes that helped.
 
-Sessions are automatic. `recall`, `read` and `credit` share one until 10 minutes of idle time. If a session read bodies and credited none, the engine credits the last body it read when the session closes. For an explicit session, run `B session new [--mode quick|normal|deep]` and pass `--session <id>`.
+Sessions follow the task. `B session new --by <agent>` opens the agent's task session: its `recall`, `read` and `credit` with `--by <agent>` use it with no idle limit until `B session close --by <agent>` or the agent's next `session new` (the MCP's `brief` and `finish` do both). Calls with no task session open use a fallback session, one per agent (`--by`) or one for the vault (no `--by`), renewed after `auto_idle_minutes` (config, default 30) with no call; a spent one is not renewed, so the query limit says to answer. If a session read bodies and credited none, the engine credits the last body it read when the session closes. Any session can also be named with `--session <id>`.
 
 | Mode | Bodies per query | Bodies per session | Queries | Recall output cap |
 |---|---|---|---|---|
@@ -277,6 +310,10 @@ Point at a sibling's node; never copy it. Create siblings before or alongside ea
 
 `Panel.html?embed` shows the orbit alone, filling its frame, and `?theme=dark` or `?theme=light` overrides the saved theme.
 
+**In the container** the hub runs with `--mcp --local-http`: `http://cortex.localhost:8790` and each agent at
+`http://<agent>.cortex.localhost:8790`, MCP at `/mcp/<vault>`, HTTPS only on the LAN listener. `compose.trusted.yaml`
+brings back the host-trusted setup below (`https://cortex.local`, its DNS and CA).
+
 **The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
 
 ```bash
@@ -367,7 +404,7 @@ The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lex
 | `pre-commit: Python 3.10+ not found` | the hook tries `python`, `py` and `python3` in that order | install Python 3.10+ or put it on PATH |
 | `✖ query budget exhausted`, exit 2 | per-query body budget spent | answer, or run a new `recall` if the question changed |
 | `✖ session budget exhausted`, exit 2 | per-session body budget spent | answer, or delegate to a subagent in deep mode |
-| `✖ limit of N queries in this session`, exit 2 | query limit reached | answer. The automatic session renews after 10 idle minutes |
+| `✖ limit of N queries in this session`, exit 2 | query limit reached | answer. The next task (`session new`, the MCP's `brief`) starts a new budget; a fallback session renews after `auto_idle_minutes` |
 | `✖ "X" was already read in this session`, exit 2 | the body is already in your context | use it. `read --full` only applies after an excerpt |
 | `learn` → `summary of 141 characters (max 140)` | summaries are signatures | shorten it |
 | `learn` → `possible email address` | an address with a real TLD (anything but `.local`) | replace the person with a role. Keep a deliberate sender in `allowed_addresses` |

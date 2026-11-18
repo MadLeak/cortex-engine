@@ -91,6 +91,74 @@ class HubTest(unittest.TestCase):
             cortex_hub.Hub.domain = None
         self.assertEqual(cortex_hub.subdomain("OpenCode Cortex"), "opencode")
 
+    def test_mcp_rides_the_hub_behind_each_vaults_token(self):
+        v = cortex_hub.Hub.root / "Fern Cortex"
+        token = cortex_hub.cortex_mcp.ensure_token(v)
+        ping = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
+        bearer = {"Authorization": f"Bearer {token}", "Origin": ""}
+        self.assertEqual(self.post("/mcp/fern", ping, bearer)[0], 403, "--mcp off: the page's checks, no MCP")
+        cortex_hub.Hub.mcp_hub, cortex_hub.Hub.mcp_require_token = cortex_hub.cortex_mcp.Hub(cortex_hub.Hub.root, 10.0), True
+        try:
+            status, out = self.post("/mcp/fern", ping, {"Authorization": f"Bearer {token}"})
+            self.assertEqual((status, json.loads(out)["result"]), (200, {}))
+            self.assertEqual(self.post("/mcp/fern", ping, {"Authorization": "Bearer guess"})[0], 401)
+            self.assertEqual(self.post("/mcp/fern", ping, {"Authorization": f"Bearer {token}", "Host": "evil.example"})[0],
+                             421, "DNS rebinding")
+            self.assertEqual(self.get("/mcp/fern")[0], 405)
+            self.assertIn(cortex_hub.cortex_mcp.TOKEN_IGNORE, (v / ".gitignore").read_text(encoding="utf-8"))
+        finally:
+            cortex_hub.Hub.mcp_hub, cortex_hub.Hub.mcp_require_token = None, False
+            cortex_hub.Hub.mcp_tokens = {}
+
+    def test_a_scope_is_saved_even_before_the_data_folder_exists(self):
+        data = cortex_hub.Hub.root / ".cortex-hub"
+        cortex_hub.save_scope(data, "Fern Cortex", "local")
+        self.assertEqual(cortex_hub.load_scopes(data), {"Fern Cortex": "local"})
+
+    def test_with_mcp_connecting_gives_the_clients_config_not_a_python_prompt(self):
+        cortex_hub.Hub.mcp_hub = cortex_hub.cortex_mcp.Hub(cortex_hub.Hub.root, 10.0)
+        cortex_hub.Hub.domain, cortex_hub.Hub.public_port = "cortex.localhost", 8790
+        try:
+            status, out = self.post("/api/connect", json.dumps(
+                {"agent": "Fern", "kind": "claude-code", "vault": "Fern Cortex", "role": "curator"}).encode(),
+                {"Host": "localhost:8790", "Origin": "http://localhost:8790"})
+        finally:
+            cortex_hub.Hub.mcp_hub, cortex_hub.Hub.domain, cortex_hub.Hub.public_port = None, None, 443
+        self.assertEqual(status, 200, out)
+        out = json.loads(out)
+        token = cortex_hub.cortex_mcp.token_path(cortex_hub.Hub.root / "Fern Cortex").read_text(encoding="utf-8").strip()
+        p = out["prompt"]
+        self.assertTrue(out["mcp"])
+        self.assertIn('claude mcp add --transport http --scope user fern-cortex "http://cortex.localhost:8790/mcp/'
+                      'Fern%20Cortex?by=fern" --header "Authorization: Bearer ' + token + '"', p)
+        self.assertIn('"httpUrl"', cortex_hub.mcp_setup("Fern", "Fern Cortex", "gemini", "reader", "fern",
+                                                        "http://x", "t"))
+        self.assertIn("docker exec -i", p)
+        self.assertNotIn("brain.py", p)
+
+    def test_the_page_knows_when_the_hub_serves_mcp(self):
+        self.assertFalse(json.loads(self.get("/api/vaults")[1])["hub"]["mcp"])
+        cortex_hub.Hub.mcp_hub = cortex_hub.cortex_mcp.Hub(cortex_hub.Hub.root, 10.0)
+        try:
+            self.assertTrue(json.loads(self.get("/api/vaults")[1])["hub"]["mcp"])
+        finally:
+            cortex_hub.Hub.mcp_hub = None
+        page = self.get("/connect")[1]
+        for hook in ('id="c-python-row"', 'id="c-sub"', 'id="c-custom"', 'id="c-out-lead"', "function mode()"):
+            self.assertIn(hook, page)
+
+    def test_local_http_links_lan_vaults_over_https(self):
+        """--local-http: plain HTTP on this machine, HTTPS on the LAN listener, each with its own port in the links."""
+        local = type("LocalHttp", (cortex_hub.Hub,), {"domain": "cortex.localhost", "tls": None, "public_port": 8790,
+                                                       "lan_domain": "alastor.cortex.home", "lan_ip": "192.168.1.20",
+                                                       "lan_tls": True, "lan_public_port": 443})
+        h = local.__new__(local)
+        self.assertEqual(h.vault_url("Fern Cortex", "local"), "http://fern.cortex.localhost:8790/")
+        self.assertEqual(h.vault_url("Fern Cortex", "lan"), "https://fern.alastor.cortex.home/")
+        self.assertEqual(h.url("192.168.1.20", lan=True), "https://192.168.1.20")
+        local.lan_public_port = 8443
+        self.assertEqual(h.vault_url("Fern Cortex", "lan"), "https://fern.alastor.cortex.home:8443/")
+
     def test_connect_needs_same_origin_and_the_page_token(self):
         body = json.dumps({"agent": "Fern", "kind": "codex", "vault": "Fern Cortex", "role": "reader"}).encode()
         self.assertEqual(self.post("/api/connect", body, {"Origin": "https://evil.example"})[0], 403)
@@ -311,3 +379,32 @@ class LanTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpgradeTest(unittest.TestCase):
+    """On start the hub puts every older vault on its own engine and commits that as the Cortex hub."""
+
+    def test_an_older_engine_is_upgraded_and_committed_by_the_hub(self):
+        import os
+        import re
+        import shutil
+        engine = Path(__file__).resolve().parents[1] / "template-vault"
+        with tempfile.TemporaryDirectory() as tmp:
+            v = Path(tmp) / "Old Cortex"
+            shutil.copytree(engine / "_brain", v / "_brain", ignore=shutil.ignore_patterns("__pycache__"))
+            core = v / "_brain" / "scripts" / "brain_core.py"
+            want = re.search(r'VERSION = "([^"]+)"', core.read_text(encoding="utf-8")).group(1)
+            core.write_text(core.read_text(encoding="utf-8").replace(f'VERSION = "{want}"', 'VERSION = "2.0.0"'),
+                            encoding="utf-8")
+            env = {**os.environ, "GIT_AUTHOR_NAME": "Owner", "GIT_AUTHOR_EMAIL": "o@example.com",
+                   "GIT_COMMITTER_NAME": "Owner", "GIT_COMMITTER_EMAIL": "o@example.com"}
+            git = lambda *a: subprocess.run(["git", "-C", str(v), *a], capture_output=True, text=True, env=env)  # noqa: E731
+            git("init", "-q")
+            git("add", "-A")
+            git("commit", "-q", "-m", "seed")
+            lines = cortex_hub.upgrade_engines(Path(tmp), want)
+            self.assertEqual(lines, [f"Old Cortex: engine v2.0.0 -> v{want}"])
+            self.assertIn(f'VERSION = "{want}"', core.read_text(encoding="utf-8"))
+            self.assertEqual(git("log", "-1", "--format=%an <%ae>|%s").stdout.strip(),
+                             f"Cortex hub <hub@cortex.local>|engine: v{want}")
+            self.assertEqual(cortex_hub.upgrade_engines(Path(tmp), want), [], "current: nothing to do")

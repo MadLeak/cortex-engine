@@ -2,16 +2,31 @@
 # Validates the vault (blocks secrets and schema errors) and regenerates MAP, the panels (Panel.md, and Panel.html with its 2D and 3D views) and the index.
 cd "$(git rev-parse --show-toplevel)" || exit 1
 PY=""
-for c in python py python3; do
-  if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >/dev/null 2>&1; then
-    PY="$c"; break
+if [ "${CORTEX_HOOK_DOCKER:-}" != 1 ]; then
+  for c in python py python3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >/dev/null 2>&1; then
+      PY="$c"; break
+    fi
+  done
+fi
+if [ -n "$PY" ]; then
+  "$PY" _brain/scripts/brain.py precommit || exit 1
+elif command -v docker >/dev/null 2>&1; then
+  # No Python here (or CORTEX_HOOK_DOCKER=1): the same check in the Cortex image, on this vault's folder.
+  img=${CORTEX_IMAGE:-$(docker image ls --format '{{.Repository}}:{{.Tag}}' cortex-hub 2>/dev/null | grep -v '<none>' | head -n 1)}
+  if [ -z "$img" ]; then
+    echo "pre-commit: no Python 3.10+ and no cortex-hub image: run 'docker compose build' in the Cortex folder" >&2
+    exit 1
   fi
-done
-if [ -z "$PY" ]; then
-  echo "pre-commit: Python 3.10+ not found; cannot validate the vault" >&2
+  here=$(pwd -W 2>/dev/null) || here=$(pwd)          # Git for Windows: a C:/ path that Docker understands
+  user=""; [ "$(uname -s)" = Linux ] && user="--user $(id -u):$(id -g)"   # files stay the owner's on Linux
+  # shellcheck disable=SC2086
+  MSYS_NO_PATHCONV=1 docker run --rm $user -v "$here:/vault" -w /vault --entrypoint python3 "$img" \
+    _brain/scripts/brain.py precommit || exit 1
+else
+  echo "pre-commit: Python 3.10+ not found, and no Docker to run the check in; cannot validate the vault" >&2
   exit 1
 fi
-"$PY" _brain/scripts/brain.py precommit || exit 1
 git add -- MAP.md _brain/Panel.md _brain/Panel.html _brain/generated _brain/state/history.csv
 if [ -f _brain/proposals.md ]; then git add -- _brain/proposals.md; fi
 exit 0

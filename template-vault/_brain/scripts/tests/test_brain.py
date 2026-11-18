@@ -491,7 +491,7 @@ class LearningTests(Base):
 
     def test_session_status_shows_the_automatic_session_without_keeping_it_alive(self):
         self.seed()
-        self.assertIn("no automatic session open", self.ok("session", "status"))
+        self.assertIn("no session open", self.ok("session", "status"))
         self.ok("recall", "cutoff")
         ptr = self.v / "_brain" / "state" / "sessions" / "auto.json"
         before = json.loads(ptr.read_text(encoding="utf-8"))
@@ -501,7 +501,51 @@ class LearningTests(Base):
         self.assertEqual(json.loads(ptr.read_text(encoding="utf-8")), before, "a look does not touch the pointer")
         before["touched"] -= brain.AUTO_IDLE + 1
         ptr.write_text(json.dumps(before), encoding="utf-8")
-        self.assertIn("no automatic session open", self.ok("session", "status"))
+        self.assertIn("no session open", self.ok("session", "status"))
+
+    def test_a_task_session_lasts_until_it_is_closed(self):
+        """session new --by opens the agent's task session: its calls without --session use it, with no idle, and
+        session close (or the agent's next session new) ends it with the automatic credit."""
+        self.seed()
+        sid = self.ok("session", "new", "--by", "Claude Code").splitlines()[0]
+        self.ok("recall", "cutoff", "--by", "Claude Code")
+        self.ok("read", "Late orders went to the wrong wave", "--by", "Claude Code")
+        ses = self.v / "_brain" / "state" / "sessions"
+        data = json.loads((ses / f"{sid}.json").read_text(encoding="utf-8"))
+        self.assertEqual((data["queries"], data["by"]), (1, "Claude Code"))
+        self.assertTrue((ses / "task-claude-code.json").exists())
+        self.assertIn(f"session {sid}", self.ok("session", "status", "--by", "Claude Code"))
+        other = self.ok("recall", "shipping", "--by", "codex")          # another agent: its own fallback session
+        self.assertTrue((ses / "auto-codex.json").exists())
+        self.assertEqual(json.loads((ses / f"{sid}.json").read_text(encoding="utf-8"))["queries"], 1, other)
+        out = self.ok("session", "close", "--by", "Claude Code")
+        self.assertIn('credited automatically: "Late orders went to the wrong wave"', out)
+        self.assertFalse((ses / "task-claude-code.json").exists())
+        self.assertIn("closed", self.ok("session", "status", "--session", sid))
+        self.assertIn("no task session open", self.ok("session", "close", "--by", "Claude Code"))
+
+    def test_the_next_task_closes_the_previous_one(self):
+        self.seed()
+        first = self.ok("session", "new", "--by", "codex").splitlines()[0]
+        self.ok("read", "Late orders went to the wrong wave", "--by", "codex")
+        out = self.ok("session", "new", "--by", "codex")
+        second = out.splitlines()[0]
+        self.assertNotEqual(first, second)
+        self.assertIn("credited automatically", out)
+        self.assertIn(f"session {second}", self.ok("session", "status", "--by", "codex"))
+
+    def test_a_spent_fallback_session_says_stop_instead_of_renewing(self):
+        self.seed()
+        cfg = self.v / "_brain" / "config.json"
+        cfg.write_text(json.dumps(dict(json.loads(cfg.read_text(encoding="utf-8")), auto_idle_minutes=60)),
+                       encoding="utf-8")
+        limit = brain.MODES["normal"]["queries"]
+        for i in range(limit):
+            self.ok("recall", f"cutoff {i}", "--by", "codex")
+        code, out, err = run(self.v, "recall", "cutoff again", "--by", "codex")
+        self.assertEqual(code, 2, out + err)
+        self.assertIn(f"limit of {limit} queries", err)
+        self.assertEqual(brain.Sessions(brain.Vault(self.v)).idle_seconds(), 3600)
 
     def test_snapshot_sees_an_edited_node(self):
         self.seed()
