@@ -4,6 +4,34 @@
 name: cortex
 
 services:
+  # every test suite inside the image, nothing on the host: docker compose run --rm test
+  test:
+    profiles: [tools]
+    build: .
+    image: cortex-hub:2.15.0
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:   # the suites commit to throwaway vaults; HOME is a tmpfs with no git identity
+      GIT_AUTHOR_NAME: cortex-test
+      GIT_AUTHOR_EMAIL: test@cortex.local
+      GIT_COMMITTER_NAME: cortex-test
+      GIT_COMMITTER_EMAIL: test@cortex.local
+    entrypoint: ["python3", "/opt/cortex/scripts/run_tests.py"]
+
+  # what one engine call costs, new process against resident engine, on a throwaway 1,000-node vault:
+  # docker compose run --rm bench   (add -n 50 for more calls)
+  bench:
+    profiles: [tools]
+    build: .
+    image: cortex-hub:2.15.0
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["python3", "/opt/cortex/scripts/bench_calls.py", "--dir", "/tmp/bench"]
+
   hub:
     build: .
     image: cortex-hub:2.15.0
