@@ -309,3 +309,29 @@ Cortex hub; `brief` → `finish` como `claude-code` y luego como `codex` dejaron
 quedó sin cambios pendientes. Tests: 4 de 4 suites (motor 53, hub 17, MCP 75, review 4). RUNBOOK §5 y §11 al día.
 
 Pendiente de la fase 3: el estado en memoria para bajar de ~140 ms a < 50 ms por llamada.
+
+### Estado en memoria: aplazado (2026-11-18)
+
+Traza de un `recall` residente sobre 1.000 nodos en la carpeta de Windows (~130 ms): la E/S de `_brain/state/`
+suma ~50 ms en ~25 operaciones pequeñas (4 escrituras atómicas de sesión, puntero, telemetría y `activity.js`;
+~10 `stat`/`is_dir`; 6 lecturas de pickles y `usage.jsonl`). El resto es el ranking. Llevar ese estado a memoria
+obliga a reescribir cómo el motor lee y escribe sesiones, telemetría y snapshot, y a coordinarlo con otros procesos
+que leen el mismo `state/` (la CLI, el hook, otro hub), para bajar como mucho a ~80 ms. Frente a la latencia de un
+modelo (segundos) no compensa ahora: queda como mejora futura, medida con `scripts/bench_calls.py`.
+
+### Resultados de la fase "MCP moderno" (2026-11-18)
+
+- **2026-07-28:** sin `initialize` ni sesión MCP. Una petición que trae `_meta` `io.modelcontextprotocol/protocolVersion`
+  (o la cabecera `MCP-Protocol-Version`) va por el camino nuevo: `server/discover` (versiones, capacidades,
+  `instructions`), `resultType: "complete"` y `serverInfo` en `_meta` en cada resultado, `ttlMs`/`cacheScope` en
+  `tools/list`, errores `-32022` (versión no soportada, con `supported`/`requested`), `-32020` (cabecera distinta del
+  cuerpo) y `-32602` (falta `_meta`), con su estado HTTP (400/404). `ping` ya no existe en esa revisión.
+- **Compatibilidad:** los clientes con handshake siguen igual; ahora se acepta también `2025-11-25` (y es la que se
+  ofrece por defecto).
+- **Extensión Skills:** `server/discover` declara `resources` y `io.modelcontextprotocol/skills`; `skills/list`,
+  `skills/get` y `resources/read` sirven las 5 skills de curaduría como `skill://<nombre>/SKILL.md` con su `digest`
+  sha256. Cada SKILL.md lleva una nota que traduce `B <verbo>` a las herramientas `cortex`/`cortex_curate` y dice
+  que el commit lo hace `finish`. El rol `reader` no recibe skills. Nada se escribe en `~/.claude/skills`.
+- **Sin verificar:** con un cliente real que hable 2026-07-28 o Skills (el soporte en clientes aún es parcial).
+  Fuente: spec 2026-07-28 (changelog, `server/discover`, transporte HTTP) y SEP-2640, leídas el 2026-11-18.
+- Tests: MCP 89 (14 nuevos), 4 de 4 suites.

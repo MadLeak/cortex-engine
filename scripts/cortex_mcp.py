@@ -50,9 +50,17 @@ import threading
 import time
 from pathlib import Path
 
-PROTOCOL = "2025-06-18"            # what we answer with when a client asks for a revision we do not speak
+PROTOCOL = "2025-11-25"            # what initialize answers with when a client asks for a revision we do not speak
 # echo a revision only when we speak it: promising one we cannot read invites requests we cannot answer
-KNOWN = {"2024-11-05", "2025-03-26", PROTOCOL}
+KNOWN = {"2024-11-05", "2025-03-26", "2025-06-18", PROTOCOL}   # the revisions with an initialize handshake
+MODERN = "2026-07-28"              # no handshake: every request names its revision (_meta and MCP-Protocol-Version)
+SUPPORTED = sorted(KNOWN) + [MODERN]
+META_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_CAPS = "io.modelcontextprotocol/clientCapabilities"
+META_SERVER = "io.modelcontextprotocol/serverInfo"
+SKILLS_EXT = "io.modelcontextprotocol/skills"
+SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"   # the curator skills, served over MCP (Skills extension)
+LIST_TTL_MS = 60_000
 ENGINE_MARK = "✖"                  # what brain.py puts in front of every error it raises itself (main's handler)
 ACTIONS = ("recall", "read", "credit", "stats", "learn", "session")
 COMBINED = ("brief", "ask", "finish", "health", "batch")   # several engine calls in one round trip
@@ -880,15 +888,148 @@ def failure(rid, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
 
 
-def answer(msg: dict, st) -> dict | None:
-    """-> the reply to a request, or None for a notification (a notification gets no answer)."""
+# ---- the Skills extension: the curator skills of skills/, as skill:// resources
+SKILL_NOTE = ("\n> Over MCP: `B <verb> ...` in this skill is the `cortex_curate` tool (verb=<verb>, its options as "
+              "args by name), and `B recall`, `B read`, `B credit` and `B learn` are the `cortex` tool's actions. "
+              "Do not run git yourself: action=finish commits what the task learned under your name.\n")
+
+
+def skill_files() -> dict[str, dict[str, bytes]]:
+    """{skill name: {relative path: bytes as served}}. SKILL.md gets the note on how its commands map to the tools."""
+    out = {}
+    if not SKILLS_DIR.is_dir():
+        return out
+    for d in sorted(SKILLS_DIR.iterdir()):
+        if not (d / "SKILL.md").is_file():
+            continue
+        files = {}
+        for f in sorted(d.rglob("*")):
+            if f.is_file() and "__pycache__" not in f.parts:
+                data = f.read_bytes()
+                if f.name == "SKILL.md":
+                    text = data.decode("utf-8")
+                    end = text.find("\n---", 3) if text.startswith("---") else -1
+                    cut = text.find("\n", end + 4) + 1 if end >= 0 else 0
+                    data = (text[:cut] + SKILL_NOTE + text[cut:]).encode("utf-8")
+                files[f.relative_to(d).as_posix()] = data
+        out[d.name] = files
+    return out
+
+
+def frontmatter(text: str) -> dict:
+    fm = {}
+    if text.startswith("---"):
+        for line in text[3:text.find("\n---", 3)].splitlines():
+            k, sep, v = line.partition(":")
+            if sep and k.strip():
+                fm[k.strip()] = v.strip()
+    return fm
+
+
+def skill_entry(name: str, files: dict[str, bytes]) -> dict:
+    import hashlib
+    return {"uri": f"skill://{name}/SKILL.md",
+            "frontmatter": dict(frontmatter(files["SKILL.md"].decode("utf-8")), name=name),
+            "resources": [{"uri": f"skill://{name}/{rel}", "digest": "sha256:" + hashlib.sha256(b).hexdigest(),
+                           "size": len(b)} for rel, b in files.items()]}
+
+
+def skills_for(st) -> dict:
+    return skill_files() if st.role == "curator" else {}
+
+
+def skill_call(method: str, p: dict, st, rid) -> dict:
+    """skills/list, skills/get and resources/read on skill:// URIs."""
+    skills = skills_for(st)
+    if method == "skills/list":
+        return result(rid, {"skills": [skill_entry(n, f) for n, f in skills.items()],
+                            "ttlMs": LIST_TTL_MS, "cacheScope": "public"})
+    uri = p.get("uri")
+    m = re.fullmatch(r"skill://([a-z0-9-]+)/(.+)", uri or "")
+    if not m or m.group(1) not in skills or m.group(2) not in skills[m.group(1)]:
+        return failure(rid, -32602, f"no such skill resource: {uri}")
+    name, rel = m.groups()
+    if method == "skills/get":
+        if rel != "SKILL.md":
+            return failure(rid, -32602, "skills/get takes a skill's SKILL.md URI")
+        return result(rid, {"skill": skill_entry(name, skills[name]), "ttlMs": LIST_TTL_MS, "cacheScope": "public"})
+    mime = "text/markdown" if rel.endswith(".md") else "text/plain"
+    return result(rid, {"contents": [{"uri": uri, "mimeType": mime, "text": skills[name][rel].decode("utf-8")}],
+                        "ttlMs": LIST_TTL_MS, "cacheScope": "public"})
+
+
+def capabilities(st) -> dict:
+    caps = {"tools": {}}
+    if skills_for(st):
+        caps.update({"resources": {}, "extensions": {SKILLS_EXT: {}}})
+    return caps
+
+
+def header(headers, name: str) -> str | None:
+    return headers.get(name) if headers is not None else None
+
+
+def is_modern(msg: dict, headers=None) -> bool:
+    """A 2026-07-28 request (or a newer one we do not speak): it names its revision instead of a handshake."""
+    meta = (msg.get("params") or {}).get("_meta") or {}
+    asked = meta.get(META_VERSION) or header(headers, "MCP-Protocol-Version")
+    return bool(asked) and asked not in KNOWN and msg.get("method") != "initialize"
+
+
+def modern(msg: dict, st, headers=None) -> dict | None:
+    """MCP 2026-07-28: no initialize and no session; every request carries its revision and the client's capabilities
+    in _meta (and the revision in MCP-Protocol-Version over HTTP); every result says resultType complete."""
     method, rid, p = msg.get("method"), msg.get("id"), msg.get("params") or {}
     if rid is None:
         return None
+    meta = p.get("_meta") or {}
+    asked, said = meta.get(META_VERSION), header(headers, "MCP-Protocol-Version")
+    if not asked:
+        return failure(rid, -32602, f"a {MODERN} request carries _meta {META_VERSION}")
+    if asked not in SUPPORTED:
+        f = failure(rid, -32022, "Unsupported protocol version")
+        f["error"]["data"] = {"supported": SUPPORTED, "requested": asked}
+        return f
+    if said and said != asked:
+        return failure(rid, -32020, f"MCP-Protocol-Version {said} does not match _meta {asked}")
+    if header(headers, "Mcp-Method") and header(headers, "Mcp-Method") != method:
+        return failure(rid, -32020, f"Mcp-Method {header(headers, 'Mcp-Method')} does not match {method}")
+    if not isinstance(meta.get(META_CAPS), dict):
+        return failure(rid, -32602, f"a {MODERN} request carries _meta {META_CAPS}")
+    info = {META_SERVER: {"name": "cortex", "version": st.version}}
+    if method == "server/discover":
+        r = result(rid, {"supportedVersions": SUPPORTED, "capabilities": capabilities(st),
+                         "instructions": describe(), "ttlMs": LIST_TTL_MS, "cacheScope": "private"})
+    elif method in ("tools/list", "tools/call", "skills/list", "skills/get", "resources/read"):
+        r = answer(msg, st, legacy_only=False)
+        if r and "result" in r and method == "tools/list":
+            r["result"].update({"ttlMs": LIST_TTL_MS, "cacheScope": "private"})
+    else:
+        return failure(rid, -32601, f"this server answers server/discover, tools/list, tools/call, skills/list, "
+                                    f"skills/get and resources/read in {MODERN} (not {method})")
+    if r and "result" in r:
+        r["result"]["resultType"] = "complete"
+        r["result"]["_meta"] = info
+    return r
+
+
+HTTP_STATUS = {-32601: 404, -32602: 400, -32020: 400, -32022: 400, -32600: 400, -32700: 400}
+
+
+def answer(msg: dict, st, headers=None, legacy_only: bool = True) -> dict | None:
+    """-> the reply to a request, or None for a notification (a notification gets no answer). A 2026-07-28 request
+    goes through modern(); the older revisions keep their handshake."""
+    if legacy_only and is_modern(msg, headers):
+        return modern(msg, st, headers)
+    method, rid, p = msg.get("method"), msg.get("id"), msg.get("params") or {}
+    if rid is None:
+        return None
+    if method in ("skills/list", "skills/get", "resources/read"):
+        return skill_call(method, p, st, rid)
     if method == "initialize":
         asked = p.get("protocolVersion")
         return result(rid, {"protocolVersion": asked if asked in KNOWN else PROTOCOL,
-                            "capabilities": {"tools": {}},
+                            "capabilities": {"tools": {}},   # skills are declared in server/discover (2026-07-28)
                             "serverInfo": {"name": "cortex", "version": st.version}})
     if method == "tools/list":
         tools = [tool_schema()]
@@ -1142,14 +1283,16 @@ class McpRoutes:
                 ar = pa.get("arguments") or {}
                 what = ar.get("verb") or ar.get("action") if isinstance(ar, dict) else None
                 sys.stderr.write(f"call {st.vault.name} by={st.by or '-'} {pa.get('name')} {what}\n")
-        replies = []
+        replies, status = [], 200
         for m in msgs:
-            r = answer(m, st) if isinstance(m, dict) else failure(None, -32600, "a message is an object")
+            r = answer(m, st, self.headers) if isinstance(m, dict) else failure(None, -32600, "a message is an object")
             if r is not None:
                 replies.append(r)
+                if isinstance(m, dict) and is_modern(m, self.headers) and "error" in r and not isinstance(msg, list):
+                    status = HTTP_STATUS.get(r["error"]["code"], 400)   # 2026-07-28: the status says it too
         if not replies:
             return self.mcp_send(202)                     # notifications only: accepted, nothing to answer
-        self.mcp_send(200, replies if isinstance(msg, list) else replies[0])
+        self.mcp_send(status, replies if isinstance(msg, list) else replies[0])
 
 
 def http_handler(hub: Hub, require_token: bool = False):

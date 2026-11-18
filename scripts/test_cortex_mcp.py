@@ -796,3 +796,74 @@ class TaskSessionTests(unittest.TestCase):
             cortex_mcp.argv_for({"action": "recall", "query": "x", "session": "s1"}, "claude-code",
                                 cortex_mcp.has_sessions(self.v))
         self.assertEqual(cortex_mcp.argv_for({"action": "recall", "query": "x"}, "claude-code", False), ["recall", "x"])
+
+
+MODERN_META = {cortex_mcp.META_VERSION: cortex_mcp.MODERN, cortex_mcp.META_CAPS: {}}
+
+
+class ModernTests(Base):
+    """MCP 2026-07-28: no handshake, every request names its revision; the Skills extension serves the curator skills."""
+
+    def ask(self, method, params=None, meta=MODERN_META, headers=None):
+        return cortex_mcp.answer({"jsonrpc": "2.0", "id": 3, "method": method,
+                                  "params": dict(params or {}, _meta=meta)}, self.st, headers)
+
+    def test_discover_names_the_revisions_the_tools_and_the_skills(self):
+        got = self.ask("server/discover")["result"]
+        self.assertIn(cortex_mcp.MODERN, got["supportedVersions"])
+        self.assertIn("2025-11-25", got["supportedVersions"])
+        self.assertEqual(got["resultType"], "complete")
+        self.assertEqual(got["_meta"][cortex_mcp.META_SERVER]["name"], "cortex")
+        self.assertEqual(got["capabilities"]["extensions"], {cortex_mcp.SKILLS_EXT: {}})
+        self.assertIn("resources", got["capabilities"])
+
+    def test_tools_answer_without_initialize(self):
+        got = self.ask("tools/list")["result"]
+        self.assertEqual((got["resultType"], got["cacheScope"]), ("complete", "private"))
+        self.assertGreater(got["ttlMs"], 0)
+        got = self.ask("tools/call", {"name": "cortex", "arguments": {"action": "stats"}})["result"]
+        self.assertEqual(got["resultType"], "complete")
+        self.assertIn("argv stats", got["content"][0]["text"])
+
+    def test_bad_requests_get_the_new_error_codes(self):
+        self.assertEqual(self.ask("tools/list", meta={cortex_mcp.META_VERSION: cortex_mcp.MODERN})["error"]["code"],
+                         -32602, "no client capabilities")
+        err = self.ask("tools/list", meta={cortex_mcp.META_VERSION: "2099-01-01", cortex_mcp.META_CAPS: {}})["error"]
+        self.assertEqual((err["code"], err["data"]["requested"]), (-32022, "2099-01-01"))
+        self.assertEqual(self.ask("tools/list", headers={"MCP-Protocol-Version": "2025-06-18"})["error"]["code"], -32020)
+        self.assertEqual(self.ask("ping")["error"]["code"], -32601, "ping is gone in 2026-07-28")
+
+    def test_older_clients_keep_their_handshake(self):
+        got = cortex_mcp.answer({"id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}}, self.st)
+        self.assertEqual(got["result"]["protocolVersion"], "2025-11-25")
+        self.assertNotIn("resultType", cortex_mcp.answer({"id": 2, "method": "tools/list"}, self.st)["result"])
+
+    def test_skills_are_listed_got_and_read_with_matching_digests(self):
+        import hashlib
+        skills = self.ask("skills/list")["result"]["skills"]
+        names = sorted(s["frontmatter"]["name"] for s in skills)
+        self.assertEqual(names, ["atomize", "capture", "consolidate", "link", "review"])
+        link = next(s for s in skills if s["frontmatter"]["name"] == "link")
+        self.assertEqual(link["uri"], "skill://link/SKILL.md")
+        self.assertTrue(link["frontmatter"]["description"])
+        self.assertEqual(self.ask("skills/get", {"uri": link["uri"]})["result"]["skill"], link)
+        text = self.ask("resources/read", {"uri": link["uri"]})["result"]["contents"][0]["text"]
+        self.assertIn("cortex_curate", text, "the note on how B maps to the tools")
+        res = next(r for r in link["resources"] if r["uri"] == link["uri"])
+        self.assertEqual(res["digest"], "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest())
+        self.assertEqual(self.ask("resources/read", {"uri": "skill://link/../../etc/passwd"})["error"]["code"], -32602)
+
+    def test_a_reader_gets_no_skills(self):
+        self.st.role = "reader"
+        self.assertEqual(self.ask("skills/list")["result"]["skills"], [])
+        self.assertNotIn("extensions", self.ask("server/discover")["result"]["capabilities"])
+
+
+class ModernHttpTests(HttpTests):
+    def test_modern_errors_carry_their_http_status(self):
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": MODERN_META}}
+        self.assertEqual(self.post("/mcp/my", body, {"MCP-Protocol-Version": cortex_mcp.MODERN,
+                                                     "Mcp-Method": "tools/list"})[0], 200)
+        self.assertEqual(self.post("/mcp/my", body, {"MCP-Protocol-Version": "2025-06-18"})[0], 400)
+        unknown = dict(body, method="nope/nothing")
+        self.assertEqual(self.post("/mcp/my", unknown, {"MCP-Protocol-Version": cortex_mcp.MODERN})[0], 404)
