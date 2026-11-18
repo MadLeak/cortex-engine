@@ -365,3 +365,14 @@ modelo (segundos) no compensa ahora: queda como mejora futura, medida con `scrip
   un 500 con el mensaje. Test nuevo.
 - Verificado en vivo: vault creado desde el formulario, limpio para el git de Windows, y `brief` responde con la URL
   y el token devueltos.
+
+### Resultados de la fase 7 (2026-11-18)
+
+- `install.ps1` ya no pide administrador ni Python ni git: comprueba Docker, escribe `.env` si no hay, crea
+  `%USERPROFILE%\Vaults`, levanta el contenedor y espera al hub. `-Lan` añade la red local (HTTPS con la CA del hub,
+  sin instalar nada en los dispositivos); `-Trusted` (administrador) hace lo de antes: `https://cortex.local` con
+  reglas NRPT y la CA en el almacén raíz; `-Remove` lo quita. `install.sh` igual con `--lan`, `--trusted` (sudo) y
+  `--remove`. La LAN pasa a ser opcional (antes se activaba sola si había IP privada).
+- **Sin ejecutar:** el clasificador de permisos de esta sesión bloqueó correr `install.ps1` con
+  `-ExecutionPolicy Bypass`. Solo se verificó la sintaxis (`sh -n` y el parser de PowerShell). Hay que probarlos a
+  mano: con un `.env` que apunte `CORTEX_VAULTS` a una carpeta de prueba, para no tocar `~/Vaults`.
