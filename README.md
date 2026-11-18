@@ -13,7 +13,32 @@
 
 Read the [design paper](docs/PAPER.md) for the why and the [runbook](docs/RUNBOOK.md) for day-to-day operation.
 
-## 60-second quickstart
+## Quickstart with Docker alone
+
+Requirements: Docker (Docker Desktop on Windows and macOS). Nothing else on the host: no Python, no administrator, no DNS
+or certificate changes. The engine, the panels, the MCP service and the command line all run in one container; the
+vaults stay plain folders under `~/Vaults` (`%USERPROFILE%\Vaults` on Windows), so Obsidian sees them as before.
+
+```bash
+git clone <this repository> cortex && cd cortex
+./install.sh                        # Windows: powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Then open `http://cortex.localhost:8790` (browsers resolve `*.localhost` to this machine by themselves). *Connect an
+agent* creates a cortex and gives the one line its MCP client needs, for example:
+
+```bash
+claude mcp add --transport http --scope user claude-cortex "http://cortex.localhost:8790/mcp/Claude%20Cortex?by=claude-code" --header "Authorization: Bearer <the vault's token>"
+```
+
+The agent starts each task with `action=brief` and ends it with `action=finish`, which commits what it learned under
+the agent's own name. The command line is `./cortex.sh` (Windows `.\cortex.ps1`): `list`, `new <folder> [--from
+kitchen-cortex]`, `brain <vault> recall "..."`, `doctor`, `upgrade`, `token <vault> [--rotate]`, `commit <vault> -m`.
+Options: `--lan` / `-Lan` serves the cortexes you mark LAN to the local network over HTTPS; `--trusted` / `-Trusted`
+(administrator) gives `https://cortex.local` with no warning by trusting the hub's CA on this machine. See the
+[runbook](docs/RUNBOOK.md#1-install).
+
+## 60-second quickstart with Python on the host
 
 Requirements: Python 3.10 or newer (the engine's `doctor` checks for 3.10; the test suite was run on Python 3.14.4), git, and optionally Obsidian.
 
@@ -57,6 +82,9 @@ The vault's `pre-push` hook enforces this: before every push it asks the forge (
 
 ## Wire an agent
 
+With the container, an agent connects over MCP from the hub's *Connect an agent* form (above): no file of the agent's
+is written. With Python on the host:
+
 ```bash
 python3 installers/wire_agent.py --agent claude-code --vault ~/vaults/my-cortex   # or codex, gemini, opencode, hermes, custom
 ```
@@ -68,6 +96,9 @@ This writes one marked, idempotent block into the agent's global instruction fil
 | Path | What |
 |---|---|
 | `template-vault/` | A complete empty vault: `_brain/scripts/` (the engine and its tests), `_templates/`, `.githooks/pre-commit` and `pre-push`, `.obsidian/`, placeholder `AGENTS.md` / `CLAUDE.md`, empty `_inbox/` |
+| `compose.yaml`, `Dockerfile` | The Cortex container: hub, MCP service and engine; `compose.lan.yaml` and `compose.trusted.yaml` add the LAN and host-trusted modes; the `tools` profile has `cli`, `test` and `bench` |
+| `install.sh`, `install.ps1`, `cortex.sh`, `cortex.ps1` | Install with Docker alone; the command line in the container (`scripts/cortex_cli.py`) |
+| `scripts/cortex_hub.py`, `scripts/cortex_mcp.py` | The hub (panels, *Connect an agent*) and the MCP service it serves at `/mcp/<vault>`: one token per vault, a resident engine, MCP 2025-11-25 and 2026-07-28, the Skills extension |
 | `scripts/new_vault.py` | Creates a vault from the template, with an optional content overlay (`--from`) |
 | `scripts/upgrade_engine.py` | Installs this engine into existing vaults and runs their `doctor` |
 | `installers/wire_agent.py` | Wires Claude Code, Codex, Gemini CLI, OpenCode, Hermes Agent or any agent to a vault |
@@ -78,10 +109,12 @@ This writes one marked, idempotent block into the agent's global instruction fil
 ## Tests
 
 ```bash
-cd template-vault/_brain/scripts && python3 -m unittest discover -s tests -v
+docker compose --profile tools run --rm test     # every suite in the image: engine, hub, MCP, review
+docker compose --profile tools run --rm bench    # what one engine call costs, new process against resident engine
+cd template-vault/_brain/scripts && python3 -m unittest discover -s tests -v   # the engine alone, with Python
 ```
 
-The suite has 31 tests, including a 1,000-node performance check, and runs in about 3 seconds.
+The engine's suite has 53 tests, including a 1,000-node performance check, and runs in about 5 seconds.
 
 ## Status
 

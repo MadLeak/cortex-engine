@@ -1,6 +1,11 @@
 # Plan: Cortex solo en Docker (sin tocar el host)
 
-Rama `docker-only` · worktree `cortex-engine-docker` · borrador para discutir, nada implementado aún.
+Rama `docker-only` · worktree `cortex-engine-docker` · **fases 1-8 implementadas (2026-11-18)**; el estado en
+memoria quedó aplazado y los instaladores sin ejecutar (ver los resultados de cada fase al final).
+
+> La arquitectura de abajo es el borrador inicial. Lo implementado difiere: el MCP no es un servicio aparte en el
+> puerto 8777, sino que lo sirve el propio hub en `/mcp/<vault>` del puerto 8790 (decisión 7), y la CLI es el
+> servicio `cli` del perfil `tools`.
 
 ## Objetivo
 
@@ -376,3 +381,17 @@ modelo (segundos) no compensa ahora: queda como mejora futura, medida con `scrip
 - **Sin ejecutar:** el clasificador de permisos de esta sesión bloqueó correr `install.ps1` con
   `-ExecutionPolicy Bypass`. Solo se verificó la sintaxis (`sh -n` y el parser de PowerShell). Hay que probarlos a
   mano: con un `.env` que apunte `CORTEX_VAULTS` a una carpeta de prueba, para no tocar `~/Vaults`.
+
+### Resultados de la fase 8 y estado final (2026-11-18)
+
+- README: "Quickstart with Docker alone" primero (instalar, abrir el hub, la línea de MCP, la CLI); la ruta con
+  Python queda como alternativa. Tabla del repositorio y tests al día (motor 53).
+- RUNBOOK §1 (instalar solo con Docker, CLI, actualización del motor, hook, carpetas de Windows), §4 (conectar por
+  MCP, token, configuración por cliente, puente stdio) y §8 (el hub en el contenedor).
+
+**Pendiente:**
+1. Probar `install.ps1` / `install.sh` de verdad (bloqueado en esta sesión), con `CORTEX_VAULTS` en una carpeta de prueba.
+2. Probar con clientes reales: Codex, Gemini CLI y OpenCode (formatos tomados de su documentación), y un cliente que
+   hable MCP 2026-07-28 o la extensión Skills.
+3. Estado en memoria (de ~140 ms a < 50 ms por llamada), si la latencia llega a importar.
+4. Nada está subido: la rama `docker-only` vive solo en este equipo.
