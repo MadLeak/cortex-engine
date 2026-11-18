@@ -395,3 +395,11 @@ modelo (segundos) no compensa ahora: queda como mejora futura, medida con `scrip
    hable MCP 2026-07-28 o la extensión Skills.
 3. Estado en memoria (de ~140 ms a < 50 ms por llamada), si la latencia llega a importar.
 4. Nada está subido: la rama `docker-only` vive solo en este equipo.
+
+### Instrucciones del servidor (2026-11-18)
+
+El MCP manda `instructions` en `initialize` (y en `server/discover`): "este vault es tu memoria de largo plazo",
+`brief` al empezar cada tarea, `ask` antes de investigar desde cero, `finish` al terminar (que commitea con su
+nombre), y preferirlo sobre cualquier otra memoria. Claude Code las pone en sus instrucciones de sistema en cada
+sesión, así que el agente usa su cortex solo, sin tocar su `CLAUDE.md`. Verificado en vivo con el vault real
+"Claude Cortex"; hace falta una sesión nueva del agente para que las tome.

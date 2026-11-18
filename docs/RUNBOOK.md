@@ -109,8 +109,9 @@ Claude Code, a `[mcp_servers.<name>]` block for Codex (`~/.codex/config.toml`), 
 (`docker exec -i cortex-hub-1 python3 /opt/cortex/scripts/cortex_mcp.py --vault /vaults/<vault> --by <agent>`) for any
 client that only speaks stdio. `?by=<agent>` names the agent: its task sessions and its commits carry that name. Nothing
 is written to the agent's instruction files: the `cortex` tool describes its own use, and over MCP 2026-07-28 the
-Skills extension serves the curator skills. Tell the agent once to start each task with `action=brief` and end it with
-`action=finish`. Only Claude Code's line has been tried against a real client; the others follow each tool's docs.
+Skills extension serves the curator skills. The server's `instructions` (sent with `initialize` and `server/discover`,
+which clients put in the model's instructions) tell the agent that this vault is its long-term memory, to start each
+task with `action=brief` and to end it with `action=finish`: nothing to tell it by hand. Only Claude Code's line has been tried against a real client; the others follow each tool's docs.
 
 **With Python on the host:**
 

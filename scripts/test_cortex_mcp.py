@@ -187,6 +187,18 @@ class ProtocolTests(Base):
         self.assertEqual(got["result"]["capabilities"], {"tools": {}})
         self.assertEqual(got["result"]["serverInfo"], {"name": "cortex", "version": "9.9.9"})
 
+    def test_initialize_tells_the_agent_this_vault_is_its_memory(self):
+        self.st.by = "claude-code"
+        text = self.reply("initialize", {"protocolVersion": "2025-06-18"})["result"]["instructions"]
+        self.assertIn('long-term memory: the Cortex vault "My Cortex"', text)
+        self.assertIn("You are claude-code.", text)
+        for step in ("action=brief", "action=ask", "action=finish", "commits the learnings under your name"):
+            self.assertIn(step, text)
+        self.st.role = "reader"
+        text = self.reply("initialize", {"protocolVersion": "2025-06-18"})["result"]["instructions"]
+        self.assertNotIn("learnings =", text)
+        self.assertIn("action=finish", text)
+
     def test_a_revision_this_server_does_not_know_is_answered_with_its_own(self):
         got = self.reply("initialize", {"protocolVersion": "3141-15-92"})
         self.assertEqual(got["result"]["protocolVersion"], cortex_mcp.PROTOCOL)

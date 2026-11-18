@@ -240,9 +240,9 @@ def mcp_setup(name: str, folder: str, kind: str, role: str, by: str, base: str, 
         text += f"===== {kind} =====\n{lines[kind]}\n\n"
     text += (f"===== any other MCP client (streamable HTTP) =====\n{generic}\n\n"
              f"===== a client that only speaks stdio =====\n{stdio}\n\n"
-             'Then tell the agent once: "Use the cortex tool: start each task with action=brief and end it with '
-             'action=finish." The tool\'s own description carries the rest; finish commits what it learned under '
-             f"its name ({by}).\n")
+             "Then open a new session: the server tells the agent, as part of its instructions, that this cortex is "
+             "its long-term memory, to start each task with action=brief and to end it with action=finish, which "
+             f"commits what it learned under its name ({by}).\n")
     return text
 
 

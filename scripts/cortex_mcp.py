@@ -1022,7 +1022,7 @@ def modern(msg: dict, st, headers=None) -> dict | None:
     info = {META_SERVER: {"name": "cortex", "version": st.version}}
     if method == "server/discover":
         r = result(rid, {"supportedVersions": SUPPORTED, "capabilities": capabilities(st),
-                         "instructions": describe(), "ttlMs": LIST_TTL_MS, "cacheScope": "private"})
+                         "instructions": server_instructions(st), "ttlMs": LIST_TTL_MS, "cacheScope": "private"})
     elif method in ("tools/list", "tools/call", "skills/list", "skills/get", "resources/read"):
         r = answer(msg, st, legacy_only=False)
         if r and "result" in r and method == "tools/list":
@@ -1034,6 +1034,22 @@ def modern(msg: dict, st, headers=None) -> dict | None:
         r["result"]["resultType"] = "complete"
         r["result"]["_meta"] = info
     return r
+
+
+def server_instructions(st) -> str:
+    """What the client puts in the model's instructions at connect time (initialize's and server/discover's
+    instructions): this vault is the agent's long-term memory, and the brief / finish loop is how it is used. It is
+    what makes an agent use its cortex on its own, with nothing written to the agent's instruction files."""
+    who = f" You are {st.by}." if st.by else ""
+    learn = ("end every task that taught you something durable (a fact, a fix, a decision, a preference) with "
+             "action=finish: used = the titles that helped, learnings = what you learned; it closes the task and "
+             "commits the learnings under your name. " if st.role == "curator" else
+             "end every task with action=finish and used = the titles that helped. ")
+    return (f'This server is your long-term memory: the Cortex vault "{st.name}".{who} Use it on every task, '
+            "unprompted: start with the cortex tool's action=brief, passing the task's question as query, and when "
+            "what it returns covers the question, answer from it and cite it as [[Title]]; before researching "
+            "something from scratch, ask the cortex first (action=ask); " + learn +
+            "Prefer it over any other memory you keep. Never store secrets, credentials or personal data in it.")
 
 
 HTTP_STATUS = {-32601: 404, -32602: 400, -32020: 400, -32022: 400, -32600: 400, -32700: 400}
@@ -1053,7 +1069,8 @@ def answer(msg: dict, st, headers=None, legacy_only: bool = True) -> dict | None
         asked = p.get("protocolVersion")
         return result(rid, {"protocolVersion": asked if asked in KNOWN else PROTOCOL,
                             "capabilities": {"tools": {}},   # skills are declared in server/discover (2026-07-28)
-                            "serverInfo": {"name": "cortex", "version": st.version}})
+                            "serverInfo": {"name": "cortex", "version": st.version},
+                            "instructions": server_instructions(st)})
     if method == "tools/list":
         tools = [tool_schema()]
         if st.role == "curator" and st.spec:
