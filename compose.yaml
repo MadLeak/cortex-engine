@@ -60,6 +60,7 @@ services:
       - --address=${CORTEX_ADDRESS:-127.0.0.1}
       - --domain=${CORTEX_DOMAIN:-cortex.localhost}
       - --host-root=${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}
+      - --mcp   # agents at /mcp/<vault>, each behind the token in <vault>/_brain/state/mcp.token
       - --public-port=${CORTEX_PORT:-8790}
       - --local-http
       - --lan-port=9443

@@ -13,6 +13,7 @@ services:
       - --address=${CORTEX_ADDRESS:-127.0.0.1}
       - --domain=${CORTEX_DOMAIN:-cortex.local}
       - --host-root=${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}
+      - --mcp   # agents at /mcp/<vault>, each behind the token in <vault>/_brain/state/mcp.token
       - --public-port=${CORTEX_PORT:-443}
       - --redirect-port=8080
       - --dns-port=5353

@@ -49,6 +49,8 @@ try:
     import wire_agent
 except ImportError:   # a hub copied out of the repository: views only, no connect form
     wire_agent = None
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cortex_mcp  # noqa: E402  (the MCP service rides the hub's own port: /mcp/<vault>)
 
 ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
 # the only files of a vault the hub serves, relative to its _brain folder
@@ -275,7 +277,7 @@ class Server(ThreadingHTTPServer):
             tls.close()
 
 
-class Hub(BaseHTTPRequestHandler):
+class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
     root: Path = Path.home() / "Vaults"
     host_root: str | None = None   # the root as the agents' machine writes it (the container sees /vaults)
     allowed: set[str] = {"localhost", "127.0.0.1", "::1"}   # Host header names the hub answers to
@@ -381,10 +383,22 @@ class Hub(BaseHTTPRequestHandler):
         o = self.headers.get("Origin")
         return o is not None and (urlsplit(o).hostname or "") in self.allowed
 
+    def is_mcp(self, path: str) -> bool:
+        """/mcp/<vault>: the agents' MCP service, on this machine's listener only (--mcp), behind each vault's token."""
+        return self.mcp_hub is not None and self.scope == "localhost" and path.startswith("/mcp/")
+
+    def do_DELETE(self):
+        path = urlsplit(self.path).path
+        if self.gate(path):
+            return
+        return self.mcp_delete() if self.is_mcp(path) else self.send(405, b"not allowed", TEXT)
+
     def do_POST(self):
         path = urlsplit(self.path).path
         if self.gate(path):
             return
+        if self.is_mcp(path):   # an agent, not a browser: its token stands in for the page's same-origin checks
+            return self.mcp_post()
         if path != "/login" and not self.same_origin():   # sign-in carries the key in the body: no Origin needed
             return self.send(HTTPStatus.FORBIDDEN, b"cross-site request refused", TEXT)
         try:
@@ -446,6 +460,8 @@ class Hub(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if self.gate(path):
             return
+        if self.is_mcp(path):
+            return self.mcp_get()
         own = self.vault_host()
         if own is not None:   # an agent's own host: its panel at the root
             rel = "Panel.html" if path in ("/", "/Panel.html") else path.lstrip("/")
@@ -1158,6 +1174,9 @@ def main() -> None:
     ap.add_argument("--address", help="address browsers reach the hub at, when it differs from --host (a container)")
     ap.add_argument("--domain", default="localhost", help="host name browsers use; the certificate covers it")
     ap.add_argument("--data", help="folder for the local CA and the access key; turns HTTPS on")
+    ap.add_argument("--mcp", action="store_true",
+                    help="also serve MCP at /mcp/<vault> on this machine's listener, each vault behind its own token "
+                         "(<vault>/_brain/state/mcp.token, made on start)")
     ap.add_argument("--local-http", action="store_true",
                     help="with --data, keep this machine's listener in plain HTTP (no CA to trust: browsers already "
                          "treat localhost as secure); only the LAN listener speaks HTTPS")
@@ -1229,6 +1248,16 @@ def main() -> None:
     httpd = listen(main_hub, a.host, a.port, main_ctx, a.redirect_port)
     print(f"cortex hub, {scope} scope, {scheme} for {', '.join(dns + ips)} · listening on {a.host}:{a.port} · "
           f"{len(vaults(Hub.root))} vaults under {Hub.root}", flush=True)
+    if a.mcp:
+        Hub.mcp_hub, Hub.mcp_require_token = cortex_mcp.Hub(Hub.root, 60.0), True
+        cortex_mcp.RESIDENT = cortex_mcp.Resident(ENGINE / "template-vault" / "_brain" / "scripts",
+                                                  scan_seconds=float(env("CORTEX_SCAN_SECONDS") or 5))
+        for v in vaults(Hub.root).values():
+            cortex_mcp.ensure_token(v)
+        port = "" if (scheme, Hub.public_port) in (("https", 443), ("http", 80)) else f":{Hub.public_port}"
+        print(f"MCP at {scheme}://{dns[0]}{port}/mcp/<vault>, each vault behind the token in "
+              f"<vault>/{cortex_mcp.TOKEN_IGNORE} · resident engine v{cortex_mcp.RESIDENT.version}, "
+              f"file lists refreshed every {cortex_mcp.RESIDENT.scan_seconds:g}s", flush=True)
     if a.dns_port:
         import hub_dns
         zones = {dns[0]: address, **({lan_dns[0]: a.lan_address} if a.lan_address else {})}   # this machine knows both

@@ -36,8 +36,12 @@ Test: python3 -m unittest scripts/test_cortex_mcp.py
 from __future__ import annotations
 
 import argparse
+import hmac
+import io
 import json
+import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -306,13 +310,25 @@ def crash(err: str) -> str:
            "That is not your arguments: retry once, then answer with what you already have."
 
 
+TRACEBACK = "Traceback (most recent call last)"
+
+
 def run_engine(brain: Path, vault: Path, args: list[str], timeout: float) -> tuple[bool, str]:
     """-> (ok, text). The engine's stdout is the answer; its exit code says who was wrong.
 
     brain.py prefixes with ✖ every error it raises itself and returns that error's code: 1 wrong arguments, 2 a
     budget or a limit spent. argparse exits 2 too, on a call it cannot parse, and argparse never prints the ✖ -
     so the mark is what separates "you asked wrong, fix it" from "the vault is spent, stop reading".
+
+    With a resident engine (RESIDENT) of the same version as the vault's, the call runs in this process; anything
+    else, and a resident call that crashed, runs the vault's own brain.py in a new process as before.
     """
+    if RESIDENT is not None and RESIDENT.serves(vault):
+        got = RESIDENT.call(vault, args, timeout)
+        if got is not None and TRACEBACK not in got[2]:
+            return interpret(args, *got)
+        sys.stderr.write(f"resident engine {'busy' if got is None else 'crashed'} on {vault.name} {args[0]}: "
+                         "running it in a new process\n")
     try:
         r = subprocess.run([sys.executable, str(brain), "--vault", str(vault), *args], cwd=str(vault.parent),
                            # beside the vault, never inside it: a stray relative path cannot write in the vault
@@ -321,18 +337,166 @@ def run_engine(brain: Path, vault: Path, args: list[str], timeout: float) -> tup
         return False, f"error: the engine took over {timeout:.0f} seconds and was stopped. Try a narrower query."
     except OSError as e:
         return False, f"error: cannot run {brain}: {e}"
-    out, err = (r.stdout or "").strip(), (r.stderr or "").strip()
-    if r.returncode == 0:
+    return interpret(args, r.returncode, r.stdout or "", r.stderr or "")
+
+
+def interpret(args: list[str], code: int, out: str, err: str) -> tuple[bool, str]:
+    """An engine call's exit code and output as (ok, text) for the model: see run_engine."""
+    out, err = out.strip(), err.strip()
+    if code == 0:
         return True, out or "(the engine answered nothing)"
-    if "Traceback (most recent call last)" in err:
+    if TRACEBACK in err:
         return False, crash(err)
-    if r.returncode == 2 and err.startswith(ENGINE_MARK):   # the engine's own limit, not a malformed call
+    if code == 2 and err.startswith(ENGINE_MARK):   # the engine's own limit, not a malformed call
         note = ("The vault has enough pending learnings: write this one to _inbox instead." if args[0] == "learn"
                 else "Budget or limit spent: stop reading and answer now.")
         return False, "\n".join(x for x in (out, err, note) if x)
-    if r.returncode == 2:                               # argparse: it never prints the ✖, and it means ask again
+    if code == 2:                               # argparse: it never prints the ✖, and it means ask again
         return False, "\n".join(x for x in (err or out, "The arguments were wrong: fix them and retry.") if x)
     return False, err or out or "error: the engine failed without saying why"
+
+
+# ---- the resident engine: imported once, called in this process, with the vault's file list kept warm
+READ_ONLY = {"recall", "read", "credit", "stats", "session", "lint", "externals"}   # verbs that never add or move a .md
+VERSION_LINE = re.compile(r'^VERSION = "([^"]+)"', re.M)
+
+
+class _Streams(io.TextIOBase):
+    """sys.stdout / sys.stderr that a thread can point at its own buffer: an engine call's output is captured while
+    the server's other threads keep writing their journal lines to the real stream."""
+
+    def __init__(self, real):
+        self.real, self.local = real, threading.local()
+
+    def write(self, s):
+        buf = getattr(self.local, "buf", None)
+        return (buf if buf is not None else self.real).write(s)
+
+    def flush(self):
+        buf = getattr(self.local, "buf", None)
+        (buf if buf is not None else self.real).flush()
+
+    @property
+    def encoding(self):
+        return "utf-8"
+
+    def reconfigure(self, **kw):                     # the engine asks for UTF-8; the real stream takes it
+        return self.real.reconfigure(**kw)
+
+
+class Resident:
+    """The image's engine, imported once. Starting Python and importing a 3,500-line engine for every tool call
+    cost most of a call; on a vault in a folder shared from Windows, walking its files (a stat per note, ~0.5 ms each
+    through the share) cost most of the rest. So the engine stays loaded, and each vault's file list is kept in
+    memory and refreshed in the background every scan_seconds while the vault is in use (active_seconds since its
+    last call): an edit made in Obsidian shows up within scan_seconds. A call that may add, move or rewrite notes
+    walks the vault itself and refreshes the list for the next call.
+
+    One call at a time in this process: the engine keeps module-level state and the call changes the working
+    directory (to the vault's parent, as the subprocess did). An in-process call cannot be killed at the timeout;
+    the engine's calls are short, and a crash falls back to a new process (run_engine)."""
+
+    def __init__(self, engine_dir: Path, scan_seconds: float = 5.0, active_seconds: float = 600.0):
+        import importlib
+        if str(engine_dir) not in sys.path:
+            sys.path.insert(0, str(engine_dir))
+        self.bc = importlib.import_module("brain_core")
+        self.version = self.bc.VERSION
+        self.scan_seconds, self.active_seconds = scan_seconds, active_seconds
+        self.lock = threading.Lock()                  # one engine call at a time
+        self.slock = threading.Lock()                 # the file lists
+        self.lists: dict[str, tuple[int, list]] = {}  # vault root -> (generation it was taken at, its file list)
+        self.gens: dict[str, int] = {}                # bumped by every call that may have changed the files
+        self.used: dict[str, float] = {}
+        self.versions: dict[Path, tuple] = {}
+        self.bypass = False                           # a writing call walks the vault every time it asks
+        self.real_scan = self.bc.Vault._scan
+        res = self
+
+        def scan(vault_self):
+            key = str(vault_self.root)
+            if not res.bypass:
+                with res.slock:
+                    hit = res.lists.get(key)
+                    if hit is not None and hit[0] == res.gens.get(key, 0):
+                        return list(hit[1])
+            found = res.real_scan(vault_self)
+            if not res.bypass:
+                with res.slock:
+                    res.lists[key] = (res.gens.get(key, 0), found)
+            return list(found)
+
+        self.bc.Vault._scan = scan
+        for name in ("stdout", "stderr"):
+            if not isinstance(getattr(sys, name), _Streams):
+                setattr(sys, name, _Streams(getattr(sys, name)))
+        if scan_seconds > 0:
+            threading.Thread(target=self._refresh, daemon=True, name="cortex-scan").start()
+
+    def serves(self, vault: Path) -> bool:
+        """Only a vault whose own engine is this version: anything else runs its own brain.py."""
+        f = vault / "_brain" / "scripts" / "brain_core.py"
+        try:
+            s = f.stat()
+        except OSError:
+            return False
+        stamp = (s.st_mtime_ns, s.st_size)
+        if self.versions.get(vault, (None,))[0] != stamp:
+            m = VERSION_LINE.search(f.read_text(encoding="utf-8", errors="replace"))
+            self.versions[vault] = (stamp, m.group(1) if m else None)
+        return self.versions[vault][1] == self.version
+
+    def call(self, vault: Path, args: list[str], timeout: float) -> tuple[int, str, str] | None:
+        """-> (exit code, stdout, stderr), or None when another call held the engine past the timeout."""
+        if not self.lock.acquire(timeout=max(1.0, timeout)):
+            return None
+        key, write = str(vault.resolve()), args[0] not in READ_ONLY
+        out, err = io.StringIO(), io.StringIO()
+        here = os.getcwd()
+        try:
+            self.used[key] = time.time()
+            self.bypass = write
+            os.chdir(vault.parent)
+            sys.stdout.local.buf, sys.stderr.local.buf = out, err
+            try:
+                code = self.bc.main(["--vault", str(vault), *args])
+            except SystemExit as e:                     # argparse: its message is already on stderr
+                code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+            except Exception:                           # noqa: BLE001 — the caller retries in a new process
+                import traceback
+                err.write(traceback.format_exc())
+                code = 1
+        finally:
+            sys.stdout.local.buf = sys.stderr.local.buf = None
+            os.chdir(here)
+            self.bypass = False
+            if write:
+                with self.slock:
+                    self.gens[key] = self.gens.get(key, 0) + 1
+            self.lock.release()
+        return code or 0, out.getvalue(), err.getvalue()
+
+    def _refresh(self) -> None:
+        from types import SimpleNamespace
+        while True:
+            time.sleep(self.scan_seconds)
+            now = time.time()
+            for key, last in list(self.used.items()):
+                if now - last > self.active_seconds:
+                    continue
+                with self.slock:
+                    gen = self.gens.get(key, 0)
+                try:
+                    found = self.real_scan(SimpleNamespace(root=Path(key)))
+                except Exception:                       # noqa: BLE001 — a vault that went away: drop it
+                    self.used.pop(key, None)
+                    continue
+                with self.slock:
+                    if self.gens.get(key, 0) == gen:    # no write landed while walking: the list is current
+                        self.lists[key] = (gen, found)
+
+
+RESIDENT: Resident | None = None
 
 
 def call(vault: Path, brain: Path, by: str | None, timeout: float, a: dict,
@@ -728,94 +892,173 @@ class Hub:
             return self.servers[key]
 
 
-LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
+LOCAL_ORIGIN = re.compile(r"^https?://(([a-z0-9-]+\.)*localhost|127\.0\.0\.1|\[::1\])(:\d+)?$")
+TOKEN_FILE = ("_brain", "state", "mcp.token")   # inside the vault: the agent's key to its own cortex
+TOKEN_IGNORE = "_brain/state/mcp.token"
+MAX_BODY = 1 << 20
 
 
-def http_handler(hub: Hub):
+def token_path(vault: Path) -> Path:
+    return vault.joinpath(*TOKEN_FILE)
+
+
+def ensure_token(vault: Path) -> str:
+    """The vault's MCP token, made on first use, and kept out of git: the vault's .gitignore gets its line."""
+    p = token_path(vault)
+    try:
+        tok = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        tok = ""
+    if not tok:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tok = secrets.token_urlsafe(32)
+        p.write_text(tok + "\n", encoding="utf-8")
+    gi = vault / ".gitignore"
+    try:
+        lines = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
+        if TOKEN_IGNORE not in (x.strip() for x in lines):
+            with gi.open("a", encoding="utf-8") as f:
+                f.write(("\n" if lines and lines[-1].strip() else "") +
+                        "# the MCP token: the agent's key to this cortex, never committed\n" + TOKEN_IGNORE + "\n")
+    except OSError:
+        pass
+    return tok
+
+
+def token_ok(vault: Path, header: str | None, cached: dict) -> bool:
+    """Authorization: Bearer <the vault's token>. The token is cached by the file's mtime and size, so a new token
+    written to the file takes over at once and the old one stops working; a missing file lets nobody in."""
+    got = (header or "").strip()
+    if not got.lower().startswith("bearer "):
+        return False
+    p = token_path(vault)
+    try:
+        s = p.stat()
+        stamp = (s.st_mtime_ns, s.st_size)
+        if cached.get(vault, (None, ""))[0] != stamp:
+            cached[vault] = (stamp, p.read_text(encoding="utf-8").strip())
+    except OSError:
+        cached.pop(vault, None)
+        return False
+    want = cached[vault][1]
+    return bool(want) and hmac.compare_digest(got[7:].strip().encode(), want.encode())
+
+
+class McpRoutes:
+    """MCP's streamable HTTP on /mcp/<vault>, for any BaseHTTPRequestHandler: this module's own server and the
+    Cortex hub (one service, one port). Set mcp_hub; mcp_require_token makes every vault ask for its token."""
+    mcp_hub: "Hub | None" = None
+    mcp_require_token = False
+    mcp_tokens: dict = {}
+
+    def mcp_send(self, code: int, body: dict | list | None = None, extra: dict | None = None):
+        data = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        if body is not None:
+            self.send_header("Content-Type", "application/json")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def mcp_target(self):
+        from urllib.parse import parse_qs, unquote, urlsplit
+        u = urlsplit(self.path)
+        parts = [unquote(x) for x in u.path.strip("/").split("/")]
+        q = {k: v[-1] for k, v in parse_qs(u.query).items()}
+        return parts, q
+
+    def mcp_origin_ok(self) -> bool:
+        o = self.headers.get("Origin")
+        return o is None or bool(LOCAL_ORIGIN.match(o.lower()))
+
+    def mcp_get(self):
+        parts, _ = self.mcp_target()
+        if parts == ["health"] or parts == ["mcp", "health"]:
+            names = sorted({v.name for v in self.mcp_hub.vaults().values()})
+            return self.mcp_send(200, {"ok": True, "vaults": names})
+        if len(parts) == 2 and parts[0] == "mcp":
+            return self.mcp_send(405, None, {"Allow": "POST"})   # no server-initiated stream: answers ride their POST
+        self.mcp_send(404, {"error": "not found"})      # e.g. an OAuth discovery probe: the token is a plain bearer
+
+    def mcp_delete(self):
+        self.mcp_send(405, None, {"Allow": "POST"})
+
+    def mcp_post(self):
+        if not self.mcp_origin_ok():
+            return self.mcp_send(403, failure(None, -32600, "origin not allowed: this service is for local agents"))
+        parts, q = self.mcp_target()
+        if len(parts) != 2 or parts[0] != "mcp":
+            return self.mcp_send(404, failure(None, -32601, "post to /mcp/<vault>, such as /mcp/claude"))
+        role = q.get("role", "curator")
+        if role not in ("reader", "curator"):
+            return self.mcp_send(400, failure(None, -32602, "role is reader or curator"))
+        hub = self.mcp_hub
+        v = hub.vaults().get(parts[1])
+        if v is None:
+            names = sorted({x.name for x in hub.vaults().values()})
+            return self.mcp_send(404, failure(None, -32602, f"no vault {parts[1]}; served here: {', '.join(names)}"))
+        if self.mcp_require_token and not token_ok(v, self.headers.get("Authorization"), self.mcp_tokens):
+            return self.mcp_send(401, failure(None, -32001, f"this cortex needs its token: Authorization: Bearer "
+                                                            f"<the line in {v.name}/{TOKEN_IGNORE}>"),
+                                 {"WWW-Authenticate": 'Bearer realm="cortex"'})
+        st = hub.server(parts[1], q.get("by"), role)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > MAX_BODY:
+                return self.mcp_send(413, failure(None, -32600, "request too large"))
+            msg = json.loads(self.rfile.read(n).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return self.mcp_send(400, failure(None, -32700, "that body is not json"))
+        msgs = msg if isinstance(msg, list) else [msg]
+        for m in msgs:                                # one journal line per tool call: what was asked of which vault
+            if isinstance(m, dict) and m.get("method") == "tools/call":
+                pa = m.get("params") or {}
+                ar = pa.get("arguments") or {}
+                what = ar.get("verb") or ar.get("action") if isinstance(ar, dict) else None
+                sys.stderr.write(f"call {st.vault.name} by={st.by or '-'} {pa.get('name')} {what}\n")
+        replies = []
+        for m in msgs:
+            r = answer(m, st) if isinstance(m, dict) else failure(None, -32600, "a message is an object")
+            if r is not None:
+                replies.append(r)
+        if not replies:
+            return self.mcp_send(202)                     # notifications only: accepted, nothing to answer
+        self.mcp_send(200, replies if isinstance(msg, list) else replies[0])
+
+
+def http_handler(hub: Hub, require_token: bool = False):
     from http.server import BaseHTTPRequestHandler
-    from urllib.parse import parse_qs, unquote, urlsplit
 
-    class H(BaseHTTPRequestHandler):
+    class H(McpRoutes, BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         server_version = "cortex-mcp"
+        mcp_hub, mcp_require_token, mcp_tokens = hub, require_token, {}
 
         def log_message(self, fmt, *args):            # one line per call on stderr, the journal's
             sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
 
-        def send(self, code: int, body: dict | list | None = None, extra: dict | None = None):
-            data = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
-            self.send_response(code)
-            if body is not None:
-                self.send_header("Content-Type", "application/json")
-            for k, v in (extra or {}).items():
-                self.send_header(k, v)
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-        def target(self):
-            u = urlsplit(self.path)
-            parts = [unquote(x) for x in u.path.strip("/").split("/")]
-            q = {k: v[-1] for k, v in parse_qs(u.query).items()}
-            return parts, q
-
-        def origin_ok(self) -> bool:
-            o = self.headers.get("Origin")
-            return o is None or bool(LOCAL_ORIGIN.match(o))
-
         def do_GET(self):
-            parts, _ = self.target()
-            if parts == ["health"]:
-                names = sorted({v.name for v in hub.vaults().values()})
-                return self.send(200, {"ok": True, "vaults": names})
-            if len(parts) == 2 and parts[0] == "mcp":
-                return self.send(405, None, {"Allow": "POST"})   # no server-initiated stream: answers ride their POST
-            self.send(404, {"error": "not found"})      # e.g. an OAuth discovery probe: this service needs no sign-in
+            self.mcp_get()
 
         def do_DELETE(self):
-            self.send(405, None, {"Allow": "POST"})
+            self.mcp_delete()
 
         def do_POST(self):
-            if not self.origin_ok():
-                return self.send(403, failure(None, -32600, "origin not allowed: this service is for local agents"))
-            parts, q = self.target()
-            if len(parts) != 2 or parts[0] != "mcp":
-                return self.send(404, failure(None, -32601, "post to /mcp/<vault>, such as /mcp/claude"))
-            role = q.get("role", "curator")
-            if role not in ("reader", "curator"):
-                return self.send(400, failure(None, -32602, "role is reader or curator"))
-            st = hub.server(parts[1], q.get("by"), role)
-            if st is None:
-                names = sorted({v.name for v in hub.vaults().values()})
-                return self.send(404, failure(None, -32602, f"no vault {parts[1]}; served here: {', '.join(names)}"))
-            try:
-                n = int(self.headers.get("Content-Length") or 0)
-                msg = json.loads(self.rfile.read(n).decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                return self.send(400, failure(None, -32700, "that body is not json"))
-            msgs = msg if isinstance(msg, list) else [msg]
-            for m in msgs:                                # one journal line per tool call: what was asked of which vault
-                if isinstance(m, dict) and m.get("method") == "tools/call":
-                    pa = m.get("params") or {}
-                    ar = pa.get("arguments") or {}
-                    what = ar.get("verb") or ar.get("action") if isinstance(ar, dict) else None
-                    sys.stderr.write(f"call {st.vault.name} by={st.by or '-'} {pa.get('name')} {what}\n")
-            replies = []
-            for m in msgs:
-                r = answer(m, st) if isinstance(m, dict) else failure(None, -32600, "a message is an object")
-                if r is not None:
-                    replies.append(r)
-            if not replies:
-                return self.send(202)                     # notifications only: accepted, nothing to answer
-            self.send(200, replies if isinstance(msg, list) else replies[0])
+            self.mcp_post()
 
     return H
 
 
-def serve_http(hub: Hub, host: str, port: int) -> None:
+def serve_http(hub: Hub, host: str, port: int, require_token: bool = False) -> None:
     from http.server import ThreadingHTTPServer
     if host not in ("127.0.0.1", "localhost", "::1"):
-        sys.exit("cortex_mcp: the service listens on localhost only")
+        sys.exit("cortex_mcp: the service listens on localhost only (in a container, the Cortex hub serves /mcp)")
+    if require_token:
+        for v in {x for x in hub.vaults().values()}:
+            ensure_token(v)
     class Quiet(ThreadingHTTPServer):
         def handle_error(self, request, client_address):   # a client that hangs up is one line, not a traceback
             e = sys.exc_info()[1]
@@ -824,7 +1067,7 @@ def serve_http(hub: Hub, host: str, port: int) -> None:
             else:
                 super().handle_error(request, client_address)
 
-    httpd = Quiet((host, port), http_handler(hub))
+    httpd = Quiet((host, port), http_handler(hub, require_token))
     httpd.daemon_threads = True
     sys.stderr.write(f"cortex_mcp: serving {', '.join(sorted({v.name for v in hub.vaults().values()}))} "
                      f"on http://{host}:{port}/mcp/<vault>\n")
@@ -843,10 +1086,17 @@ def main() -> int:
     ap.add_argument("--allow-consolidate", action="store_true",
                     help="let status mark a node consolidated (the vault owner's own server only)")
     ap.add_argument("--check", action="store_true", help="print what this server offers and exit")
+    ap.add_argument("--resident", action="store_true",
+                    help="with --http: run the vaults' engine in this process, kept loaded (see Resident)")
+    ap.add_argument("--require-token", action="store_true",
+                    help="with --http: every vault asks for its token (Authorization: Bearer, from _brain/state/mcp.token)")
     a = ap.parse_args()
     if a.http:
         host, _, port = a.http.rpartition(":")
-        serve_http(Hub(Path(a.vaults).expanduser().resolve(), a.timeout), host or "127.0.0.1", int(port))
+        if a.resident:
+            global RESIDENT
+            RESIDENT = Resident(Path(__file__).resolve().parents[1] / "template-vault" / "_brain" / "scripts")
+        serve_http(Hub(Path(a.vaults).expanduser().resolve(), a.timeout), host or "127.0.0.1", int(port), a.require_token)
         return 0
     if not a.vault:
         ap.error("--vault or --http is required")

@@ -252,3 +252,34 @@ Fuentes: [spec 2026-07-28](https://modelcontextprotocol.io/specification/2026-07
 [referencia de plugins de Claude Code](https://code.claude.com/docs/en/plugins-reference.md),
 [comparativa de memorias (Graphlit)](https://www.graphlit.com/blog/survey-of-ai-agent-memory-frameworks).
 Pendiente de confirmar en el changelog oficial: si `server/discover` es obligatorio y qué clientes ya soportan Skills.
+
+### Resultados de la fase 3, pasos 3a y 3b (2026-11-18)
+
+**3a · MCP dentro del hub, con token por vault.** `cortex_hub.py --mcp` sirve MCP en el mismo puerto que el hub:
+`http://cortex.localhost:8790/mcp/<vault>` (un servicio, un contenedor; decisión 7). Ya no hace falta que
+`cortex_mcp.py` escuche fuera de loopback: el hub, que ya escuchaba en el contenedor, lo monta (`McpRoutes`).
+
+- Token por vault en `<vault>/_brain/state/mcp.token`, creado al arrancar; la línea se añade al `.gitignore` del vault
+  (antes `state/` no estaba ignorado entero). El agente lo manda como `Authorization: Bearer <token>`.
+- Rotar el token = escribir otro en el archivo: el nuevo vale al instante y el viejo deja de valer (la caché va por
+  mtime y tamaño; un test lo cubre, y encontró que la primera versión dejaba pasar el viejo).
+- Sigue el chequeo de Host del hub (421 a un nombre ajeno) y el de Origin del MCP, ahora con `*.localhost`.
+- `cortex_mcp.py --http` en el host sigue igual (convive), con `--require-token` y `--resident` opcionales.
+
+**3b · Motor residente.** El motor de la imagen se importa una vez (`Resident`) y cada llamada corre en el proceso;
+la lista de archivos de cada vault vive en memoria y un hilo la refresca cada `CORTEX_SCAN_SECONDS` (5 s por defecto)
+mientras el vault tuvo uso en los últimos 10 min. Una llamada que escribe recorre el vault y refresca la lista al
+momento. Un vault con otra versión del motor, o una llamada que se cae, va por el subproceso de siempre.
+
+| MCP de punta a punta, `recall`, carpeta de Windows | Antes | Ahora |
+|---|---|---|
+| vault demo, 16 nodos | ~500 ms | (no medido) |
+| vault de 1.000 nodos, primera llamada | — | 1.546 ms |
+| vault de 1.000 nodos, siguientes (mediana de 11) | ~1.250 ms | **142 ms** |
+
+Lo que queda en esos ~140 ms (perfil de 5 llamadas): ~100 ms de E/S en la carpeta compartida (19 aperturas de
+archivo, ~90 `stat`, 4 escrituras atómicas y 6 `mkdir` de `state/` por llamada) y ~50 ms de cálculo del ranking.
+Bajar de 50 ms exige el "estado en memoria" (sesiones, telemetría y snapshot sin tocar disco en cada llamada), que
+cambia el motor (`brain_core.py`) y por tanto su versión: queda como paso propio después de 3c.
+
+Tests: 4 de 4 suites (motor 50, hub 16, MCP 71, review 4).

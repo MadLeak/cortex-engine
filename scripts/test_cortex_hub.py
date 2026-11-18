@@ -91,6 +91,25 @@ class HubTest(unittest.TestCase):
             cortex_hub.Hub.domain = None
         self.assertEqual(cortex_hub.subdomain("OpenCode Cortex"), "opencode")
 
+    def test_mcp_rides_the_hub_behind_each_vaults_token(self):
+        v = cortex_hub.Hub.root / "Fern Cortex"
+        token = cortex_hub.cortex_mcp.ensure_token(v)
+        ping = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
+        bearer = {"Authorization": f"Bearer {token}", "Origin": ""}
+        self.assertEqual(self.post("/mcp/fern", ping, bearer)[0], 403, "--mcp off: the page's checks, no MCP")
+        cortex_hub.Hub.mcp_hub, cortex_hub.Hub.mcp_require_token = cortex_hub.cortex_mcp.Hub(cortex_hub.Hub.root, 10.0), True
+        try:
+            status, out = self.post("/mcp/fern", ping, {"Authorization": f"Bearer {token}"})
+            self.assertEqual((status, json.loads(out)["result"]), (200, {}))
+            self.assertEqual(self.post("/mcp/fern", ping, {"Authorization": "Bearer guess"})[0], 401)
+            self.assertEqual(self.post("/mcp/fern", ping, {"Authorization": f"Bearer {token}", "Host": "evil.example"})[0],
+                             421, "DNS rebinding")
+            self.assertEqual(self.get("/mcp/fern")[0], 405)
+            self.assertIn(cortex_hub.cortex_mcp.TOKEN_IGNORE, (v / ".gitignore").read_text(encoding="utf-8"))
+        finally:
+            cortex_hub.Hub.mcp_hub, cortex_hub.Hub.mcp_require_token = None, False
+            cortex_hub.Hub.mcp_tokens = {}
+
     def test_local_http_links_lan_vaults_over_https(self):
         """--local-http: plain HTTP on this machine, HTTPS on the LAN listener, each with its own port in the links."""
         local = type("LocalHttp", (cortex_hub.Hub,), {"domain": "cortex.localhost", "tls": None, "public_port": 8790,

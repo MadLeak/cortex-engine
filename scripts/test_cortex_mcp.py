@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -552,6 +553,50 @@ class HttpTests(unittest.TestCase):
         hub = cortex_mcp.Hub(self.tmp, 10.0)
         self.assertIs(hub.server("my", "codex", "curator").gate, hub.server("my", "hermes", "reader").gate)
 
+    def test_a_cortex_localhost_origin_is_local(self):
+        self.assertEqual(self.post("/mcp/my", {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                                   {"Origin": "http://claude.cortex.localhost:8790"})[0], 200)
+
+
+class TokenTests(HttpTests):
+    """--require-token: each vault answers only to the token kept in its own _brain/state/mcp.token."""
+
+    def setUp(self):
+        from http.server import ThreadingHTTPServer
+        self.tmp = Path(tempfile.mkdtemp(prefix="cortex-mcp-"))
+        self.vault = fake_vault(self.tmp)
+        (self.vault / ".gitignore").write_text("_brain/state/sessions/\n", encoding="utf-8")
+        self.token = cortex_mcp.ensure_token(self.vault)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0),
+                                         cortex_mcp.http_handler(cortex_mcp.Hub(self.tmp, 10.0), require_token=True))
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}"
+
+    def post(self, path, body, headers=None):
+        return super().post(path, body, {"Authorization": f"Bearer {self.token}", **(headers or {})})
+
+    def test_the_token_lives_in_the_vault_and_stays_out_of_git(self):
+        self.assertEqual(cortex_mcp.token_path(self.vault).read_text(encoding="utf-8").strip(), self.token)
+        self.assertGreaterEqual(len(self.token), 40)
+        self.assertEqual(cortex_mcp.ensure_token(self.vault), self.token, "made once, then kept")
+        gi = (self.vault / ".gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(gi.count(cortex_mcp.TOKEN_IGNORE), 1)
+        self.assertIn("_brain/state/sessions/", gi)
+
+    def test_no_token_or_a_wrong_one_is_refused(self):
+        ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+        self.assertEqual(HttpTests.post(self, "/mcp/my", ping)[0], 401)
+        self.assertEqual(HttpTests.post(self, "/mcp/my", ping, {"Authorization": "Bearer guess"})[0], 401)
+        self.assertEqual(HttpTests.post(self, "/mcp/my", ping, {"Authorization": self.token})[0], 401, "Bearer only")
+        self.assertEqual(self.post("/mcp/my", ping)[0], 200)
+
+    def test_a_new_token_on_disk_replaces_the_cached_one(self):
+        ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+        self.assertEqual(self.post("/mcp/my", ping)[0], 200)
+        cortex_mcp.token_path(self.vault).write_text("rotated-token\n", encoding="utf-8")
+        self.assertEqual(self.post("/mcp/my", ping)[0], 401)
+        self.assertEqual(HttpTests.post(self, "/mcp/my", ping, {"Authorization": "Bearer rotated-token"})[0], 200)
+
 
 class BriefTests(Base):
     def test_brief_gives_the_hot_nodes_and_the_session_and_with_a_query_the_ask(self):
@@ -567,3 +612,104 @@ class BriefTests(Base):
 
     def test_brief_without_a_map_says_so(self):
         self.assertIn("no MAP.md yet", self.ran(call("brief")))
+
+
+TEMPLATE = HERE.parent / "template-vault"
+
+
+def real_vault(tmp: Path, name: str = "Real Cortex") -> Path:
+    """A vault with the real engine from template-vault/ and three nodes, made through the engine itself."""
+    v = tmp / name
+    shutil.copytree(TEMPLATE / "_brain", v / "_brain", ignore=shutil.ignore_patterns("__pycache__", "tests"))
+    shutil.copytree(TEMPLATE / "_templates", v / "_templates")
+    cfg = json.loads((v / "_brain" / "config.json").read_text(encoding="utf-8"))
+    (v / "_brain" / "config.json").write_text(json.dumps(dict(cfg, vault=name)), encoding="utf-8")
+    brain = v / "_brain" / "scripts" / "brain.py"
+    for args in (["new", "--layer", "1", "--title", "Garden", "--summary", "The garden beds and their care."],
+                 ["new", "--layer", "2", "--up", "Garden", "--title", "Water before 9 am",
+                  "--summary", "Beds are watered in the morning only, so leaves dry before night."],
+                 ["new", "--layer", "2", "--up", "Garden", "--title", "Slugs are the main pest",
+                  "--summary", "Slugs eat the lettuce; copper tape keeps them off the beds."]):
+        subprocess.run([sys.executable, str(brain), "--vault", str(v), *args], check=True, capture_output=True)
+    return v
+
+
+class ResidentTests(unittest.TestCase):
+    """The engine imported once and called in this process gives what a new process gives, and its warm file list
+    follows the vault: at once after a writing call, within scan_seconds after an edit from outside."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.res = cortex_mcp.Resident(TEMPLATE / "_brain" / "scripts", scan_seconds=0.2, active_seconds=60)
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="cortex-res-"))
+        self.v = real_vault(self.tmp)
+        self.brain = self.v / "_brain" / "scripts" / "brain.py"
+
+    def tearDown(self):
+        cortex_mcp.RESIDENT = None
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def both(self, args):
+        cortex_mcp.RESIDENT = None
+        sub = cortex_mcp.run_engine(self.brain, self.v, args, 30)
+        cortex_mcp.RESIDENT = self.res
+        return sub, cortex_mcp.run_engine(self.brain, self.v, args, 30)
+
+    def test_it_serves_only_its_own_engine_version(self):
+        self.assertTrue(self.res.serves(self.v))
+        core = self.v / "_brain" / "scripts" / "brain_core.py"
+        core.write_text(core.read_text(encoding="utf-8").replace(f'VERSION = "{self.res.version}"', 'VERSION = "0.0.1"'),
+                        encoding="utf-8")
+        self.assertFalse(self.res.serves(self.v), "another version runs its own brain.py")
+
+    def test_same_answers_as_a_new_process(self):
+        for args in (["stats"], ["recall", "when are the beds watered", "--no-body"]):
+            sub, res = self.both(args)
+            self.assertTrue(sub[0] and res[0], (sub, res))
+            self.assertEqual(res[1].splitlines()[0], sub[1].splitlines()[0], args)
+        sub, res = self.both(["read", "No Such Node"])
+        self.assertEqual((sub[0], res[0]), (False, False))
+        sub, res = self.both(["recall"])           # argparse: a missing query
+        self.assertEqual((sub[0], res[0]), (False, False))
+        self.assertIn("arguments were wrong", res[1])
+
+    def test_a_writing_call_refreshes_the_file_list_at_once(self):
+        cortex_mcp.RESIDENT = self.res
+        self.assertTrue(cortex_mcp.run_engine(self.brain, self.v, ["stats"], 30)[0])
+        ok, got = cortex_mcp.run_engine(self.brain, self.v, ["new", "--layer", "2", "--up", "Garden", "--title",
+                                                             "Mulch keeps the soil moist", "--summary",
+                                                             "A layer of mulch halves the watering."], 30)
+        self.assertTrue(ok, got)
+        ok, got = cortex_mcp.run_engine(self.brain, self.v, ["recall", "mulch soil moist", "--no-body"], 30)
+        self.assertIn("Mulch keeps the soil moist", got)
+
+    def test_an_outside_edit_shows_up_within_scan_seconds(self):
+        cortex_mcp.RESIDENT = self.res
+        cortex_mcp.run_engine(self.brain, self.v, ["stats"], 30)
+        key = str(self.v.resolve())
+        before = len(self.res.lists[key][1])
+        (self.v / "Garden" / "Compost is turned weekly.md").write_text("x", encoding="utf-8")
+        deadline = time.time() + 5
+        while time.time() < deadline and len(self.res.lists[key][1]) == before:
+            time.sleep(0.1)
+        self.assertEqual(len(self.res.lists[key][1]), before + 1)
+
+    def test_output_is_captured_per_thread(self):
+        cortex_mcp.RESIDENT = self.res
+        seen = []
+        stop = threading.Event()
+
+        def chatter():                              # another thread writing while an engine call runs
+            while not stop.is_set():
+                seen.append(sys.stderr.write(""))
+        t = threading.Thread(target=chatter)
+        t.start()
+        try:
+            ok, got = cortex_mcp.run_engine(self.brain, self.v, ["stats"], 30)
+        finally:
+            stop.set()
+            t.join()
+        self.assertTrue(ok)
+        self.assertIsNone(getattr(sys.stderr.local, "buf", None))
