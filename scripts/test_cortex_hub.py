@@ -144,7 +144,8 @@ class HubTest(unittest.TestCase):
         finally:
             cortex_hub.Hub.mcp_hub = None
         page = self.get("/connect")[1]
-        for hook in ('id="c-python-row"', 'id="c-sub"', 'id="c-custom"', 'id="c-out-lead"', "function mode()"):
+        for hook in ('id="c-python-row"', 'id="c-sub"', 'id="c-custom"', 'id="c-out-lead"', "function mode()",
+                     "function openFromLink()", "get('settings')"):
             self.assertIn(hook, page)
 
     def test_local_http_links_lan_vaults_over_https(self):
