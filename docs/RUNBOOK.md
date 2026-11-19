@@ -229,9 +229,13 @@ The engine checks a learning before it writes anything:
 | `[[links]]` in content or evidence | `no links in a learning` |
 | content and evidence over 300 words | `one fact per learning` |
 | title and summary stems ≥ 60% similar (Jaccard) to an existing node | `"X" already says something close` |
-| the parent is not an L2, or the title is taken | the reason |
+| the title is taken | the reason |
 
-It exits with 2 when 25 provisional nodes are already waiting: write the learning to `_inbox/<title>.md` instead.
+When `--up` names no L2 concept (a new vault has none, or it is an L1), the learning is not refused: once the checks
+above pass, it is captured as `_inbox/<date time> <title>.md` (with `learned_by`, `wanted_up`, content and evidence)
+for the curator to place with the atomize skill, and the agent is told to create the L1 domain and the L2 concept
+first (`cortex_curate verb=create`) to learn straight into the graph next time. Over MCP, `finish` commits it with the
+task. It exits with 2 when 25 provisional nodes are already waiting: write the learning to `_inbox/<title>.md` instead.
 
 A new learning is `status: provisional`. It ranks at 0.6× and its weight is ignored. It becomes a `seed` on the `credit` that brings it to 3 distinct sessions of use, provided it is at least 2 days old and has no `contradicts` link in either direction.
 

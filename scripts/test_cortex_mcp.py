@@ -785,6 +785,15 @@ class TaskSessionTests(unittest.TestCase):
         self.assertIn("_brain/state/bookkeeping.txt", files, "the engine's bookkeeping goes with the task")
         self.assertIn('?? "Garden/Owner note.md"', self.git("status", "--porcelain").stdout, "the owner's edit stays")
 
+    def test_a_learning_with_no_concept_is_kept_and_committed(self):
+        ok, got = cortex_mcp.run(self.st, {"action": "finish", "learnings": [
+            dict(self.learning("The owner prefers VS Code"), up="Preferences")]})
+        self.assertTrue(ok, got)
+        self.assertIn("captured _inbox/", got)
+        self.assertRegex(got, r"committed \w+ as claude-code")
+        files = self.git("show", "--name-only", "--format=", "HEAD").stdout
+        self.assertIn("The owner prefers VS Code.md", files)
+
     def test_nothing_is_committed_while_something_else_is_staged(self):
         (self.v / "staged.md").write_text("x\n", encoding="utf-8")
         self.git("add", "staged.md")
