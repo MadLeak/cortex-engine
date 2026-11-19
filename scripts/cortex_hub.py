@@ -116,6 +116,20 @@ def upgrade_engines(root: Path, want: str) -> list[str]:
     return out
 
 
+def migrate_vaults(root: Path) -> list[str]:
+    """Every vault's data up to its engine's schema (engine 2.17+): `brain.py migrate --commit`, one commit per
+    migration by the Cortex hub. Deterministic code, no model; a migration that cannot run waits and says why."""
+    out = []
+    for name, v in vaults(root).items():
+        if not cortex_mcp.engine_at_least(v, (2, 17, 0)):
+            continue
+        r = subprocess.run([sys.executable, str(v / "_brain/scripts/brain.py"), "--vault", str(v), "migrate", "--commit"],
+                           capture_output=True, text=True, timeout=600, env={**os.environ, **HUB_IDENTITY})
+        lines = [x for x in (r.stdout + r.stderr).splitlines() if x.strip() and not x.startswith("schema ")]
+        out += [f"{name}: {x.strip()}" for x in lines]
+    return out
+
+
 def read_json(path: Path, default):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -1352,7 +1366,7 @@ def main() -> None:
         Hub.mcp_hub, Hub.mcp_require_token = cortex_mcp.Hub(Hub.root, 60.0, commit=True), True
         cortex_mcp.RESIDENT = cortex_mcp.Resident(ENGINE / "template-vault" / "_brain" / "scripts",
                                                   scan_seconds=float(env("CORTEX_SCAN_SECONDS") or 5))
-        for line in upgrade_engines(Hub.root, cortex_mcp.RESIDENT.version):
+        for line in upgrade_engines(Hub.root, cortex_mcp.RESIDENT.version) + migrate_vaults(Hub.root):
             print(line, flush=True)
         for v in vaults(Hub.root).values():
             cortex_mcp.ensure_token(v)

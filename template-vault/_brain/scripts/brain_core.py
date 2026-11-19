@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.16.2"
+VERSION = "2.17.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -3330,6 +3330,113 @@ def cmd_prepush(v: Vault, a) -> int:
 
 
 # --------------------------------------------------------------------------- doctor
+# --------------------------------------------------------------------------- migrations
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+
+
+def load_migrations(folder: Path | None = None) -> list:
+    """The migrations this engine ships (migrations/m0001_*.py ...), in order. Each has ID, TITLE, plan(root) and
+    up(root): see migrations/m0001_baseline.py for the contract."""
+    import importlib.util
+    out = []
+    for f in sorted((folder or MIGRATIONS_DIR).glob("m[0-9][0-9][0-9][0-9]_*.py")):
+        spec = importlib.util.spec_from_file_location(f"cortex_migration_{f.stem}", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        out.append(mod)
+    ids = [m.ID for m in out]
+    if ids != sorted(set(ids)):
+        raise BrainError(f"migration ids are not unique and in order: {ids}")
+    return out
+
+
+def vault_schema(v: Vault) -> int:
+    """The vault's schema: what its data has been migrated to. A vault from before migrations has none: 0."""
+    try:
+        return int(v.cfg.get("schema") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def engine_schema(folder: Path | None = None) -> int:
+    return max((m.ID for m in load_migrations(folder)), default=0)
+
+
+def set_schema(root: Path, n: int) -> None:
+    path = root / "_brain" / "config.json"
+    cfg = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    cfg["schema"] = n
+    path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def cmd_migrate(v: Vault, a) -> int:
+    """Brings the vault's data up to this engine's schema, without a model: the pending migrations in order, each
+    under the vault lock, checked by lint (no new errors), undone on any failure, and with --commit one commit each
+    (`migration: 0001 ...`, by whoever the environment names: the Cortex hub when it runs them). A migration whose
+    files hold uncommitted changes waits; a vault on a newer schema than this engine is left alone."""
+    import subprocess
+    root = v.root
+    migs = load_migrations(Path(a.dir) if a.dir else None)
+    cur, top = vault_schema(v), max((m.ID for m in migs), default=0)
+    if cur > top:
+        raise BrainError(f"schema {cur} is newer than this engine knows ({top}): upgrade the engine; nothing changed")
+    pending = [m for m in migs if m.ID > cur]
+    if not pending:
+        print(f"schema {cur}: up to date")
+        return 0
+
+    def git(*args):
+        try:
+            return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    in_git = (root / ".git").exists()
+    for m in pending:
+        label = f"{m.ID:04d} {m.TITLE}"
+        paths = sorted(set(m.plan(root)) | {"_brain/config.json"})
+        if a.dry_run:
+            print(f"would apply {label}: {', '.join(paths)}")
+            continue
+        if in_git:
+            r = git("status", "--porcelain=v1", "--", *paths)
+            dirty = [line[3:] for line in (r.stdout if r else "").splitlines() if line[:2] != "??"]
+            if dirty:
+                print(f"✖ {label} waits: uncommitted changes in {', '.join(dirty)}: commit or discard them, then migrate again")
+                return 1
+        before = {p: ((root / p).read_bytes() if (root / p).exists() else None) for p in paths}
+        errors_before = sum(1 for h in audit(Vault(root), warnings=False) if h[0] == "ERROR")
+        try:
+            with v.lock():
+                m.up(root)
+                set_schema(root, m.ID)
+            errors = sum(1 for h in audit(Vault(root), warnings=False) if h[0] == "ERROR")
+            if errors > errors_before:
+                raise BrainError(f"lint found {errors - errors_before} new errors after it")
+        except Exception as e:   # noqa: BLE001 — whatever went wrong, the vault goes back to how it was
+            for p, data in before.items():
+                if data is None:
+                    (root / p).unlink(missing_ok=True)
+                else:
+                    (root / p).write_bytes(data)
+            print(f"✖ {label} failed and was undone: {e}")
+            return 1
+        print(f"applied {label}")
+        if a.commit and in_git:
+            staged = git("diff", "--cached", "--name-only")
+            if staged and staged.stdout.strip():
+                print(f"  not committed: something else is staged in this vault ({staged.stdout.split()[0]} ...)")
+                continue
+            git("add", "--", *paths)
+            r = git("commit", "-q", "-m", f"migration: {label}")
+            print("  committed" if r and r.returncode == 0 else
+                  f"  not committed: {((r.stderr or r.stdout) if r else 'git not found').strip()[-300:]}")
+    if not a.dry_run:
+        print(f"schema {vault_schema(Vault(root))}: up to date")
+    return 0
+
+
 def cmd_doctor(v: Vault, a) -> int:
     failures = 0
 
@@ -3360,6 +3467,9 @@ def cmd_doctor(v: Vault, a) -> int:
             if seen != "unknown":
                 check(seen != "public", f"remote {parts[0]} is {seen} (a cortex is never public)")
     check(v.cfg_path.exists(), "_brain/config.json")
+    have, want = vault_schema(v), engine_schema()
+    check(have == want, f"vault schema {have} (this engine's: {want})" +
+          ("" if have == want else ": run `brain.py migrate`" if have < want else ": the engine is older than the vault"))
     check((v.root / "CLAUDE.md").exists(), "CLAUDE.md (L0)")
     check((v.root / ".obsidian").is_dir(), "Obsidian configuration")
     here = Path(__file__).resolve().parent
@@ -3543,6 +3653,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("externals", help="lists or cleans references to sibling vaults")
     p.add_argument("--clean", action="store_true")
     p.set_defaults(func=cmd_externals)
+
+    p = sub.add_parser("migrate", help="brings the vault's data up to this engine's schema (no model involved)")
+    p.add_argument("--dry-run", action="store_true", help="say what would change, change nothing")
+    p.add_argument("--commit", action="store_true", help="one git commit per migration")
+    p.add_argument("--dir", help=argparse.SUPPRESS)   # tests: another migrations folder
+    p.set_defaults(func=cmd_migrate)
 
     p = sub.add_parser("doctor", help="checks environment, Git, hooks and engine")
     p.set_defaults(func=cmd_doctor)
