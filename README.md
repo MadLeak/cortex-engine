@@ -114,11 +114,11 @@ docker compose --profile tools run --rm bench    # what one engine call costs, n
 cd template-vault/_brain/scripts && python3 -m unittest discover -s tests -v   # the engine alone, with Python
 ```
 
-The engine's suite has 53 tests, including a 1,000-node performance check, and runs in about 5 seconds.
+The engine's suite has 60 tests, including a 1,000-node performance check, and runs in about 5 seconds.
 
 ## Status
 
-Engine version 2.16.2. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.17.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 

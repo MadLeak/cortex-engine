@@ -40,7 +40,7 @@ Check the engine before you use it:
 cd template-vault/_brain/scripts && python3 -m unittest discover -s tests
 ```
 
-Expect `Ran 53 tests ... OK`, plus a timing line for the 1,000-node performance test.
+Expect `Ran 60 tests ... OK`, plus a timing line for the 1,000-node performance test.
 
 ## 2. Create a vault
 
@@ -398,7 +398,36 @@ python3 scripts/upgrade_engine.py ~/vaults/fern-cortex ~/vaults/kitchen-cortex [
 cd ~/vaults/fern-cortex && git add -A && git commit -m "engine: v2.13.0"
 ```
 
-The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lexicon_es.tsv`, `synonyms_en.tsv` and `tests/` into each vault's `_brain/scripts/` and runs `doctor` in each vault. It does not touch content, config, glossary or templates. Cached state is keyed by engine version, file mtime and size, and Python version, so caches rebuild automatically.
+The script copies `brain.py`, `brain_core.py`, `snowball.py`, `panel.html`, `lexicon_es.tsv`, `synonyms_en.tsv`, `tests/` and `migrations/` into each vault's `_brain/scripts/` and runs `doctor` in each vault. It does not touch content, config, glossary or templates. Cached state is keyed by engine version, file mtime and size, and Python version, so caches rebuild automatically.
+
+**Migrations: the vault's data catches up by itself.** The engine's code is replaced by the upgrade; the vault's
+data (frontmatter, folders, config, `.gitignore`) is brought up to date by **migrations**, deterministic code with no
+model involved. Each vault records its `schema` in `_brain/config.json`; a vault from before migrations has none
+(schema 0), and a new vault starts on the current one.
+
+```bash
+B migrate --dry-run      # what would change, nothing written
+B migrate [--commit]     # the pending migrations, in order; --commit makes one commit each
+```
+
+- Each pending migration runs under the vault lock, then `lint`: if it raised or left new lint errors, every file it
+  touched is restored and the vault stays on the last good schema.
+- A migration whose files hold uncommitted changes waits and says which; nothing of yours is overwritten.
+- A vault on a newer schema than the engine is left alone (no downgrades). `doctor` reports a vault behind its engine.
+- With Docker, the hub runs `migrate --commit` on every vault at start, right after upgrading engines, and commits
+  as `Cortex hub` (`migration: 0001 ...`); `./cortex.sh upgrade` does the same by hand.
+- Engine state (`_brain/state/`) is never migrated: it is a cache and rebuilds.
+
+**Writing a migration** (engine developers). Add `template-vault/_brain/scripts/migrations/mNNNN_<what>.py` with the
+next number. It defines `ID`, `TITLE`, `plan(root)` (the vault-relative paths it would write, `[]` when there is
+nothing to do) and `up(root)` (writes only those paths). Rules:
+- **Deterministic and idempotent:** the same vault gives the same result, and a second run changes nothing.
+- **Frozen:** never read the current template; what schema N means is written in migration N.
+- **No guessing:** what cannot be decided by rule goes to `_inbox` with a note for the curator.
+- **Tested on fossils:** add a test that builds a vault as it was before, runs `migrate`, checks the result, and
+  checks that a second run is a no-op (`MigrationTests` in the engine's tests).
+
+Then bump the engine version and set the template's `config.json` `schema` to the new number.
 
 ## 11. Troubleshooting
 

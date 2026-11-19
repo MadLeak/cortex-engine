@@ -5,7 +5,8 @@
     python3 scripts/upgrade_engine.py ~/vaults/agent-a-cortex ~/vaults/agent-b-cortex [--dry-run]
 
 Copies brain.py, brain_core.py, snowball.py, panel.html, lexicon_es.tsv, synonyms_en.tsv and tests/ into <vault>/_brain/scripts/.
-Content, config, glossary, templates and state are left alone. Upgrade every sibling vault together: doctor fails
+Also migrations/. Content, config, glossary, templates and state are left alone: `brain.py migrate` brings the data
+up to the engine's schema afterwards (the Cortex hub runs it on start). Upgrade every sibling vault together: doctor fails
 when siblings run different engine versions. Commit each vault afterwards with `engine: vX.Y.Z`.
 """
 import argparse
@@ -36,6 +37,8 @@ for raw in a.vaults:
     for f in changed:
         shutil.copy2(SRC / f, dest / f)
     shutil.copytree(SRC / "tests", dest / "tests", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(SRC / "migrations", dest / "migrations", dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__"))   # the vault's data catches up with `migrate`
     hooks = dest.parents[1] / ".githooks"
     for hook in (SRC.parents[1] / ".githooks").iterdir():
         target = hooks / hook.name

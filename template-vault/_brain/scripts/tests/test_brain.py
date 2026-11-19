@@ -756,6 +756,92 @@ class HotMemoryTests(Base):
                       "a credit that makes a node hot was not answered from the list: it was not on show yet")
 
 
+GIT_ID = {"GIT_AUTHOR_NAME": "Cortex hub", "GIT_AUTHOR_EMAIL": "hub@cortex.local",
+          "GIT_COMMITTER_NAME": "Cortex hub", "GIT_COMMITTER_EMAIL": "hub@cortex.local"}
+
+
+class MigrationTests(Base):
+    """A vault from before migrations (no schema: a fossil) reaches this engine's schema by code alone, once."""
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.v), *args], capture_output=True, text=True,
+                              env={**os.environ, **GIT_ID})
+
+    def init_git(self):
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "seed")
+
+    def schema(self):
+        return brain.vault_schema(brain.Vault(self.v))
+
+    def test_a_fossil_vault_reaches_the_current_schema_once(self):
+        self.seed()
+        gi = self.v / ".gitignore"
+        gi.write_text("_brain/state/sessions/\n", encoding="utf-8")
+        self.assertEqual(self.schema(), 0)
+        self.assertIn("would apply 0001", self.ok("migrate", "--dry-run"))
+        self.assertEqual((self.schema(), gi.read_text(encoding="utf-8")), (0, "_brain/state/sessions/\n"), "dry run")
+        out = self.ok("migrate")
+        self.assertIn("applied 0001", out)
+        text = gi.read_text(encoding="utf-8")
+        self.assertEqual((self.schema(), text.count("_brain/state/mcp.token"), text.count("_brain/state/sessions/")),
+                         (brain.engine_schema(), 1, 1))
+        self.assertIn(f"schema {brain.engine_schema()}: up to date", self.ok("migrate"))
+        self.assertEqual(gi.read_text(encoding="utf-8"), text, "a second run changes nothing")
+
+    def test_uncommitted_changes_make_a_migration_wait(self):
+        self.seed()
+        self.init_git()
+        (self.v / ".gitignore").write_text("my own edit\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore")
+        (self.v / ".gitignore").write_text("my own edit, not committed\n", encoding="utf-8")
+        code, out, _ = run(self.v, "migrate")
+        self.assertEqual(code, 1)
+        self.assertIn("waits: uncommitted changes in .gitignore", out)
+        self.assertEqual(self.schema(), 0)
+        self.assertEqual((self.v / ".gitignore").read_text(encoding="utf-8"), "my own edit, not committed\n")
+
+    def test_a_failing_migration_is_undone(self):
+        self.seed()
+        folder = self.tmp / "migrations"
+        folder.mkdir()
+        (folder / "m0001_breaks.py").write_text(
+            "ID = 1\nTITLE = 'writes, then breaks'\n"
+            "def plan(root):\n    return ['.gitignore', 'New note.md']\n"
+            "def up(root):\n    (root / '.gitignore').write_text('changed\\n')\n"
+            "    (root / 'New note.md').write_text('x')\n    raise RuntimeError('boom')\n", encoding="utf-8")
+        (self.v / ".gitignore").write_text("original\n", encoding="utf-8")
+        cfg = (self.v / "_brain" / "config.json").read_bytes()
+        code, out, _ = run(self.v, "migrate", "--dir", str(folder))
+        self.assertEqual(code, 1)
+        self.assertIn("failed and was undone: boom", out)
+        self.assertEqual((self.v / ".gitignore").read_text(encoding="utf-8"), "original\n")
+        self.assertFalse((self.v / "New note.md").exists())
+        self.assertEqual((self.v / "_brain" / "config.json").read_bytes(), cfg)
+
+    def test_a_vault_on_a_newer_schema_is_left_alone(self):
+        brain.set_schema(self.v, 99)
+        code, _, err = run(self.v, "migrate")
+        self.assertEqual(code, 1)
+        self.assertIn("newer than this engine knows", err)
+
+    def test_each_migration_is_its_own_commit(self):
+        self.seed()
+        self.init_git()
+        from unittest import mock
+        with mock.patch.dict(os.environ, GIT_ID):
+            self.assertIn("committed", self.ok("migrate", "--commit"))
+        log = self.git("log", "-1", "--format=%an|%s").stdout.strip()
+        self.assertTrue(log.startswith("Cortex hub|migration: 0001 baseline"), log)
+        self.assertEqual(self.git("status", "--porcelain", "--", ".gitignore", "_brain/config.json").stdout, "")
+
+    def test_new_vaults_start_on_the_current_schema(self):
+        cfg = json.loads((HERE.parents[1] / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["schema"], brain.engine_schema())
+
+
 class ConcurrencyTests(Base):
     """What the reads write (the automatic session pointer, the telemetry) is not under the vault lock, so it has
     to survive two agents — or two threads here — touching one vault in the same moment."""

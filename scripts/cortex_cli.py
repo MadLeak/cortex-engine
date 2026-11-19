@@ -10,7 +10,7 @@
                                       a new vault from the template (EXAMPLE: fern-cortex, kitchen-cortex)
     brain <vault> <engine args...>    one engine call: brain kitchen recall "what do we preserve"
     doctor [<vault>]                  the engine's doctor, on one vault or all of them
-    upgrade                           every older vault on this engine, committed as the Cortex hub
+    upgrade                           every older vault on this engine and its data migrated, committed as the Cortex hub
     token <vault> [--rotate]          the vault's MCP token (a new one with --rotate: the old one stops working)
     commit <vault> -m MESSAGE         a commit of everything changed, as you (CORTEX_GIT_NAME / CORTEX_GIT_EMAIL)
     precommit <vault>                 the vault's pre-commit check (what its git hook runs)
@@ -133,8 +133,8 @@ def main(argv=None) -> int:
         import cortex_hub
         want = cortex_mcp.VERSION_LINE.search(
             (ENGINE / "template-vault/_brain/scripts/brain_core.py").read_text(encoding="utf-8")).group(1)
-        lines = cortex_hub.upgrade_engines(ROOT, want)
-        print("\n".join(lines) or f"every vault already runs engine v{want}")
+        lines = cortex_hub.upgrade_engines(ROOT, want) + cortex_hub.migrate_vaults(ROOT)
+        print("\n".join(lines) or f"every vault already runs engine v{want}, its data on the current schema")
         return 0
     if a.cmd == "token":
         v = vault(a.vault)

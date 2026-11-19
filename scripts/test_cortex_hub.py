@@ -402,9 +402,18 @@ class UpgradeTest(unittest.TestCase):
             git("init", "-q")
             git("add", "-A")
             git("commit", "-q", "-m", "seed")
+            cfg = v / "_brain" / "config.json"   # a vault from before migrations: no schema
+            cfg.write_text(json.dumps({k: x for k, x in json.loads(cfg.read_text(encoding="utf-8")).items()
+                                       if k != "schema"}), encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "fossil")
             lines = cortex_hub.upgrade_engines(Path(tmp), want)
             self.assertEqual(lines, [f"Old Cortex: engine v2.0.0 -> v{want}"])
             self.assertIn(f'VERSION = "{want}"', core.read_text(encoding="utf-8"))
             self.assertEqual(git("log", "-1", "--format=%an <%ae>|%s").stdout.strip(),
                              f"Cortex hub <hub@cortex.local>|engine: v{want}")
             self.assertEqual(cortex_hub.upgrade_engines(Path(tmp), want), [], "current: nothing to do")
+            moved = cortex_hub.migrate_vaults(Path(tmp))
+            self.assertTrue(any(x.startswith("Old Cortex: applied 0001") for x in moved), moved)
+            self.assertEqual(git("log", "-1", "--format=%an|%s").stdout.strip()[:33], "Cortex hub|migration: 0001 baseli")
+            self.assertEqual(cortex_hub.migrate_vaults(Path(tmp)), [], "migrated: nothing to do")
