@@ -841,8 +841,8 @@ class MigrationTests(Base):
         out = self.ok("migrate")
         self.assertIn("applied 0001", out)
         text = gi.read_text(encoding="utf-8")
-        self.assertEqual((self.schema(), text.count("_brain/state/mcp.token"), text.count("_brain/state/sessions/")),
-                         (brain.engine_schema(), 1, 1))
+        self.assertEqual((self.schema(), text.count("_brain/state/mcp.token"), text.count("_brain/state/sessions/"),
+                          text.count("_brain/state/remote.token")), (brain.engine_schema(), 1, 1, 1))
         self.assertIn(f"schema {brain.engine_schema()}: up to date", self.ok("migrate"))
         self.assertEqual(gi.read_text(encoding="utf-8"), text, "a second run changes nothing")
 
@@ -889,8 +889,9 @@ class MigrationTests(Base):
         from unittest import mock
         with mock.patch.dict(os.environ, GIT_ID):
             self.assertIn("committed", self.ok("migrate", "--commit"))
-        log = self.git("log", "-1", "--format=%an|%s").stdout.strip()
-        self.assertTrue(log.startswith("Cortex hub|migration: 0001 baseline"), log)
+        log = self.git("log", "-2", "--format=%an|%s").stdout.strip().splitlines()
+        self.assertTrue(log[1].startswith("Cortex hub|migration: 0001 baseline"), log)
+        self.assertTrue(log[0].startswith("Cortex hub|migration: 0002 the push token"), log)
         self.assertEqual(self.git("status", "--porcelain", "--", ".gitignore", "_brain/config.json").stdout, "")
 
     def test_new_vaults_start_on_the_current_schema(self):

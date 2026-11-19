@@ -8,7 +8,7 @@ services:
   test:
     profiles: [tools]
     build: .
-    image: cortex-hub:2.18.0
+    image: cortex-hub:2.19.0
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -25,7 +25,7 @@ services:
   bench:
     profiles: [tools]
     build: .
-    image: cortex-hub:2.18.0
+    image: cortex-hub:2.19.0
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -36,7 +36,7 @@ services:
   cli:
     profiles: [tools]
     build: .
-    image: cortex-hub:2.18.0
+    image: cortex-hub:2.19.0
     user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
     read_only: true
     tmpfs: [/tmp]
@@ -53,7 +53,7 @@ services:
 
   hub:
     build: .
-    image: cortex-hub:2.18.0
+    image: cortex-hub:2.19.0
     restart: unless-stopped
     user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
     read_only: true

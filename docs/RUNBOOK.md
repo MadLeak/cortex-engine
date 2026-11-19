@@ -330,6 +330,23 @@ Point at a sibling's node; never copy it. Create siblings before or alongside ea
 `http://<agent>.cortex.localhost:8790`, MCP at `/mcp/<vault>`, HTTPS only on the LAN listener. `compose.trusted.yaml`
 brings back the host-trusted setup below (`https://cortex.local`, its DNS and CA).
 
+**Settings of a cortex.** Each card on the hub has *Settings* (this machine only, behind the page's token). Every
+change is a click of its own:
+- **General and Memory:** name, the agent that learns there (`learner`), domain scope, session idle minutes, weight
+  half-life, the sessions and days that confirm a learning, and the provisional cap. Written to `_brain/config.json`
+  and committed as the owner (`config: ...`).
+- **MCP token:** *New token* makes another one; the old one stops working at once, and the dialog shows the URL and
+  header to put in the agent's client.
+- **Remote:** the vault's git remote (only its local git config: nothing on the forge changes) and a push token, kept
+  in `_brain/state/remote.token`, out of git (migration 0002) and never sent back to a browser; the field works with
+  password managers. *Save to remote* is the only way a vault is ever pushed, and only when the owner clicks it: over
+  https, with the token in one HTTP header, through the vault's own pre-push hook (a public repository is refused).
+- **Delete:** the whole folder, its history and its tokens, for good, only once its exact name is typed. The dialog
+  warns first when it has uncommitted changes or was never saved to a remote.
+
+Not yet in Settings, and each a project of its own: the number of layers (L1 to L3 are built into the engine),
+REM dreaming (it runs in `lifecycle.py` under systemd on the host, not yet in the container) and an ideas miner.
+
 **The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
 
 ```bash
