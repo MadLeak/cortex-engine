@@ -259,6 +259,7 @@ footer .credit a { color: inherit; }
       <input type="search" id="search" placeholder="Search nodes…" aria-label="Search nodes">
       <label class="toggle"><input type="checkbox" id="auto"> Auto-refresh</label>
       <button id="theme" type="button" aria-label="Toggle light and dark theme">Theme</button>
+      <button id="settings" type="button" hidden title="This cortex's settings, on the Cortex hub">Settings</button>
     </div>
   </header>
 
@@ -922,6 +923,22 @@ footer .credit a { color: inherit; }
     stepSignals(t);
     requestAnimationFrame(tick);
   }
+
+  // ---------- settings: served by the Cortex hub, the panel links to this cortex's Settings there ----------
+  // (on its own host, <label>.<hub domain>, or at <hub>/v/<label>/; opened from disk or embedded, there is no hub)
+  (() => {
+    const b = document.getElementById('settings');
+    if (!b || !/^https?:$/.test(location.protocol) || new URLSearchParams(location.search).has('embed')) return;
+    const m = location.pathname.match(/^\/v\/([^/]+)\//), labels = location.hostname.split('.');
+    let hub = '', key = '';
+    if (m) { hub = location.origin; key = decodeURIComponent(m[1]); }
+    else if (labels.length >= 3 && isNaN(Number(labels[labels.length - 1]))) {
+      hub = `${location.protocol}//${labels.slice(1).join('.')}${location.port ? ':' + location.port : ''}`; key = labels[0];
+    }
+    if (!hub) return;
+    b.hidden = false;
+    b.addEventListener('click', () => { location.href = `${hub}/agents?settings=${encodeURIComponent(key)}`; });
+  })();
 
   // ---------- signals: what feeds what, and the agent's queries descending the funnel ----------
   let signalsOn = store.get('signals', !reduced);

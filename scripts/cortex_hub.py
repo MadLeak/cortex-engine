@@ -1245,7 +1245,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
       const live = vaults.filter(v => v.live).length;
       $('#sub').textContent = `${vaults.length} agents · ${live} active in the last 10 minutes · ${vaults.reduce((s, v) => s + v.nodes, 0)} nodes`;
       renderGrid(); fillNav();
-      if (first) { go(location.pathname, false); reviewCount(); }
+      if (first) { go(location.pathname, false); reviewCount(); openFromLink(); }
       else if (view === 'wall') renderWall();
       else if (view === 'panel') renderPanel();
     } catch (e) { $('#sub').textContent = 'The hub is not answering'; }
@@ -1351,6 +1351,16 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     else if (sdata.unpushed) risks.push(`${sdata.unpushed} commits not saved to the remote`);
     $('#s-del-warn').textContent = 'Deletes the folder, its notes, its history and its tokens. It cannot be undone.' +
       (risks.length ? ` Careful: ${risks.join('; ')}.` : '');
+  }
+  // a cortex's own panel links here with ?settings=<its host label or folder>: open that cortex's Settings at once
+  function openFromLink() {
+    const key = new URLSearchParams(location.search).get('settings');
+    if (!key) return;
+    history.replaceState(null, '', location.pathname);
+    if (hubInfo.scope !== 'localhost' || !hubInfo.connect) return;
+    const label = v => { try { return v.url ? new URL(v.url).hostname.split('.')[0] : ''; } catch (e) { return ''; } };
+    const v = vaults.find(x => x.name === key || decodeURIComponent(x.slug) === key || label(x) === key);
+    if (v) openSettings(v.name);
   }
   async function openSettings(name) {
     sname = name; say(''); $('#s-token').hidden = true;
