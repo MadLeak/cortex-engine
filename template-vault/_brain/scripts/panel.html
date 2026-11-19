@@ -142,7 +142,8 @@ label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6
 .sig.contradicts, .sig-glow.contradicts { fill: var(--critical); }
 .sig.query, .sig-glow.query { fill: var(--ink); }
 .ripple { fill: none; stroke-width: 2; }
-.bolt { stroke: var(--ink); stroke-linecap: round; fill: none; pointer-events: none; } .bolt-node { fill: var(--ink); pointer-events: none; }
+.lt { fill: none; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; vector-effect: non-scaling-stroke; } .lt-core { stroke: var(--ink); }
+.lt-dot { fill: var(--ink); pointer-events: none; }
 .ripple.query { stroke: var(--ink); } .ripple.validated { stroke: var(--good); }
 .ripple.L1 { stroke: var(--l1); } .ripple.L2 { stroke: var(--l2); } .ripple.L3 { stroke: var(--l3); }
 /* the life cycle: violet while it dreams, gray while it rests or lets go, amber while it measures */
@@ -798,7 +799,7 @@ footer .credit a { color: inherit; }
       row(lineSvg('var(--critical)', '6 4'), 'Contradicts — check before trusting');
       row(lineSvg('var(--axis)'), 'Hierarchy (up → parent)');
       row(sigSvg('var(--l3)'), 'Feed signal — flows from what feeds to what is fed: detail → concept → domain → MAP, cause → effect, dependency → dependent');
-      row(sigSvg('var(--ink)'), 'Query signal — an agent recall pulses at MAP; each node it reaches or reads sends its information up through the layers to MAP');
+      row(sigSvg('var(--ink)'), 'Query lightning — a recall strikes from MAP down every branch it reaches at once (dim, the nodes it only considered fizzle out); the nodes it reads flash, a bright return stroke runs back up their paths and particles carry what was read to MAP');
       row(sigSvg('var(--l2)'), 'Used — a credited node sends its knowledge back up to MAP (the agent)');
       row(sigSvg('var(--ink)'), 'Planting signal — when an agent creates a node, MAP sends a signal out to each node it relates to; they converge where the new node is born');
       row(plantSvg(), 'Planted — a node just created by an agent, in the signal\'s colour and pulsing until its status changes');
@@ -929,7 +930,7 @@ footer .credit a { color: inherit; }
   const lerp = (a, b, p) => ({ x: a.x + (b.x - a.x) * p, y: a.y + (b.y - a.y) * p });
   function clearSignals() {
     signals.splice(0).forEach(s => { s.dot.remove(); s.glow.remove(); });
-    bolts.splice(0).forEach(b => { b.segs.forEach(g => { g.glow.remove(); g.core.remove(); }); b.dots.forEach(d => d.el.remove()); });
+    storms.splice(0); gStorm.replaceChildren();
     ripples.splice(0).forEach(r => r.c.remove());
     sweeps.splice(0).forEach(w => w.el.remove());
   }
@@ -964,40 +965,157 @@ footer .credit a { color: inherit; }
     c.style.display = 'none';
     ripples.push({ n, c, t0: performance.now() + delay, dur, grow });
   }
-  // a read lights its branch: the lines from the node up to MAP light one after another in a blink, in the query
-  // signal's colour, covering the nodes they cross, then fade out together
-  const BOLT = { step: 20, hold: 80, fade: 220 };
-  const bolts = [];
-  function bolt(n, delay = 0) {
-    if (!signalsOn) return;
-    const path = chainTo(n).reverse(), segs = [], dots = [];
-    for (let i = 1; i < path.length; i++) segs.push({ a: path[i - 1], b: path[i],
-      glow: svgEl('line', { class: 'bolt', 'stroke-width': 18 }, gSig), core: svgEl('line', { class: 'bolt', 'stroke-width': 3 }, gSig) });
-    for (const m of path) dots.push({ m, el: svgEl('circle', { class: 'bolt-node' }, gSig) });
-    [...segs.flatMap(g => [g.glow, g.core]), ...dots.map(d => d.el)].forEach(e => { e.style.opacity = '0'; });
-    bolts.push({ segs, dots, t0: performance.now() + delay });
+  // ---------- query lightning: how an agent's recall reaches into the cortex and brings its reads back ----------
+  // Modelled on a real flash. A dim stepped leader leaves MAP and branches down the hierarchy to every node the recall
+  // reached, all branches at once, each a few ms apart (a wave, never a queue). The nodes it only reached fizzle out.
+  // Then a bright return stroke runs back up the paths of the nodes it read, with a re-strike or two, while particles
+  // carry what was read up to MAP, which pulses as they land. Read nodes keep their halo for a while. Bolts are thin
+  // (a ~1 px core in a soft halo in the colour of the layer they reach), jagged by midpoint displacement, re-jittered
+  // every few frames, and they thin out layer by layer. Both views draw the same storm: the orbit in SVG, the sphere
+  // on its canvas (projected first, then made jagged on screen, so a bolt looks the same at any angle).
+  const LIGHT = { hop: [110, 170], jitter: 60, stepMs: 30, leader: 0.45, perHop: 0.85, fizzle: 220, rise: 30,
+    hold: 90, decay: 480, restrikes: [[70, 0.6], [150, 0.35]], residual: 0.12, residualMs: 2400, gather: [450, 750],
+    flick: 40, forkMs: 170, core: 1.1, halo: 4.2, taper: [1, 1, 0.7, 0.5, 0.45, 0.4] };
+  const storms = [];
+  const rand = seed => { let x = (seed >>> 0) || 1; return () => (x = (Math.imul(x, 1664525) + 1013904223) >>> 0) / 4294967296; };
+  const newSeed = r => Math.floor(r() * 4294967295) >>> 0;
+  function boltShape(r) {   // 17 sideways offsets in [-1, 1] by recursive midpoint displacement, both ends pinned
+    const o = new Float32Array(17);
+    const split = (l, h, a) => { if (h - l < 2) return; const m = (l + h) >> 1; o[m] = (o[l] + o[h]) / 2 + (r() * 2 - 1) * a; split(l, m, a * 0.55); split(m, h, a * 0.55); };
+    split(0, 16, 1);
+    return o;
   }
-  function stepBolts(now) {
-    for (let i = bolts.length - 1; i >= 0; i--) {
-      const b = bolts[i], t = now - b.t0, full = BOLT.step * b.segs.length;
-      if (t < 0) continue;
-      const k = t < full + BOLT.hold ? 1 : 1 - (t - full - BOLT.hold) / BOLT.fade;
-      if (k <= 0) { b.segs.forEach(g => { g.glow.remove(); g.core.remove(); }); b.dots.forEach(d => d.el.remove()); bolts.splice(i, 1); continue; }
-      b.segs.forEach((g, j) => {
-        const p = Math.min(1, Math.max(0, (t - j * BOLT.step) / BOLT.step)), x2 = g.a.x + (g.b.x - g.a.x) * p, y2 = g.a.y + (g.b.y - g.a.y) * p;
-        for (const [e, o] of [[g.glow, 0.22], [g.core, 1]]) {
-          e.setAttribute('x1', f1(g.a.x)); e.setAttribute('y1', f1(g.a.y)); e.setAttribute('x2', f1(x2)); e.setAttribute('y2', f1(y2));
-          e.style.opacity = p > 0 ? String(o * k) : '0';
-        }
-      });
-      b.dots.forEach((d, j) => {
-        d.el.setAttribute('cx', f1(d.m.x)); d.el.setAttribute('cy', f1(d.m.y)); d.el.setAttribute('r', f1(d.m.r || 6));
-        d.el.style.opacity = t >= j * BOLT.step ? String(k) : '0';
-      });
+  // the bolt between two screen points, as far as `upto` of the way; its jitter changes every LIGHT.flick ms
+  function boltLine(a, b, o, upto, seed, now, amp = 0.13) {
+    const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy) || 1, nx = -dy / len, ny = dx / len;
+    const A = Math.min(amp * len, 16), r = rand(seed ^ Math.imul(Math.floor(now / LIGHT.flick), 2654435761)), pts = [];
+    for (let k = 0; k <= 16; k++) {
+      const last = k / 16 >= upto, t = last ? upto : k / 16;
+      const off = (o[k] + (r() * 2 - 1) * 0.18) * A * Math.sin(Math.PI * t);
+      pts.push([a[0] + dx * t + nx * off, a[1] + dy * t + ny * off]);
+      if (last) break;
     }
+    return pts;
+  }
+  // a storm for one recall (or one read): list = [{ n, read }]; the tree is the union of their branches up to MAP
+  function strike(list, delay = 0) {
+    if (!signalsOn || !list.length) return;
+    const r = rand(Math.random() * 4294967295), edges = new Map();
+    for (const { n, read } of list) {
+      const ch = chainTo(n);
+      for (let i = 1; i < ch.length; i++) {
+        let e = edges.get(ch[i]);
+        if (!e) {
+          e = { a: ch[i - 1], b: ch[i], depth: i, read: false, o: boltShape(r), seed: newSeed(r), forks: [] };
+          if (r() < 0.45) for (let f = 0, nf = r() < 0.4 ? 2 : 1; f < nf; f++)
+            e.forks.push({ k: 4 + Math.floor(r() * 9), side: r() < 0.5 ? -1 : 1, ang: 0.35 + r() * 0.25, frac: 0.2 + r() * 0.2, o: boltShape(r), seed: newSeed(r) });
+          edges.set(ch[i], e);
+        }
+        if (read) e.read = true;
+      }
+    }
+    const tree = [...edges.values()].sort((x, y) => x.depth - y.depth);
+    for (const e of tree) {   // a node's children all start when the leader reaches it, each a few ms apart
+      const up = edges.get(e.a);
+      e.start = (up ? up.end : 0) + r() * LIGHT.jitter;
+      e.end = e.start + LIGHT.hop[0] + r() * (LIGHT.hop[1] - LIGHT.hop[0]);
+    }
+    const leaderEnd = Math.max(...tree.map(e => e.end)), reads = [...new Set(list.filter(x => x.read).map(x => x.n))];
+    const st = { t0: performance.now() + delay, tree, leaderEnd, strikeAt: leaderEnd + 40, reads, struck: false, parts: [], landed: 0 };
+    for (const n of reads) {
+      const path = chainTo(n).reverse();
+      for (let k = 0; k < 2; k++)
+        st.parts.push({ path, t0: st.strikeAt + 80 + r() * 120 + k * 90, dur: LIGHT.gather[0] + r() * (LIGHT.gather[1] - LIGHT.gather[0]), landed: false });
+    }
+    st.end = reads.length ? Math.max(st.strikeAt + LIGHT.rise + LIGHT.hold + LIGHT.decay + LIGHT.residualMs, ...st.parts.map(q => q.t0 + q.dur + 50))
+      : leaderEnd + LIGHT.fizzle + 40;
+    storms.push(st);
+  }
+  // how bright a branch is at storm time t: the leader's dim front, then the return stroke on the read paths
+  function brightness(st, e, t) {
+    if (t < e.start) return { a: 0, p: 0, w: 1 };
+    const span = e.end - e.start, p = Math.min(1, t >= e.end ? 1 : Math.floor((t - e.start) / LIGHT.stepMs) * LIGHT.stepMs / span || 0.05);
+    const lead = LIGHT.leader * Math.pow(LIGHT.perHop, e.depth - 1);
+    if (!e.read) return { a: t <= st.leaderEnd ? lead : lead * Math.max(0, 1 - (t - st.leaderEnd) / LIGHT.fizzle), p, w: 1 };
+    const ts = t - st.strikeAt;
+    if (ts < 0) return { a: lead, p, w: 1 };
+    let i = ts < LIGHT.rise ? ts / LIGHT.rise : ts < LIGHT.rise + LIGHT.hold ? 1 : Math.exp(-(ts - LIGHT.rise - LIGHT.hold) / (LIGHT.decay / 3));
+    for (const [at, amp] of LIGHT.restrikes) if (ts >= at && ts < at + 120) i = Math.max(i, amp * (1 - (ts - at) / 120));
+    const late = ts - LIGHT.rise - LIGHT.hold - LIGHT.decay;
+    if (late > 0) i = Math.max(i, LIGHT.residual * Math.max(0, 1 - late / LIGHT.residualMs));
+    return { a: Math.max(i, ts < LIGHT.rise + LIGHT.hold + LIGHT.decay ? lead : 0), p: 1, w: i > 0.5 ? 1.5 : 1 };
+  }
+  // one frame of a storm, in screen space: lines to stroke, particles to dot, and what just happened
+  function stormFrame(st, now, pos) {
+    const t = now - st.t0, lines = [], dots = [], events = [];
+    if (t < 0) return { lines, dots, events };
+    for (const e of st.tree) {
+      const { a, p, w } = brightness(st, e, t);
+      if (a <= 0.004 || p <= 0) continue;
+      const A = pos(e.a), B = pos(e.b), taper = LIGHT.taper[Math.min(e.depth, LIGHT.taper.length - 1)];
+      const pts = boltLine(A, B, e.o, p, e.seed, now);
+      lines.push({ pts, layer: e.b.layer, a, core: LIGHT.core * taper * w, halo: LIGHT.halo * taper });
+      for (const f of e.forks) {   // a fork lives a moment after the leader's front passes it
+        const age = t - (e.start + (f.k / 16) * (e.end - e.start));
+        if (age < 0 || age > LIGHT.forkMs || pts.length <= f.k) continue;
+        const base = pts[f.k], dx = B[0] - A[0], dy = B[1] - A[1], len = Math.hypot(dx, dy) || 1, ang = f.side * f.ang;
+        const L = f.frac * len * (1 - f.k / 16), ux = (dx * Math.cos(ang) - dy * Math.sin(ang)) / len, uy = (dx * Math.sin(ang) + dy * Math.cos(ang)) / len;
+        lines.push({ pts: boltLine(base, [base[0] + ux * L, base[1] + uy * L], f.o, 1, f.seed, now, 0.2), layer: e.b.layer,
+          a: a * 0.6 * (1 - age / LIGHT.forkMs), core: LIGHT.core * taper * 0.55, halo: LIGHT.halo * taper * 0.55 });
+      }
+    }
+    if (!st.struck && st.reads.length && t >= st.strikeAt) { st.struck = true; events.push({ e: 'strike', nodes: st.reads }); }
+    for (const q of st.parts) {   // what was read travels up its own branch to MAP, leaving a short fading trail
+      const u = (t - q.t0) / q.dur;
+      if (u < 0) continue;
+      if (u >= 1) { if (!q.landed) { q.landed = true; st.landed++; events.push({ e: 'land', last: st.landed === st.parts.length }); } continue; }
+      const pts = q.path.map(pos);
+      for (let k = 0; k < 5; k++) {
+        const v = u - k * 0.035;
+        if (v < 0) break;
+        const at = along(pts, ease(v));
+        dots.push({ x: at[0], y: at[1], r: 2.6 - k * 0.4, a: 1 - k * 0.2 });
+      }
+    }
+    return { lines, dots, events };
+  }
+  function along(pts, p) {   // a point p of the way along a polyline
+    const seg = [];
+    let tot = 0;
+    for (let i = 1; i < pts.length; i++) { const d = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); seg.push(d); tot += d; }
+    let rest = p * tot;
+    for (let i = 0; i < seg.length; i++) {
+      if (rest <= seg[i] || i === seg.length - 1) { const k = seg[i] ? Math.min(1, rest / seg[i]) : 1; return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * k, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * k]; }
+      rest -= seg[i];
+    }
+    return pts[pts.length - 1];
+  }
+  const svgPath = pts => 'M' + pts.map(q => `${f1(q[0])} ${f1(q[1])}`).join('L');
+  // the orbit draws the storms in one SVG group, rebuilt each frame while one is alive
+  const gStorm = svgEl('g', { class: 'storm' }, gSig);
+  function stepStorms(now) {
+    if (!storms.length) { if (gStorm.firstChild) gStorm.replaceChildren(); return; }
+    let html = '';
+    const ctm = svg.getScreenCTM(), px = 1 / ((ctm && ctm.a) || 1);   // widths are screen pixels, whatever the zoom
+    for (let i = storms.length - 1; i >= 0; i--) {
+      const st = storms[i];
+      if (now - st.t0 > st.end) { storms.splice(i, 1); continue; }
+      const { lines, dots, events } = stormFrame(st, now, n => [n.x, n.y]);
+      if (view !== 'sphere') for (const ev of events) {
+        if (ev.e === 'strike') ev.nodes.forEach(flash);
+        else if (ev.e === 'land') ripple(ROOT, 'query', ev.last ? { grow: 30, dur: 700 } : { grow: 14, dur: 320 });
+      }
+      for (const l of lines) {
+        const d = svgPath(l.pts);
+        html += `<path class="lt" d="${d}" style="stroke:var(--l${l.layer || 1})" stroke-width="${f1(l.halo)}" stroke-opacity="${(l.a * 0.22).toFixed(3)}"/>`
+          + `<path class="lt lt-core" d="${d}" stroke-width="${f1(l.core)}" stroke-opacity="${Math.min(1, l.a).toFixed(3)}"/>`;
+      }
+      for (const q of dots) html += `<circle class="lt-dot" cx="${f1(q.x)}" cy="${f1(q.y)}" r="${(q.r * px).toFixed(2)}" fill-opacity="${q.a.toFixed(2)}"/>`;
+    }
+    gStorm.innerHTML = html;
   }
   function stepSignals(now) {
-    stepBolts(now);
+    stepStorms(now);
     const anchor = selected || hovered, focus = anchor ? neighborhood(anchor) : null;
     for (let i = signals.length - 1; i >= 0; i--) {
       const s = signals[i], p = (now - s.t0) / s.dur;
@@ -1205,17 +1323,30 @@ footer .credit a { color: inherit; }
     if (PHASES[e.e]) { life(e.e, { titles: e.titles, alarm: e.alarm }, delay); return; }
     if (view === 'sphere') { sphere.play(e, n, delay); return; }
     if (!n) return;
-    if (e.e === 'activated') bolt(n, delay);
-    else if (e.e === 'read') { setTimeout(() => flash(n), delay); bolt(n, delay); }
-    else if (e.e === 'used') climb(n, `L${n.layer}`, { r: 6, delay, grow: 26 });
+    if (e.e === 'activated' || e.e === 'read') return;   // drawn by the recall's storm (see playEvents)
+    if (e.e === 'used') climb(n, `L${n.layer}`, { r: 6, delay, grow: 26 });
     else if (e.e === 'validated') ripple(n, 'validated', { delay, grow: 30, dur: 1400 });
   }
   const LEG = 420;   // ms per hop of a query signal
   const STEP = { recall: 450, activated: 80, read: 650, used: 500, validated: 400, dreamed: 3400, rested: 2200, measured: 3600 };
   const PHASES = { dreamed: 'dreaming (REM)', rested: 'resting (nap)', measured: 'measuring (night bench)' };
+  // a recall and the signatures and reads that follow it are one storm; a read on its own strikes on its own
   function playEvents(list) {
     let d = 0;
-    for (const e of list.slice(-80)) { playEvent(e, d); d += STEP[e.e] || 200; }
+    const L = list.slice(-80), node = e => (e.title ? byTitle.get(norm(e.title)) : null);
+    for (let i = 0; i < L.length; i++) {
+      const e = L[i];
+      if (e.e === 'recall' || e.e === 'read' || e.e === 'activated') {
+        const group = e.e === 'recall' ? [] : [e];
+        if (e.e === 'recall') { playEvent(e, d); while (i + 1 < L.length && (L[i + 1].e === 'activated' || L[i + 1].e === 'read')) group.push(L[++i]); }
+        group.filter(x => x.e === 'read').forEach(x => playEvent(x, d + 120));
+        const list = group.map(x => ({ n: node(x), read: x.e === 'read' })).filter(x => x.n);
+        strike(list, d + (e.e === 'recall' ? 150 : 0));
+        d += (e.e === 'recall' ? STEP.recall : 0) + (list.some(x => x.read) ? 1100 : list.length ? 600 : 0);
+        continue;
+      }
+      playEvent(e, d); d += STEP[e.e] || 200;
+    }
   }
   function renderQueries(events, updated) {
     const box = $('#queries');
@@ -1478,7 +1609,7 @@ footer .credit a { color: inherit; }
     };
 
     // ---- signals: the same feeding and query events as the orbit, riding 3D routes ----
-    const sigs = [], rips = [], bolts3 = [];
+    const sigs = [], rips = [];
     let qText = '', qUntil = 0, flashUntil = 0;
     const ease = p => 0.5 - Math.cos(Math.PI * p) / 2;
     const lerp3 = (a, b, p) => [a[0] + (b[0] - a[0]) * p, a[1] + (b[1] - a[1]) * p, a[2] + (b[2] - a[2]) * p];
@@ -1538,22 +1669,24 @@ footer .credit a { color: inherit; }
         ctx.globalAlpha = faded ? 0.15 : k; ctx.beginPath(); ctx.arc(q[0], q[1], r, 0, 2 * Math.PI); ctx.fill();
       }
       ctx.lineCap = 'round';
-      for (let i = bolts3.length - 1; i >= 0; i--) {   // a read lights its branch up to MAP in a blink (see bolt in the orbit)
-        const b = bolts3[i], t = now - b.t0, n = b.path.length - 1, full = BOLT.step * n;
-        if (t < 0) continue;
-        const k = t < full + BOLT.hold ? 1 : 1 - (t - full - BOLT.hold) / BOLT.fade;
-        if (k <= 0) { bolts3.splice(i, 1); continue; }
-        const pts = b.path.map(m => proj(posOf(m)));
-        ctx.strokeStyle = ctx.fillStyle = COL.ink;
-        for (let j = 0; j < n; j++) {
-          const p = Math.min(1, Math.max(0, (t - j * BOLT.step) / BOLT.step));
-          if (p <= 0) break;
-          const a = pts[j], c = pts[j + 1], x2 = a[0] + (c[0] - a[0]) * p, y2 = a[1] + (c[1] - a[1]) * p;
-          for (const [w, o] of [[18, 0.22], [3, 1]]) { ctx.lineWidth = w; ctx.globalAlpha = o * k; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(x2, y2); ctx.stroke(); }
+      ctx.lineJoin = 'round';
+      for (let i = storms.length - 1; i >= 0; i--) {   // the recall's storm, as in the orbit (see strike)
+        const st = storms[i];
+        if (now - st.t0 > st.end) { storms.splice(i, 1); continue; }
+        const { lines, dots, events } = stormFrame(st, now, m => { const q = proj(posOf(m)); return [q[0], q[1]]; });
+        if (view === 'sphere') for (const ev of events) {
+          if (ev.e === 'strike') ev.nodes.forEach(m => { m.flash = now + 4000; flashUntil = Math.max(flashUntil, m.flash); });
+          else if (ev.e === 'land') ripple3(ROOT, 'query', ev.last ? { grow: 30, dur: 700 } : { grow: 14, dur: 320 });
         }
-        ctx.globalAlpha = k;
-        pts.forEach((q, j) => { if (t >= j * BOLT.step) { ctx.beginPath(); ctx.arc(q[0], q[1], 6 * Math.max(0.6, q[3] * cam.dist / F), 0, 2 * Math.PI); ctx.fill(); } });
+        for (const l of lines) {
+          ctx.beginPath(); l.pts.forEach((q, k) => (k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])));
+          ctx.strokeStyle = lc(l.layer || 1); ctx.globalAlpha = l.a * 0.22; ctx.lineWidth = l.halo; ctx.stroke();
+          ctx.strokeStyle = COL.ink; ctx.globalAlpha = Math.min(1, l.a); ctx.lineWidth = l.core; ctx.stroke();
+        }
+        ctx.fillStyle = COL.ink;
+        for (const q of dots) { ctx.globalAlpha = q.a; ctx.beginPath(); ctx.arc(q.x, q.y, q.r, 0, 2 * Math.PI); ctx.fill(); }
       }
+      ctx.lineJoin = 'miter';
       ctx.lineCap = 'butt';
       ctx.strokeStyle = COL.ink2; ctx.lineWidth = 1.6; ctx.setLineDash([5, 4]);
       for (const g of ghosts) {
@@ -1607,7 +1740,7 @@ footer .credit a { color: inherit; }
         for (let i = sigs.length - 1; i >= 0; i--) if (now - sigs[i].t0 >= sigs[i].dur) { const s = sigs.splice(i, 1)[0]; if (s.onArrive) s.onArrive(); }
         for (let i = rips.length - 1; i >= 0; i--) if (now - rips[i].t0 >= rips[i].dur) rips.splice(i, 1);
         for (let i = ghosts.length - 1; i >= 0; i--) if (now - ghosts[i].t0 >= 1200) ghosts.splice(i, 1);
-        if (sigs.length || rips.length || bolts3.length || ghosts.length || now < qUntil || now < flashUntil + 100) dirty = true;
+        if (sigs.length || rips.length || storms.length || ghosts.length || now < qUntil || now < flashUntil + 100) dirty = true;
         if (pulsing && !reduced && now - lastPulse > 66) { lastPulse = now; dirty = true; }   // planted nodes pulse at ~15 fps
         if (dirty && W) { draw(now); dirty = false; }
       }
@@ -1651,11 +1784,11 @@ footer .credit a { color: inherit; }
     requestAnimationFrame(frame);
     return {
       refresh() { dirty = true; },
-      setActive(v) { active = v; dirty = true; if (!v) { sigs.length = 0; rips.length = 0; bolts3.length = 0; } },
+      setActive(v) { active = v; dirty = true; if (!v) { sigs.length = 0; rips.length = 0; } },
       focus: focusOn,
       zoom(k) { anim = null; cam.dist = clamp(cam.dist * k, 560, 2800); dirty = true; },
       reset() { anim = { from: { ...cam }, to: { ...HOME }, t0: performance.now(), ms: reduced ? 1 : 600 }; },
-      clear() { sigs.length = 0; rips.length = 0; bolts3.length = 0; dirty = true; },
+      clear() { sigs.length = 0; rips.length = 0; dirty = true; },
       get spin() { return spin; },
       set spin(v) { spin = v; store.set('spin', v); },
       toggle(k) { show[k] = !show[k]; store.set(k, show[k]); dirty = true; return show[k]; },
@@ -1748,9 +1881,8 @@ footer .credit a { color: inherit; }
             launch3(path3([a, b]), cls, { r, dur: LEG, delay: t, ends: [n], onArrive: () => ripple3(b, cls, b === ROOT ? { grow } : { grow: 10, dur: 500 }) });
           }
         };
-        if (e.e === 'activated') { if (signalsOn) bolts3.push({ path: chain(n).reverse(), t0: performance.now() + delay }); }
-        else if (e.e === 'read') { setTimeout(lit, delay); if (signalsOn) bolts3.push({ path: chain(n).reverse(), t0: performance.now() + delay }); }
-        else if (e.e === 'used') climb3(`L${n.layer}`, { r: 6, grow: 26 });
+        if (e.e === 'activated' || e.e === 'read') return;   // drawn by the recall's storm (see playEvents)
+        if (e.e === 'used') climb3(`L${n.layer}`, { r: 6, grow: 26 });
         else if (e.e === 'validated') ripple3(n, 'validated', { delay, grow: 30, dur: 1400 });
       },
     };
