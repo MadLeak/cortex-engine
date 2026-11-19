@@ -381,6 +381,47 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def fake_memory(folder: Path) -> Path:
+    """A Claude Code memory folder as it looks on disk: MEMORY.md and one note per memory."""
+    m = folder / "C--Users-me-Dev-OfficialRepos-Demo-App" / "memory"
+    m.mkdir(parents=True)
+    note = lambda name, typ, desc, body: (m / f"{name}.md").write_text(   # noqa: E731
+        f"---\nname: {name}\ndescription: {desc}\nmetadata:\n  type: {typ}\n---\n\n{body}\n", encoding="utf-8")
+    note("owner-profile", "user", "Engineer who prefers short answers", "Works on data pipelines.")
+    note("plan-first", "feedback", "Plan first, act only on an explicit OK",
+         "Propose a plan before editing. **Why:** surprises cost a day. See [[owner-profile]] and [[gone-note]].")
+    note("mail-rule", "feedback", "Write to me at me@example.com", "Contact: me@example.com")
+    note("long-call", "project", "A long call summary", " ".join(["word"] * 400))
+    note("qa-dev", "project", "The SQL server is QA, not PROD", "Downloads are allowed, read-only.")
+    (m / "MEMORY.md").write_text(
+        "- [Owner profile](owner-profile.md) — who\n- [Plan first](plan-first.md) — rule\n"
+        "- [Mail rule](mail-rule.md) — mail\n- [Long call](long-call.md) — call\n"
+        "- [SQL Server is QA/DEV](qa-dev.md) — server\n", encoding="utf-8")
+    return m
+
+
+class MemoryTest(unittest.TestCase):
+    """The hub lists the owner's Claude Code memory folders and imports the chosen ones into a new cortex."""
+
+    def test_memory_folders_are_listed_and_imported(self):
+        import os
+        import shutil
+        engine = Path(__file__).resolve().parents[1] / "template-vault"
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_memory(Path(tmp) / "projects")
+            (Path(tmp) / "projects" / "empty-project" / "memory").mkdir(parents=True)
+            found = cortex_hub.memory_folders(Path(tmp) / "projects")
+            self.assertEqual(found, [{"id": "C--Users-me-Dev-OfficialRepos-Demo-App", "label": "Demo App", "notes": 5}])
+            v = Path(tmp) / "Demo Cortex"
+            shutil.copytree(engine / "_brain", v / "_brain", ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(engine / "_templates", v / "_templates")
+            out = cortex_hub.import_memories(v, [found[0]["id"]], "the owner", Path(tmp) / "projects")
+            self.assertIn("imported 3 memories", out)
+            self.assertTrue((v / "Working agreements" / "Plan first.md").is_file())
+            with self.assertRaises(ValueError):
+                cortex_hub.import_memories(v, ["../../etc"], "the owner", Path(tmp) / "projects")
+
+
 class UpgradeTest(unittest.TestCase):
     """On start the hub puts every older vault on its own engine and commits that as the Cortex hub."""
 

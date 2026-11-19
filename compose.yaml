@@ -8,7 +8,7 @@ services:
   test:
     profiles: [tools]
     build: .
-    image: cortex-hub:2.17.0
+    image: cortex-hub:2.18.0
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -25,7 +25,7 @@ services:
   bench:
     profiles: [tools]
     build: .
-    image: cortex-hub:2.17.0
+    image: cortex-hub:2.18.0
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -36,7 +36,7 @@ services:
   cli:
     profiles: [tools]
     build: .
-    image: cortex-hub:2.17.0
+    image: cortex-hub:2.18.0
     user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
     read_only: true
     tmpfs: [/tmp]
@@ -48,11 +48,12 @@ services:
       CORTEX_GIT_EMAIL: ${CORTEX_GIT_EMAIL:-}
     volumes:
       - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
+      - ${CORTEX_CLAUDE_PROJECTS:-${HOME:-${USERPROFILE}}/.claude/projects}:/claude-projects:ro   # memory to import
     entrypoint: ["python3", "/opt/cortex/scripts/cortex_cli.py"]
 
   hub:
     build: .
-    image: cortex-hub:2.17.0
+    image: cortex-hub:2.18.0
     restart: unless-stopped
     user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
     read_only: true
@@ -68,6 +69,7 @@ services:
       CORTEX_LAN_DOMAIN: ${CORTEX_LAN_DOMAIN:-cortex.home}
     volumes:
       - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
+      - ${CORTEX_CLAUDE_PROJECTS:-${HOME:-${USERPROFILE}}/.claude/projects}:/claude-projects:ro   # memory to import
     # Nothing to set up on the host: one high port on 127.0.0.1, plain HTTP, and names under .localhost, which
     # browsers resolve to this machine by themselves: http://cortex.localhost:8790 and http://<agent>.cortex.localhost:8790.
     # compose.lan.yaml adds the local network (HTTPS); compose.trusted.yaml brings back https://cortex.local

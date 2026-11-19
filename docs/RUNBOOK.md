@@ -40,7 +40,7 @@ Check the engine before you use it:
 cd template-vault/_brain/scripts && python3 -m unittest discover -s tests
 ```
 
-Expect `Ran 60 tests ... OK`, plus a timing line for the 1,000-node performance test.
+Expect `Ran 62 tests ... OK`, plus a timing line for the 1,000-node performance test.
 
 ## 2. Create a vault
 
@@ -112,6 +112,18 @@ is written to the agent's instruction files: the `cortex` tool describes its own
 Skills extension serves the curator skills. The server's `instructions` (sent with `initialize` and `server/discover`,
 which clients put in the model's instructions) tell the agent that this vault is its long-term memory, to start each
 task with `action=brief` and to end it with `action=finish`: nothing to tell it by hand. Only Claude Code's line has been tried against a real client; the others follow each tool's docs.
+
+**Starting with a memory.** A new cortex can start with what the agent already knows. *Connect an agent* lists the
+owner's Claude Code memory folders (`~/.claude/projects/*/memory`, mounted read-only); the ones ticked are imported as
+the cortex is made, and `./cortex.sh memories` / `./cortex.sh import <vault> <project>...` do it from the command line,
+also into an existing cortex. The import (`B import-memory <folder>... [--commit]`) works by rule, with no model:
+- one L1 domain per memory type: Owner profile (user), Working agreements (feedback), Projects, References;
+- one L2 concept per memory: the index title as title (a forbidden character becomes a dash, a clash gets the
+  project's name), the description as summary, the note under *Idea*, `source: claude-code memory <project>/<file>`;
+- `[[links]]` between imported memories become links between their nodes; any other link becomes plain text;
+- a memory with what looks like a credential or an address is skipped (allow an address in `allowed_addresses` to
+  import it); one over the L2 word limit is captured in `_inbox` for the curator;
+- a second import of the same folder adds only what is new; `--commit` makes one commit, as the owner.
 
 **With Python on the host:**
 

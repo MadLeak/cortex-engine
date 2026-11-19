@@ -31,7 +31,8 @@ agent* creates a cortex and gives the one line its MCP client needs, for example
 claude mcp add --transport http --scope user claude-cortex "http://cortex.localhost:8790/mcp/Claude%20Cortex?by=claude-code" --header "Authorization: Bearer <the vault's token>"
 ```
 
-The agent starts each task with `action=brief` and ends it with `action=finish`, which commits what it learned under
+A new cortex can start with the agent's Claude Code memory: tick its projects in the form, and the memories are imported
+into the graph by rule (no model). The agent starts each task with `action=brief` and ends it with `action=finish`, which commits what it learned under
 the agent's own name. The command line is `./cortex.sh` (Windows `.\cortex.ps1`): `list`, `new <folder> [--from
 kitchen-cortex]`, `brain <vault> recall "..."`, `doctor`, `upgrade`, `token <vault> [--rotate]`, `commit <vault> -m`.
 Options: `--lan` / `-Lan` serves the cortexes you mark LAN to the local network over HTTPS; `--trusted` / `-Trusted`
@@ -114,11 +115,11 @@ docker compose --profile tools run --rm bench    # what one engine call costs, n
 cd template-vault/_brain/scripts && python3 -m unittest discover -s tests -v   # the engine alone, with Python
 ```
 
-The engine's suite has 60 tests, including a 1,000-node performance check, and runs in about 5 seconds.
+The engine's suite has 62 tests, including a 1,000-node performance check, and runs in about 5 seconds.
 
 ## Status
 
-Engine version 2.17.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.18.0. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 
