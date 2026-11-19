@@ -256,7 +256,7 @@ for verb, sp in sub.choices.items():
 print(json.dumps(out))
 """
 READER = set(ACTIONS) | {"session"}     # the funnel's verbs live on the cortex tool, never on cortex_curate
-NOT_HERE = {"precommit", "migrate"}     # the Git hook's verb and the hub's: a model has no reason to call them
+NOT_HERE = {"precommit", "migrate", "import-memory"}   # the hook's and the hub's verbs: not for a model
 GUARDED = {("status", "consolidated")}  # only the owner marks a node consolidated: needs --allow-consolidate
 
 

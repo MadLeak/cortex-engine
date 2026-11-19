@@ -14,6 +14,9 @@
     token <vault> [--rotate]          the vault's MCP token (a new one with --rotate: the old one stops working)
     commit <vault> -m MESSAGE         a commit of everything changed, as you (CORTEX_GIT_NAME / CORTEX_GIT_EMAIL)
     precommit <vault>                 the vault's pre-commit check (what its git hook runs)
+    memories                          Claude Code's memory folders (~/.claude/projects/*/memory) and their notes
+    import <vault> <project>...       those memories into the vault's graph, by rule (no model), committed as you;
+                                      new <folder> --memory <project>... does it as the vault is made
 
 A vault is named by its folder or by the folder's first word (kitchen-cortex or kitchen). The vault folder is
 /vaults inside the container: ~/Vaults on the host (CORTEX_VAULTS in .env).
@@ -62,6 +65,24 @@ def owner_env() -> dict:
             "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
 
 
+def import_into(v: Path, projects: list[str]) -> int:
+    """Memory folders, by id or by label (see: memories), into the vault's graph, committed as the owner."""
+    import cortex_hub
+    found = cortex_hub.memory_folders()
+    ids = []
+    for p in projects:
+        hit = [m["id"] for m in found if p in (m["id"], m["label"]) or p.lower() == m["label"].lower()]
+        if not hit:
+            sys.exit(f"no memory folder {p}; see: memories")
+        ids += hit
+    owner_env()   # the import commits as the owner: CORTEX_GIT_NAME / CORTEX_GIT_EMAIL must be set
+    try:
+        print(cortex_hub.import_memories(v, ids, os.environ.get("CORTEX_OWNER") or "owner"))
+    except (ValueError, RuntimeError) as e:
+        sys.exit(str(e))
+    return 0
+
+
 def engine(v: Path, *args: str) -> int:
     return subprocess.run([sys.executable, str(v / "_brain/scripts/brain.py"), "--vault", str(v), *args],
                           cwd=str(v.parent)).returncode
@@ -76,6 +97,7 @@ def main(argv=None) -> int:
     p.add_argument("--name")
     p.add_argument("--agent", default="the agent")
     p.add_argument("--from", dest="overlay")
+    p.add_argument("--memory", nargs="+", default=[], help="memory folders to import (see: memories)")
     p = sub.add_parser("brain")
     p.add_argument("vault")
     p.add_argument("args", nargs=argparse.REMAINDER)
@@ -90,6 +112,10 @@ def main(argv=None) -> int:
     p.add_argument("-m", "--message", required=True)
     p = sub.add_parser("precommit")
     p.add_argument("vault")
+    sub.add_parser("memories")
+    p = sub.add_parser("import")
+    p.add_argument("vault")
+    p.add_argument("projects", nargs="+")
     a = ap.parse_args(argv)
 
     if a.cmd == "list":
@@ -123,6 +149,8 @@ def main(argv=None) -> int:
         if r.returncode == 0:
             cortex_mcp.ensure_token(dest)
             print(f"MCP token in {a.folder}/{cortex_mcp.TOKEN_IGNORE}")
+            if a.memory:
+                return import_into(dest, a.memory)
         return r.returncode
     if a.cmd == "brain":
         return engine(vault(a.vault), *a.args)
@@ -152,6 +180,16 @@ def main(argv=None) -> int:
         return subprocess.run(["git", "-C", str(v), "commit", "-m", a.message], env=env).returncode
     if a.cmd == "precommit":
         return engine(vault(a.vault), "precommit")
+    if a.cmd == "memories":
+        import cortex_hub
+        found = cortex_hub.memory_folders()
+        for m in found:
+            print(f"{m['notes']:3} notes  {m['label']:30}  {m['id']}")
+        if not found:
+            print(f"no Claude Code memory under {cortex_hub.MEMORY_ROOT} (CORTEX_CLAUDE_PROJECTS in .env)")
+        return 0
+    if a.cmd == "import":
+        return import_into(vault(a.vault), a.projects)
     return 2
 
 

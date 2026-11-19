@@ -756,6 +756,62 @@ class HotMemoryTests(Base):
                       "a credit that makes a node hot was not answered from the list: it was not on show yet")
 
 
+def fake_memory(folder: Path) -> Path:
+    """A Claude Code memory folder as it looks on disk: MEMORY.md and one note per memory."""
+    m = folder / "C--Users-me-Dev-OfficialRepos-Demo-App" / "memory"
+    m.mkdir(parents=True)
+    note = lambda name, typ, desc, body: (m / f"{name}.md").write_text(   # noqa: E731
+        f"---\nname: {name}\ndescription: {desc}\nmetadata:\n  type: {typ}\n---\n\n{body}\n", encoding="utf-8")
+    note("owner-profile", "user", "Engineer who prefers short answers", "Works on data pipelines.")
+    note("plan-first", "feedback", "Plan first, act only on an explicit OK",
+         "Propose a plan before editing. **Why:** surprises cost a day. See [[owner-profile]] and [[gone-note]].")
+    note("mail-rule", "feedback", "Write to me at me@example.com", "Contact: me@example.com")
+    note("long-call", "project", "A long call summary", " ".join(["word"] * 400))
+    note("qa-dev", "project", "The SQL server is QA, not PROD", "Downloads are allowed, read-only.")
+    (m / "MEMORY.md").write_text(
+        "- [Owner profile](owner-profile.md) — who\n- [Plan first](plan-first.md) — rule\n"
+        "- [Mail rule](mail-rule.md) — mail\n- [Long call](long-call.md) — call\n"
+        "- [SQL Server is QA/DEV](qa-dev.md) — server\n", encoding="utf-8")
+    return m
+
+
+class MemoryImportTests(Base):
+    """Claude Code memory into the graph by rule: domains by type, concepts by memory, links kept, nothing twice."""
+
+    def test_memories_land_in_the_graph_by_rule_once(self):
+        mem = fake_memory(self.tmp / "projects")
+        out = self.ok("import-memory", str(mem))
+        self.assertIn("imported 3 memories · 0 already here · 1 to _inbox · 1 skipped", out)
+        self.assertIn("skipped mail-rule.md: possible email address", out)
+        v = brain.Vault(self.v)
+        self.assertEqual(v.node("Owner profile").layer, 1)
+        self.assertEqual(v.node("Working agreements").layer, 1)
+        plan = v.node("Plan first")
+        self.assertEqual((plan.layer, plan.fm["summary"], plan.fm["source"]),
+                         (2, "Plan first, act only on an explicit OK",
+                          "claude-code memory C--Users-me-Dev-OfficialRepos-Demo-App/plan-first.md"))
+        body = (self.v / plan.path).read_text(encoding="utf-8")
+        self.assertIn("See [[Owner profile (Demo App)]] and gone-note.", body, "links between memories kept, others plain")
+        self.assertTrue(v.exists("SQL Server is QA-DEV"))
+        self.assertEqual(v.node("Owner profile (Demo App)").layer, 2, "a memory named like a domain gets its project")
+        self.assertEqual(len(list((self.v / "_inbox").glob("* import Long call.md"))), 1)
+        self.assertIn("imported 0 memories · 4 already here · 0 to _inbox · 1 skipped", self.ok("import-memory", str(mem)))
+        self.assertEqual(self.code("lint"), 0)
+        self.assertNotIn("WARN", self.ok("lint"))
+
+    def test_the_import_is_one_commit(self):
+        mem = fake_memory(self.tmp / "projects")
+        env = {**os.environ, **GIT_ID}
+        subprocess.run(["git", "-C", str(self.v), "init", "-q", "-b", "main"], env=env)
+        subprocess.run(["git", "-C", str(self.v), "add", "-A"], env=env)
+        subprocess.run(["git", "-C", str(self.v), "commit", "-q", "-m", "seed"], env=env)
+        from unittest import mock
+        with mock.patch.dict(os.environ, GIT_ID):
+            self.assertIn("committed", self.ok("import-memory", str(mem), "--commit"))
+        log = subprocess.run(["git", "-C", str(self.v), "log", "-1", "--format=%s"], capture_output=True, text=True).stdout
+        self.assertEqual(log.strip(), "import: 4 memories from Claude Code (Demo App)")
+
+
 GIT_ID = {"GIT_AUTHOR_NAME": "Cortex hub", "GIT_AUTHOR_EMAIL": "hub@cortex.local",
           "GIT_COMMITTER_NAME": "Cortex hub", "GIT_COMMITTER_EMAIL": "hub@cortex.local"}
 

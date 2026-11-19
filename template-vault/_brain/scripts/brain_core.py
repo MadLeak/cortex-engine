@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.17.0"
+VERSION = "2.18.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -3330,6 +3330,183 @@ def cmd_prepush(v: Vault, a) -> int:
 
 
 # --------------------------------------------------------------------------- doctor
+# --------------------------------------------------------------------------- memory import
+# Claude Code keeps a memory folder per project: MEMORY.md (an index of "- [Title](file.md) — hook" lines) and one
+# note per memory with frontmatter name, description and metadata.type (user, feedback, project, reference).
+MEMORY_DOMAINS = {
+    "user": ("Owner profile", "Who the owner is: role, expertise and preferences."),
+    "feedback": ("Working agreements", "How the owner wants the work done: rules, corrections and confirmed approaches."),
+    "project": ("Projects", "Ongoing work, goals and constraints that the code alone does not show."),
+    "reference": ("References", "Where things live outside the vault: links, dashboards and tickets."),
+}
+OTHER_DOMAIN = ("Imported notes", "Notes imported from another memory that fit no other domain.")
+MEMORY_INDEX = re.compile(r"^\s*-\s*\[([^\]]+)\]\(([^)]+\.md)\)\s*(?:[—–-]\s*(.*))?$")
+
+
+def read_memory(path: Path) -> tuple[dict, str]:
+    """A memory note's frontmatter (flat: name, description and type, wherever type is nested) and its body."""
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    meta, body = {}, text
+    if text.startswith("---\n") and "\n---" in text[4:]:
+        end = text.index("\n---", 4)
+        for line in text[4:end].splitlines():
+            k, sep, val = line.strip().partition(":")
+            if sep and val.strip() and k in ("name", "description", "type"):
+                meta.setdefault(k, val.strip().strip('"').strip("'").replace('\\"', '"'))
+        body = text[end + 4:].split("\n", 1)[1] if "\n" in text[end + 4:] else ""
+    return meta, body.strip()
+
+
+def memory_label(folder: str) -> str:
+    """A project's short name from Claude Code's folder name (its path with dashes for separators): the part after
+    the last of Users/<name>, Dev, Documents, OfficialRepos, Repos, Projects or src."""
+    parts = [x for x in re.split(r"[-_]+", folder) if x]
+    cut = 0
+    for i, x in enumerate(parts):
+        if x.lower() == "users":
+            cut = i + 2
+        elif x.lower() in ("dev", "documents", "officialrepos", "repos", "projects", "src"):
+            cut = i + 1
+    return " ".join(parts[cut:]) or folder
+
+
+def memory_title(raw: str, taken: set, label: str) -> str:
+    """A memory's title as a valid, unique node title: forbidden characters become dashes, then the project label
+    tells two memories of the same name apart."""
+    t = re.sub(r"\s+", " ", "".join(" -" if ch == ":" else "-" if ch in FORBIDDEN else ch for ch in raw)).strip(" -")
+    t = t or "Memory"
+    t = t[:MAX_TITLE].strip()
+    if norm(t) in ("map", "claude", "panel", "proposals"):
+        t += " (memory)"
+    base, i = t, 1
+    while norm(t) in taken:
+        i += 1
+        t = f"{base[:MAX_TITLE - 20]} ({label})" if i == 2 else f"{base[:MAX_TITLE - 20]} ({label} {i})"
+    return t
+
+
+def cmd_import_memory(v: Vault, a) -> int:
+    """Claude Code's memory folders into the graph, by rule and with no model: one L1 domain per memory type (Owner
+    profile, Working agreements, Projects, References), one L2 concept per memory with the index's title, the note's
+    description as summary and its body under Idea, and [[links]] between memories turned into links between the
+    imported nodes. A memory with something that looks like a credential or an address is skipped; one over the word
+    limit is captured in _inbox for the curator. Each node remembers where it came from (source), so a second import
+    of the same folder adds only what is new. --commit: one commit of what the import added."""
+    import subprocess
+    root = v.root
+    by = (a.by or "owner").strip()
+    allowed = {x.lower() for x in v.cfg.get("allowed_addresses", {})}
+    plans = []                                           # (folder, label, file, index title, hook)
+    for folder in a.folders:
+        f = Path(folder)
+        if f.name != "memory" and (f / "memory").is_dir():
+            f = f / "memory"
+        if not f.is_dir():
+            raise BrainError(f"no memory folder at {folder}")
+        label = a.label or memory_label(f.parent.name)
+        listed = {}
+        if (f / "MEMORY.md").exists():
+            for line in (f / "MEMORY.md").read_text(encoding="utf-8").splitlines():
+                m = MEMORY_INDEX.match(line)
+                if m and (f / m.group(2)).is_file():
+                    listed[m.group(2)] = (m.group(1).strip(), (m.group(3) or "").strip())
+        for note in sorted(f.glob("*.md")):
+            if note.name != "MEMORY.md":
+                title, hook = listed.get(note.name, ("", ""))
+                plans.append((f, label, note, title, hook))
+    before_paths = None
+    if a.commit and (root / ".git").exists():
+        r = subprocess.run(["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        before_paths = {x[3:] for x in r.stdout.splitlines()}
+    have = {str(n.fm.get("source") or "") for n in v.net.values()}
+    for cap in (root / "_inbox").glob("*.md") if (root / "_inbox").is_dir() else []:   # earlier captures count too
+        m = re.search(r"^source: (claude-code memory .+)$", cap.read_text(encoding="utf-8", errors="replace"), re.M)
+        if m:
+            have.add(m.group(1).strip())
+    taken = set(v.titles) | {norm(d) for d, _ in (*MEMORY_DOMAINS.values(), OTHER_DOMAIN)}   # the domains' own names
+    chosen = []                                          # (source, title, domain, summary, body, type)
+    out = {"imported": 0, "skipped": 0, "inbox": 0, "known": 0}
+    slug_title = {}
+    for f, label, note, idx_title, hook in plans:
+        source = f"claude-code memory {f.parent.name}/{note.name}"
+        meta, body = read_memory(note)
+        if source in have:
+            out["known"] += 1
+            continue
+        found = sensitive("\n".join((meta.get("description", ""), hook, body)), allowed)
+        if found:
+            print(f"skipped {note.name}: possible {found} (allow an address in config allowed_addresses to import it)")
+            out["skipped"] += 1
+            continue
+        title = memory_title(idx_title or meta.get("name", "").replace("-", " ").strip().capitalize() or note.stem,
+                             taken, label)
+        taken.add(norm(title))
+        summary = re.sub(r"\s+", " ", (meta.get("description") or hook or title).replace("[[", "").replace("]]", ""))
+        if len(summary) > MAX_SUMMARY:
+            summary = summary[:MAX_SUMMARY - 1].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+        if len(re.findall(r"\w+", body)) <= MAX_WORDS[2]:   # only what lands in the graph can be linked to
+            slug_title[note.stem] = title
+            if meta.get("name"):
+                slug_title[meta["name"]] = title
+        chosen.append((source, title, MEMORY_DOMAINS.get(meta.get("type", ""), OTHER_DOMAIN), summary, body, label))
+
+    def links(text: str) -> str:   # [[slug]] between memories -> [[Title]] of the imported node; anything else: plain
+        return re.sub(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]",
+                      lambda m: f"[[{slug_title[m.group(1).strip()]}]]" if m.group(1).strip() in slug_title
+                      else m.group(1).strip(), text)
+
+    for source, title, (domain, dsum), summary, body, label in chosen:
+        body = links(body)
+        if len(re.findall(r"\w+", body)) > MAX_WORDS[2]:
+            rel = Path("_inbox") / f"{today()} import {title}.md"
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(f"---\ncaptured: {today()}\nsource: {source}\n---\n\n# {title}\n\n{body}\n",
+                                    encoding="utf-8")
+            print(f"captured {rel.as_posix()}: over {MAX_WORDS[2]} words, for the curator to atomize")
+            out["inbox"] += 1
+            continue
+        vv = Vault(root)
+        if not vv.exists(domain):
+            cmd_new(vv, argparse.Namespace(layer=1, type=None, title=domain, summary=dsum, up=None, aliases=[],
+                                           source=None, verify_intent=None, verify=None, verify_keywords=None,
+                                           system=None))
+            vv = Vault(root)
+        elif vv.node(domain).layer != 1:
+            raise BrainError(f'"{domain}" exists and is not an L1: rename it, then import again')
+        cmd_new(vv, argparse.Namespace(layer=2, type=None, title=title, summary=summary, up=domain, aliases=[],
+                                       source=source, verify_intent=None, verify=None, verify_keywords=None,
+                                       system=None))
+        vv = Vault(root)
+        n = vv.node(title)
+        placeholder = "## Idea\n%% The idea in 2 to 5 sentences. %%"
+        n.body = n.body.replace(placeholder, f"## Idea\n{body}", 1) if placeholder in n.body else \
+            n.body.replace(f"# {title}\n", f"# {title}\n\n{body}\n", 1) if f"# {title}\n" in n.body else \
+            f"\n{body}\n" + n.body
+        n.fm["learned_by"] = by
+        save_node(root, n, touch=False)
+        out["imported"] += 1
+    print(f"imported {out['imported']} memories · {out['known']} already here · {out['inbox']} to _inbox · "
+          f"{out['skipped']} skipped")
+    if before_paths is not None and (out["imported"] or out["inbox"]):
+        r = subprocess.run(["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        mine = sorted({x[3:] for x in r.stdout.splitlines()} - before_paths)
+        staged = subprocess.run(["git", "-C", str(root), "diff", "--cached", "--name-only"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
+        if staged:
+            print("not committed: something else is staged in this vault")
+        elif mine:
+            subprocess.run(["git", "-C", str(root), "add", "--", *[p.strip('"') for p in mine]],
+                           capture_output=True)
+            labels = ", ".join(sorted({c[5] for c in chosen})) or "memory"
+            r = subprocess.run(["git", "-C", str(root), "commit", "-q", "-m",
+                                f"import: {out['imported'] + out['inbox']} memories from Claude Code ({labels})"],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+            print("committed" if r.returncode == 0 else f"not committed: {(r.stderr or r.stdout).strip()[-300:]}")
+    return 0
+
+
 # --------------------------------------------------------------------------- migrations
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
@@ -3653,6 +3830,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("externals", help="lists or cleans references to sibling vaults")
     p.add_argument("--clean", action="store_true")
     p.set_defaults(func=cmd_externals)
+
+    p = sub.add_parser("import-memory", help="Claude Code memory folders into the graph, by rule (no model involved)")
+    p.add_argument("folders", nargs="+", help="memory folders (~/.claude/projects/<project>/memory) or their parents")
+    p.add_argument("--label", help="the project's short name, to tell two memories of the same title apart")
+    p.add_argument("--by", help="who the memories come from (default: the owner)")
+    p.add_argument("--commit", action="store_true", help="one git commit of what the import added")
+    p.set_defaults(func=cmd_import_memory)
 
     p = sub.add_parser("migrate", help="brings the vault's data up to this engine's schema (no model involved)")
     p.add_argument("--dry-run", action="store_true", help="say what would change, change nothing")

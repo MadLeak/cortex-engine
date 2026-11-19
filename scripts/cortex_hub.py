@@ -227,6 +227,55 @@ def agent_prompt(name: str, folder: str, kind: str, role: str, by: str, py: str,
 CONTAINER = os.environ.get("CORTEX_CONTAINER", "cortex-hub-1")   # the hub's container, for the stdio bridge
 
 
+MEMORY_ROOT = Path(os.environ.get("CORTEX_MEMORY_ROOT", "/claude-projects"))   # ~/.claude/projects, read-only
+
+
+def memory_label(folder: str) -> str:
+    """A project's short name from Claude Code's folder name (the engine's memory_label, for the form)."""
+    parts = [x for x in re.split(r"[-_]+", folder) if x]
+    cut = 0
+    for i, x in enumerate(parts):
+        if x.lower() == "users":
+            cut = i + 2
+        elif x.lower() in ("dev", "documents", "officialrepos", "repos", "projects", "src"):
+            cut = i + 1
+    return " ".join(parts[cut:]) or folder
+
+
+def memory_folders(root: Path | None = None) -> list[dict]:
+    """Claude Code's memory folders the hub can see (one per project), with how many notes each holds."""
+    base = root or MEMORY_ROOT
+    out = []
+    if base.is_dir():
+        for p in sorted(base.iterdir()):
+            notes = [f for f in (p / "memory").glob("*.md") if f.name != "MEMORY.md"] if (p / "memory").is_dir() else []
+            if notes:
+                out.append({"id": p.name, "label": memory_label(p.name), "notes": len(notes)})
+    return sorted(out, key=lambda m: (-m["notes"], m["label"].lower()))
+
+
+def import_memories(v: Path, ids: list, owner: str, base: Path | None = None) -> str:
+    """The chosen memory folders into the vault, by the engine's import-memory (by rule, no model), committed as the
+    owner (CORTEX_GIT_NAME / CORTEX_GIT_EMAIL): they are the owner's own memories."""
+    base = base or MEMORY_ROOT
+    known = {m["id"] for m in memory_folders(base)}
+    bad = [i for i in ids if i not in known]
+    if bad:
+        raise ValueError(f"no memory folder {bad[0]!r}")
+    if not ids:
+        return ""
+    env = dict(os.environ)
+    name, email = os.environ.get("CORTEX_GIT_NAME", ""), os.environ.get("CORTEX_GIT_EMAIL", "")
+    if name and email:
+        env.update(GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email, GIT_COMMITTER_NAME=name, GIT_COMMITTER_EMAIL=email)
+    r = subprocess.run([sys.executable, str(v / "_brain/scripts/brain.py"), "--vault", str(v), "import-memory",
+                        *[str(base / i / "memory") for i in ids], "--commit", "--by", owner],
+                       capture_output=True, text=True, timeout=600, env=env)
+    if r.returncode:
+        raise RuntimeError(f"import-memory failed:\n{(r.stdout + r.stderr).strip()[-2000:]}")
+    return r.stdout.strip()
+
+
 def mcp_setup(name: str, folder: str, kind: str, role: str, by: str, base: str, token: str) -> str:
     """What the person runs or pastes so the agent reaches its cortex over MCP: one line for its own client, nothing
     installed on the machine, nothing written to the agent's instruction files (the tool says how to use it)."""
@@ -347,8 +396,17 @@ def connect(root: Path, host_root: str, form: dict, owner: str, lock: threading.
     cfg = read_json(v / "_brain/config.json", {})
     name = cfg.get("vault") or folder
     committed = subprocess.run(["git", "-C", str(v), "rev-parse", "-q", "--verify", "HEAD"], capture_output=True).returncode == 0
+    memories = form.get("memories") or []
+    if not isinstance(memories, list) or not all(isinstance(x, str) for x in memories):
+        raise ValueError("memories: a list of memory folders")
+    imported = import_memories(v, memories, owner) if memories else ""
+    if imported:
+        log = (log + "\n" + imported).strip()
     if mcp_base:   # the hub serves MCP: the agent connects to it, nothing runs on this machine
         prompt = mcp_setup(name, folder, kind, role, by, mcp_base, cortex_mcp.ensure_token(v))
+        if imported:
+            summary = next((x for x in reversed(imported.splitlines()) if x.startswith("imported ")), imported)
+            prompt = f"Memory imported into this cortex: {summary}.\n\n" + prompt
     else:
         prompt = agent_prompt(name, folder, kind, role, by, py, host_root, committed)
     return {"vault": name, "folder": folder, "scope": scope, "created": created, "log": log, "prompt": prompt,
@@ -591,6 +649,10 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                 return self.send(404, b"no such cortex", TEXT)
             items = list(read_store(review_dir(self.root, self.data) / f"{name}.jsonl").values())
             return self.send(200, json.dumps({"vault": name, "items": items}, ensure_ascii=False).encode(), "application/json")
+        if path == "/api/memories":   # the owner's Claude Code memory folders, for Connect an agent
+            if self.scope != "localhost":
+                return self.send(HTTPStatus.FORBIDDEN, b"on this machine only", TEXT)
+            return self.send(200, json.dumps({"folders": memory_folders()}).encode(), "application/json")
         if path == "/api/vaults":
             scopes = load_scopes(self.data)
             data = [summary(n, v) for n, v in self.visible().items()]
@@ -730,6 +792,11 @@ dialog h2 { font-size: 16px; margin: 0 0 4px; }
 .form label { display: grid; gap: 4px; font-size: 12px; color: var(--ink2); }
 .form input, .form select, dialog textarea { font: inherit; font-size: 13px; color: var(--ink); background: var(--page);
   border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; width: 100%; }
+#c-mem-row { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px 8px; margin: 0; }
+#c-mem-row legend { font-size: 12px; color: var(--ink2); padding: 0 4px; }
+#c-mem { display: grid; gap: 4px; }
+#c-mem label { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); }
+#c-mem input { width: auto; margin: 0; }
 dialog textarea { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; height: min(46vh, 420px); resize: vertical; margin-top: 10px; }
 dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow: auto; color: var(--ink2); }
 .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap; }
@@ -835,6 +902,8 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
           <option value="local">Local: only this machine</option>
           <option value="lan">LAN: the local network, behind the access key</option>
         </select><span class="sub" id="c-host"></span></label>
+      <fieldset id="c-mem-row" hidden><legend>Import memory (Claude Code), by rule, no model</legend>
+        <div id="c-mem" class="sub"></div></fieldset>
       <label id="c-name-row">Name of the new cortex <input name="name" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9 ._\-]*" placeholder="Codex Cortex" autocomplete="off"></label>
       <label>Role
         <select name="role">
@@ -1041,6 +1110,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
   }
   const csrf = document.querySelector('meta[name="cortex-csrf"]').content;
   const dlg = $('#connect'), cform = $('#c-form');
+  let memFolders = 0;
   function openConnect() {
     const sel = $('#c-vault'), keep = sel.value;
     sel.replaceChildren(el('option', { value: '' }, 'A new cortex for this agent'));
@@ -1048,6 +1118,15 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     sel.value = keep; sync();
     $('#c-err').textContent = ''; cform.hidden = false; $('#c-out').hidden = true;
     dlg.showModal(); cform.agent.focus();
+    fetch('/api/memories').then(r => r.ok ? r.json() : { folders: [] }).then(j => {
+      const box = $('#c-mem'); box.replaceChildren();
+      for (const m of j.folders || []) {
+        const lab = el('label', {}, '', box);
+        el('input', { type: 'checkbox', name: 'memories', value: m.id }, '', lab);
+        lab.append(` ${m.label} · ${m.notes} notes`);
+      }
+      memFolders = (j.folders || []).length; sync();
+    }).catch(() => {});
   }
   function mode() {
     // a hub that serves MCP: the person adds a config line to the agent's MCP client, nothing runs on this machine
@@ -1066,6 +1145,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     mode();
     const isNew = !cform.vault.value;
     $('#c-name-row').hidden = !isNew;
+    $('#c-mem-row').hidden = !isNew || !memFolders;
     const short = (cform.vault.value || cform.name.value.trim() || `${cform.agent.value.trim() || 'Codex'} Cortex`)
       .replace(/\s+cortex$/i, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'cortex';
     $('#c-scope-row').hidden = !hubInfo.lan;
@@ -1078,7 +1158,8 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
   cform.addEventListener('input', ev => { if (ev.target.name === 'scope') cform.dataset.touched = '1'; if (ev.target.name === 'vault') delete cform.dataset.touched; sync(); });
   cform.addEventListener('submit', async ev => {
     ev.preventDefault();
-    const body = Object.fromEntries(new FormData(cform));
+    const fd = new FormData(cform), body = Object.fromEntries(fd);
+    body.memories = cform.vault.value ? [] : fd.getAll('memories');   // a new cortex starts with the memory chosen
     $('#c-go').disabled = true; $('#c-err').textContent = body.vault ? 'Preparing…' : 'Creating the cortex…';
     try {
       const r = await fetch('/api/connect', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Cortex-Csrf': csrf }, body: JSON.stringify(body) });
