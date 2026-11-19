@@ -113,6 +113,27 @@ class StructureTests(Base):
         self.assertIn("system:\n  - ubuntu", text)
         self.assertEqual(self.code("lint"), 0)
 
+    def test_a_learning_with_no_concept_is_captured_in_the_inbox(self):
+        """A new vault has no L2 to hang a learning from: it goes to _inbox, checked, instead of being lost."""
+        base = ("learn", "--up", "Preferences", "--title", "The owner prefers VS Code",
+                "--summary", "VS Code is the owner's editor.", "--content", "The owner edits everything in VS Code.",
+                "--evidence", "The owner said so on 2026-11-19.", "--truth", "historical", "--by", "claude")
+        out = self.ok(*base)
+        self.assertIn("captured _inbox/", out)
+        self.assertIn("cortex_curate verb=create", out)
+        (note,) = list((self.v / "_inbox").glob("* The owner prefers VS Code.md"))
+        text = note.read_text(encoding="utf-8")
+        for part in ("learned_by: claude", 'wanted_up: "Preferences"', "## Content", "## Evidence", "truth: historical"):
+            self.assertIn(part, text)
+        self.assertEqual(self.code("lint"), 0)
+        self.assertEqual(self.code("learn", "--up", "Preferences", "--title", "A key", "--summary", "The api key.",
+                                   "--content", "api_key = sk-abcdefghijklmnopqrstuvwxyz123456",
+                                   "--evidence", "config file", "--truth", "historical"), 1, "secrets still refused")
+        self.seed()   # with an L1 under the hand: an L1 is not a concept to learn under either
+        self.assertIn("captured _inbox/", self.ok("learn", "--up", "Orders", "--title", "Orders spike on Mondays",
+                                                  "--summary", "Monday has the most orders.", "--content", "x y",
+                                                  "--evidence", "the dashboard", "--truth", "historical"))
+
     def test_lint_rejects_a_malformed_contract(self):
         self.seed()
         write_node(self.v, "Orders/Ops.md", 2, "Ops", "Orders", "Ops runbook.")

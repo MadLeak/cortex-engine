@@ -1042,8 +1042,10 @@ def server_instructions(st) -> str:
     what makes an agent use its cortex on its own, with nothing written to the agent's instruction files."""
     who = f" You are {st.by}." if st.by else ""
     learn = ("end every task that taught you something durable (a fact, a fix, a decision, a preference) with "
-             "action=finish: used = the titles that helped, learnings = what you learned; it closes the task and "
-             "commits the learnings under your name. " if st.role == "curator" else
+             "action=finish: used = the titles that helped, learnings = what you learned, each under an existing L2 "
+             "concept (up); it closes the task and commits the learnings under your name. When no concept fits (a "
+             "new vault has none), create the L1 domain and the L2 concept first with cortex_curate verb=create; a "
+             "learning whose concept does not exist is kept in _inbox for the curator. " if st.role == "curator" else
              "end every task with action=finish and used = the titles that helped. ")
     return (f'This server is your long-term memory: the Cortex vault "{st.name}".{who} Use it on every task, '
             "unprompted: start with the cortex tool's action=brief, passing the task's question as query, and when "

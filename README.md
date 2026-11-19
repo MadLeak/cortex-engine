@@ -118,7 +118,7 @@ The engine's suite has 53 tests, including a 1,000-node performance check, and r
 
 ## Status
 
-Engine version 2.16.1. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.16.2. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 

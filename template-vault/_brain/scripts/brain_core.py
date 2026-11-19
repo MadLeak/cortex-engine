@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.16.1"
+VERSION = "2.16.2"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -2167,8 +2167,12 @@ def cmd_learn(v: Vault, a) -> int:
         raise BrainError("--by is a short agent name")
     validate_title(v, a.title)
     validate_summary(a.summary)
-    parent = v.node(a.up)
-    validate_parent(3, parent)
+    try:
+        parent = v.node(a.up)
+        validate_parent(3, parent)
+        missing = None
+    except BrainError as e:   # no concept to hang it from (a new vault has none): it goes to _inbox, not lost
+        parent, missing = None, str(e)
     content, evidence = (a.content or "").strip(), (a.evidence or "").strip()
     if not content or not evidence:
         raise BrainError("--content and --evidence must not be empty: say what happened and how it is known")
@@ -2192,6 +2196,8 @@ def cmd_learn(v: Vault, a) -> int:
                       {x.lower() for x in v.cfg.get("allowed_addresses", {})})
     if found:
         raise BrainError(f"possible {found}: never store credentials or personal data")
+    if parent is None:
+        return capture_learning(v, a, by, content, evidence, missing)
     target = v.node(a.contradicts) if a.contradicts else None
     cap = int(v.cfg.get("max_provisional", MAX_PROVISIONAL))
     if sum(n.status == "provisional" for n in v.net.values()) >= cap:
@@ -2225,6 +2231,25 @@ def cmd_learn(v: Vault, a) -> int:
     need = int(v.cfg.get("confirm_sessions", CONFIRM_SESSIONS))
     print(f"learned {rel.as_posix()} (L3 {typ}, provisional): it becomes a seed once it helps in {need} sessions"
           + (f"; it contradicts \"{target.title}\", so the curator decides" if target else ""))
+    return 0
+
+
+def capture_learning(v: Vault, a, by: str, content: str, evidence: str, why: str) -> int:
+    """A learning with no L2 concept to hang from (a new vault has none yet) is not lost: it is captured in _inbox,
+    already checked, for the curator to place (the atomize skill), the way a capture is."""
+    rel = Path("_inbox") / f"{now().strftime('%Y-%m-%d %H%M')} {a.title}.md"
+    if (v.root / rel).exists():
+        raise BrainError(f"{rel.as_posix()} already exists")
+    lines = ["---", f"captured: {today()}", f"source: learned by {by}", f"learned_by: {by}",
+             f"wanted_up: {json.dumps(a.up or '')}", f"type: {a.type or 'fact'}", f"truth: {a.truth}",
+             f"summary: {json.dumps(a.summary.strip())}", "---", "", f"# {a.title}", "",
+             "## Content", content, "", "## Evidence", evidence, ""]
+    with v.lock():
+        (v.root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (v.root / rel).write_text("\n".join(lines), encoding="utf-8")
+    print(f"captured {rel.as_posix()} in _inbox: {why.rstrip('.')}, so there is no concept to hang it from yet. "
+          "The curator places it (atomize); to learn straight into the graph next time, create the L1 domain and "
+          "the L2 concept first (cortex_curate verb=create, or `new --layer 1/2`)")
     return 0
 
 
