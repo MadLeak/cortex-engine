@@ -51,6 +51,7 @@ except ImportError:   # a hub copied out of the repository: views only, no conne
     wire_agent = None
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cortex_mcp  # noqa: E402  (the MCP service rides the hub's own port: /mcp/<vault>)
+import hub_settings  # noqa: E402  (each cortex's Settings dialog)
 
 ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
 # the only files of a vault the hub serves, relative to its _brain folder
@@ -128,6 +129,22 @@ def migrate_vaults(root: Path) -> list[str]:
         lines = [x for x in (r.stdout + r.stderr).splitlines() if x.strip() and not x.startswith("schema ")]
         out += [f"{name}: {x.strip()}" for x in lines]
     return out
+
+
+def forget(v: Path) -> None:
+    """A deleted cortex leaves no trace in the MCP service's caches: its servers, gate, token and file list."""
+    hub = Hub.mcp_hub
+    if hub is not None:
+        with hub.lock:
+            for key in [k for k in hub.servers if k[0] == v]:
+                del hub.servers[key]
+            hub.gates.pop(v, None)
+    Hub.mcp_tokens.pop(v, None)
+    res = cortex_mcp.RESIDENT
+    if res is not None:
+        key = str(v.resolve()) if v.exists() else str(v)
+        for d in (res.used, res.lists, res.gens):
+            d.pop(key, None)
 
 
 def read_json(path: Path, default):
@@ -592,6 +609,12 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
             except (ValueError, subprocess.TimeoutExpired) as e:
                 return self.send(HTTPStatus.BAD_REQUEST, json.dumps({"error": str(e)}).encode(), "application/json")
             return self.send(HTTPStatus.INTERNAL_SERVER_ERROR if "error" in out else 200, json.dumps(out).encode(), "application/json")
+        if path.startswith("/api/cortex/"):   # one cortex's settings: this machine only, the page's token
+            if self.scope != "localhost":
+                return self.send(HTTPStatus.FORBIDDEN, b"change a cortex from the hub on this machine", TEXT)
+            if not hmac.compare_digest(self.headers.get("X-Cortex-Csrf") or "", self.csrf):
+                return self.send(HTTPStatus.FORBIDDEN, b"stale page: reload it", TEXT)
+            return self.cortex_action(path, raw)
         if path == "/api/connect":
             if self.scope != "localhost":   # vaults live on this machine: only its owner connects agents
                 return self.send(HTTPStatus.FORBIDDEN, b"connect agents from the hub on this machine", TEXT)
@@ -609,6 +632,63 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                 return self.send(HTTPStatus.INTERNAL_SERVER_ERROR, json.dumps({"error": str(e)}).encode(), "application/json")
             return self.send(200, json.dumps(out).encode(), "application/json")
         self.send(404, b"not found", TEXT)
+
+    def cortex_target(self, path: str) -> tuple[Path | None, str]:
+        parts = path.split("/")   # /api/cortex/<folder>/<action>
+        if len(parts) != 5:
+            return None, ""
+        return vaults(self.root).get(unquote(parts[3])), parts[4]
+
+    def mcp_base(self) -> str:
+        return self.url(self.domain if self.domain and "." in self.domain else "localhost")
+
+    def cortex_action(self, path: str, raw: bytes):
+        v, action = self.cortex_target(path)
+        if v is None:
+            return self.send(404, json.dumps({"error": "no such cortex"}).encode(), "application/json")
+        try:
+            body = json.loads(raw or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("a JSON object")
+            with self.creating:   # one change to the cortexes at a time
+                if action == "settings":
+                    msgs = [hub_settings.save(v, body.get("config") or {})]
+                    if body.get("scope") and body["scope"] != load_scopes(self.data).get(v.name, "local"):
+                        if body["scope"] not in ("local", "lan") or (body["scope"] == "lan" and not self.lan_domain):
+                            raise ValueError("scope: local, or lan when the hub has a LAN address")
+                        if self.data:
+                            save_scope(self.data, v.name, body["scope"])
+                            msgs.append(f"scope {body['scope']}")
+                    out = {"message": "; ".join(msgs)}
+                elif action == "remote":
+                    out = {"message": hub_settings.set_remote(v, str(body.get("url") or ""))}
+                elif action == "push-token":
+                    out = {"message": hub_settings.set_push_token(v, str(body.get("token") or ""))}
+                elif action == "push":
+                    out = {"message": hub_settings.push(v)}
+                elif action == "rotate-token":
+                    import secrets as _s
+                    cortex_mcp.token_path(v).parent.mkdir(parents=True, exist_ok=True)
+                    cortex_mcp.token_path(v).write_text(_s.token_urlsafe(32) + "\n", encoding="utf-8")
+                    token = cortex_mcp.ensure_token(v)
+                    learner = hub_settings.read_config(v).get("learner") or "agent"
+                    out = {"message": "new MCP token: the old one no longer works",
+                           "token": token, "url": f"{self.mcp_base()}/mcp/{quote(v.name)}?by={quote(learner)}"}
+                elif action == "delete":
+                    out = {"message": hub_settings.delete(v, str(body.get("confirm") or ""))}
+                    if self.data:
+                        scopes = load_scopes(self.data)
+                        if scopes.pop(v.name, None) is not None:
+                            self.data.mkdir(parents=True, exist_ok=True)
+                            (self.data / "scopes.json").write_text(json.dumps(scopes, indent=1) + "\n", encoding="utf-8")
+                    forget(v)
+                else:
+                    return self.send(404, json.dumps({"error": f"no action {action}"}).encode(), "application/json")
+        except ValueError as e:
+            return self.send(HTTPStatus.BAD_REQUEST, json.dumps({"error": str(e)}).encode(), "application/json")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            return self.send(HTTPStatus.INTERNAL_SERVER_ERROR, json.dumps({"error": str(e)}).encode(), "application/json")
+        return self.send(200, json.dumps(out).encode(), "application/json")
 
     def do_HEAD(self):
         self.do_GET()
@@ -649,6 +729,15 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                 return self.send(404, b"no such cortex", TEXT)
             items = list(read_store(review_dir(self.root, self.data) / f"{name}.jsonl").values())
             return self.send(200, json.dumps({"vault": name, "items": items}, ensure_ascii=False).encode(), "application/json")
+        if path.startswith("/api/cortex/") and path.endswith("/settings"):
+            if self.scope != "localhost":
+                return self.send(HTTPStatus.FORBIDDEN, b"on this machine only", TEXT)
+            v, _ = self.cortex_target(path)
+            if v is None:
+                return self.send(404, b"no such cortex", TEXT)
+            out = hub_settings.read(v, load_scopes(self.data).get(v.name, "local"))
+            out["lan"] = bool(self.lan_domain)
+            return self.send(200, json.dumps(out, ensure_ascii=False).encode(), "application/json")
         if path == "/api/memories":   # the owner's Claude Code memory folders, for Connect an agent
             if self.scope != "localhost":
                 return self.send(HTTPStatus.FORBIDDEN, b"on this machine only", TEXT)
@@ -787,6 +876,12 @@ button.primary { background: var(--ink); color: var(--surface); border-color: va
 dialog { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--ink); padding: 18px;
   width: min(640px, calc(100vw - 32px)); box-shadow: var(--shadow); }
 dialog::backdrop { background: rgba(0,0,0,0.35); }
+#settings { width: min(560px, 92vw); max-height: 88vh; overflow: auto; }
+#settings h3 { font-size: 13px; margin: 14px 0 4px; }
+#settings section.form, #settings form.form { border-top: 1px solid var(--border); padding-top: 4px; margin-top: 10px; }
+#settings textarea { height: 90px; }
+#settings .danger h3, button.danger { color: #d03b3b; }
+button.danger:not(:disabled) { border-color: #d03b3b; }
 dialog h2 { font-size: 16px; margin: 0 0 4px; }
 .form { display: grid; gap: 10px; margin-top: 12px; }
 .form label { display: grid; gap: 4px; font-size: 12px; color: var(--ink2); }
@@ -922,6 +1017,50 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     <div class="row"><button type="button" id="c-copy" class="primary">Copy</button><button type="button" id="c-done">Done</button></div>
   </div>
 </dialog>
+<dialog id="settings" aria-labelledby="s-title">
+  <div class="form-wrap">
+    <h2 id="s-title">Settings · <span id="s-name"></span></h2>
+    <div class="sub" id="s-git"></div>
+    <p class="err" id="s-msg" role="status"></p>
+    <form id="s-form" class="form">
+      <h3>General</h3>
+      <label>Name <input name="vault" maxlength="48" required></label>
+      <label>Agent that learns here <input name="learner" maxlength="32" placeholder="its learnings and commits carry this name"></label>
+      <label id="s-scope-row">Domain scope <select name="scope"><option value="local">Local: only this machine</option>
+        <option value="lan">LAN: the local network, behind the access key</option></select></label>
+      <label>Session idle minutes <input name="auto_idle_minutes" type="number" min="5" max="1440"></label>
+      <h3>Memory</h3>
+      <label>Weight half-life (days) <input name="half_life_days" type="number" min="1" max="3650"></label>
+      <label>Sessions to confirm a learning <input name="confirm_sessions" type="number" min="1" max="20"></label>
+      <label>Days those sessions must span <input name="confirm_min_days" type="number" min="0" max="60"></label>
+      <label>Provisional learnings allowed <input name="max_provisional" type="number" min="1" max="500"></label>
+      <div class="row"><button type="submit" class="primary">Save settings</button></div>
+    </form>
+    <section class="form">
+      <h3>MCP token</h3>
+      <div class="sub">The agent's key to this cortex. A new one stops the old one at once: update the agent's MCP client.</div>
+      <div class="row"><button type="button" id="s-rotate">New token</button></div>
+      <textarea id="s-token" readonly hidden aria-label="New MCP token and URL"></textarea>
+    </section>
+    <form id="s-remote" class="form" autocomplete="on">
+      <h3>Remote</h3>
+      <div class="sub">Where this cortex is saved when you ask: a private repository. Nothing is pushed on its own.</div>
+      <label>Remote URL <input name="url" placeholder="https://github.com/you/your-cortex.git" autocomplete="off"></label>
+      <div class="row"><button type="submit">Save remote</button></div>
+      <input name="username" autocomplete="username" value="x-access-token" hidden>
+      <label>Push token <input name="token" type="password" autocomplete="current-password" placeholder="kept in this vault, out of git: paste or let your password manager fill it"></label>
+      <div class="row"><button type="button" id="s-token-save">Save token</button><button type="button" id="s-token-clear">Remove token</button>
+        <button type="button" class="primary" id="s-push">Save to remote</button></div>
+    </form>
+    <section class="form danger">
+      <h3>Delete this cortex</h3>
+      <div class="sub" id="s-del-warn"></div>
+      <label><span>Type <b id="s-del-name"></b> to delete it for good</span> <input id="s-del-input" autocomplete="off"></label>
+      <div class="row"><button type="button" id="s-delete" class="danger" disabled>Delete for good</button></div>
+    </section>
+    <div class="row"><button type="button" id="s-close">Close</button></div>
+  </div>
+</dialog>
 <script>
 (() => {
   const $ = s => document.querySelector(s);
@@ -968,6 +1107,9 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     const act = el('div', { class: 'actions' }, null, c);
     el('a', { class: 'btn', href: openUrl(v), target: '_blank', rel: 'noopener' }, 'Open panel', act);
     el('a', { class: 'btn', href: openUrl(v, '#3d'), target: '_blank', rel: 'noopener' }, '3D', act);
+    if (hubInfo.scope === 'localhost' && hubInfo.connect)
+      el('button', { class: 'btn', type: 'button', title: `Settings of ${v.name}` }, 'Settings', act)
+        .addEventListener('click', () => openSettings(v.name));
 
     return c;
   }
@@ -1177,6 +1319,76 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     catch (e) { $('#c-text').select(); $('#c-copy').textContent = 'Press Ctrl+C'; }
   });
   dlg.addEventListener('close', () => { if (location.pathname === '/connect') history.replaceState(null, '', '/agents'); });
+
+  // ---- one cortex's settings: every change is a click of its own, deleting needs the exact name typed in
+  const sdlg = $('#settings'), sform = $('#s-form'), rform = $('#s-remote');
+  let sname = '', sdata = null;
+  const api = (action, body) => fetch(`/api/cortex/${encodeURIComponent(sname)}/${action}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Cortex-Csrf': csrf }, body: JSON.stringify(body || {}) })
+    .then(async r => { const j = await r.json().catch(() => ({ error: `The hub answered ${r.status}` })); if (!r.ok) throw new Error(j.error || r.status); return j; });
+  const say = (text, bad) => { const m = $('#s-msg'); m.textContent = text; m.style.color = bad ? '' : 'var(--ink2)'; };
+  async function loadSettings() {
+    const r = await fetch(`/api/cortex/${encodeURIComponent(sname)}/settings`);
+    if (!r.ok) throw new Error(`The hub answered ${r.status}`);
+    sdata = await r.json();
+    $('#s-name').textContent = sdata.config.vault;
+    for (const [k, val] of Object.entries(sdata.config)) if (sform[k]) sform[k].value = val;
+    sform.scope.value = sdata.scope || 'local'; $('#s-scope-row').hidden = !sdata.lan;
+    const g = sdata.git
+      ? `folder ${sdata.folder} · ${sdata.branch} · ${sdata.commits} commits · ${sdata.uncommitted} uncommitted · ` +
+        (sdata.unpushed == null ? 'never saved to a remote' : `${sdata.unpushed} not saved to the remote`) + ` · schema ${sdata.schema}` +
+        (sdata.last_commit ? `\nlast: ${sdata.last_commit}` : '')
+      : `folder ${sdata.folder} · not a git repository`;
+    $('#s-git').textContent = g; $('#s-git').style.whiteSpace = 'pre-line';
+    rform.url.value = sdata.remote || ''; rform.token.value = '';
+    rform.token.placeholder = sdata.push_token ? 'a token is saved (hidden): paste a new one to replace it' : 'kept in this vault, out of git: paste or let your password manager fill it';
+    $('#s-push').disabled = !(sdata.remote && sdata.remote.startsWith('https://') && sdata.push_token);
+    $('#s-token-clear').disabled = !sdata.push_token;
+    $('#s-del-name').textContent = sdata.folder; $('#s-del-input').value = ''; $('#s-delete').disabled = true;
+    const risks = [];
+    if (sdata.uncommitted) risks.push(`${sdata.uncommitted} uncommitted changes`);
+    if (sdata.git && sdata.unpushed == null) risks.push('it was never saved to a remote: this is its only copy');
+    else if (sdata.unpushed) risks.push(`${sdata.unpushed} commits not saved to the remote`);
+    $('#s-del-warn').textContent = 'Deletes the folder, its notes, its history and its tokens. It cannot be undone.' +
+      (risks.length ? ` Careful: ${risks.join('; ')}.` : '');
+  }
+  async function openSettings(name) {
+    sname = name; say(''); $('#s-token').hidden = true;
+    sdlg.showModal();
+    try { await loadSettings(); } catch (e) { say(String(e.message || e), true); }
+  }
+  async function run(btn, action, body, after) {
+    btn.disabled = true; say('Working…');
+    try { const out = await api(action, body); say(out.message); if (after) after(out); if (action !== 'delete') await loadSettings(); poll(); }
+    catch (e) { say(String(e.message || e), true); }
+    finally { if (action !== 'delete') btn.disabled = false; }
+  }
+  sform.addEventListener('submit', ev => {
+    ev.preventDefault();
+    const config = {};
+    for (const k of Object.keys(sdata.config)) if (sform[k] && String(sform[k].value) !== String(sdata.config[k])) config[k] = sform[k].value;
+    run(sform.querySelector('button[type=submit]'), 'settings', { config, scope: sform.scope.value });
+  });
+  $('#s-rotate').addEventListener('click', ev => {
+    if (!confirm('Make a new MCP token? The agent stops reaching this cortex until its MCP client gets the new one.')) return;
+    run(ev.target, 'rotate-token', {}, out => { const t = $('#s-token'); t.hidden = false;
+      t.value = `URL: ${out.url}\nAuthorization: Bearer ${out.token}`; });
+  });
+  rform.addEventListener('submit', ev => { ev.preventDefault(); run(rform.querySelector('button[type=submit]'), 'remote', { url: rform.url.value }); });
+  $('#s-token-save').addEventListener('click', ev => { if (rform.token.value.trim()) run(ev.target, 'push-token', { token: rform.token.value }); });
+  $('#s-token-clear').addEventListener('click', ev => { if (confirm('Remove the push token of this cortex?')) run(ev.target, 'push-token', { token: '' }); });
+  $('#s-push').addEventListener('click', ev => {
+    if (confirm(`Save ${sname} to ${sdata.remote}? Its history is pushed there (the vault refuses a public repository).`)) run(ev.target, 'push', {});
+  });
+  $('#s-del-input').addEventListener('input', ev => { $('#s-delete').disabled = ev.target.value !== sname; });
+  $('#s-delete').addEventListener('click', ev => {
+    if (!confirm(`Delete ${sname} for good? This cannot be undone.`)) return;
+    run(ev.target, 'delete', { confirm: $('#s-del-input').value }, () => {
+      if (cards[sname]) { cards[sname].remove(); delete cards[sname]; }
+      setTimeout(() => sdlg.close(), 1200);
+    });
+  });
+  $('#s-close').addEventListener('click', () => sdlg.close());
   $('#c-cancel').addEventListener('click', () => dlg.close());
   $('#c-done').addEventListener('click', () => { dlg.close(); cform.reset(); delete cform.dataset.touched; });
 

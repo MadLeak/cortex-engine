@@ -422,6 +422,102 @@ class MemoryTest(unittest.TestCase):
                 cortex_hub.import_memories(v, ["../../etc"], "the owner", Path(tmp) / "projects")
 
 
+class SettingsTest(unittest.TestCase):
+    """A cortex's Settings: config committed as the owner, the remote and push token, deleting only with the name."""
+
+    def setUp(self):
+        import os
+        import shutil
+        engine = Path(__file__).resolve().parents[1] / "template-vault"
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.v = self.root / "Demo Cortex"
+        shutil.copytree(engine / "_brain", self.v / "_brain", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copy(engine / ".gitignore", self.v / ".gitignore")
+        self.env = {**os.environ, "GIT_AUTHOR_NAME": "Owner", "GIT_AUTHOR_EMAIL": "o@example.com",
+                    "GIT_COMMITTER_NAME": "Owner", "GIT_COMMITTER_EMAIL": "o@example.com"}
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "seed")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *a):
+        return subprocess.run(["git", "-C", str(self.v), *a], capture_output=True, text=True, env=self.env)
+
+    def test_settings_are_validated_written_and_committed_as_the_owner(self):
+        from unittest import mock
+        with mock.patch.dict("os.environ", {"CORTEX_GIT_NAME": "Owner", "CORTEX_GIT_EMAIL": "o@example.com"}):
+            msg = cortex_hub.hub_settings.save(self.v, {"auto_idle_minutes": "45", "learner": "codex"})
+        self.assertIn("auto_idle_minutes = 45", msg)
+        cfg = json.loads((self.v / "_brain" / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual((cfg["auto_idle_minutes"], cfg["learner"]), (45, "codex"))
+        self.assertTrue(self.git("log", "-1", "--format=%an|%s").stdout.startswith("Owner|config: "))
+        for bad in ({"auto_idle_minutes": 1}, {"learner": "a b"}, {"nope": 1}, {"vault": "../x"}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                cortex_hub.hub_settings.save(self.v, bad)
+        self.assertEqual(cortex_hub.hub_settings.save(self.v, {"auto_idle_minutes": 45}), "nothing changed")
+
+    def test_remote_and_push_token_stay_local_and_secret(self):
+        hs = cortex_hub.hub_settings
+        with self.assertRaises(ValueError):
+            hs.set_remote(self.v, "https://user:pass@github.com/me/x.git")
+        hs.set_remote(self.v, "https://github.com/me/my-cortex.git")
+        self.assertEqual(self.git("remote", "get-url", "origin").stdout.strip(), "https://github.com/me/my-cortex.git")
+        with self.assertRaises(ValueError):
+            hs.push(self.v)                                  # no token yet
+        hs.set_push_token(self.v, "ghp_secretsecret")
+        got = hs.read(self.v, "local")
+        self.assertTrue(got["push_token"])
+        self.assertNotIn("ghp_secretsecret", json.dumps(got))
+        self.assertEqual(self.git("check-ignore", "_brain/state/remote.token").returncode, 0, "never committed")
+        hs.set_remote(self.v, "git@github.com:me/my-cortex.git")
+        with self.assertRaises(ValueError):
+            hs.push(self.v)                                  # the hub pushes over https only
+        hs.set_remote(self.v, "")
+        self.assertEqual(self.git("remote").stdout.strip(), "")
+        hs.set_push_token(self.v, "")
+        self.assertFalse(hs.read(self.v, "local")["push_token"])
+
+    def test_delete_needs_the_exact_name(self):
+        with self.assertRaises(ValueError):
+            cortex_hub.hub_settings.delete(self.v, "demo cortex")
+        self.assertTrue(self.v.exists())
+        self.assertEqual(cortex_hub.hub_settings.delete(self.v, "Demo Cortex"), "Demo Cortex deleted")
+        self.assertFalse(self.v.exists())
+
+    def test_the_routes_need_this_machine_and_the_page_token(self):
+        from http.server import ThreadingHTTPServer
+        cortex_hub.Hub.root = self.root
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), cortex_hub.Hub)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        def call(path, body=None, headers=None):
+            h = {"Origin": base, "Content-Type": "application/json", **(headers or {})}
+            req = urllib.request.Request(base + path, data=None if body is None else json.dumps(body).encode(), headers=h)
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status, json.loads(r.read() or b"{}")
+            except urllib.error.HTTPError as e:
+                with e:
+                    return e.code, e.read().decode()
+        try:
+            status, got = call("/api/cortex/Demo%20Cortex/settings")
+            self.assertEqual((status, got["folder"], got["git"]), (200, "Demo Cortex", True))
+            self.assertEqual(call("/api/cortex/Demo%20Cortex/delete", {"confirm": "Demo Cortex"})[0], 403, "no page token")
+            ok = {"X-Cortex-Csrf": cortex_hub.Hub.csrf}
+            self.assertEqual(call("/api/cortex/Demo%20Cortex/delete", {"confirm": "nope"}, ok)[0], 400)
+            self.assertEqual(call("/api/cortex/Nope/settings", {}, ok)[0], 404)
+            status, got = call("/api/cortex/Demo%20Cortex/delete", {"confirm": "Demo Cortex"}, ok)
+            self.assertEqual((status, got["message"]), (200, "Demo Cortex deleted"))
+            self.assertFalse(self.v.exists())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 class UpgradeTest(unittest.TestCase):
     """On start the hub puts every older vault on its own engine and commits that as the Cortex hub."""
 
@@ -456,5 +552,6 @@ class UpgradeTest(unittest.TestCase):
             self.assertEqual(cortex_hub.upgrade_engines(Path(tmp), want), [], "current: nothing to do")
             moved = cortex_hub.migrate_vaults(Path(tmp))
             self.assertTrue(any(x.startswith("Old Cortex: applied 0001") for x in moved), moved)
-            self.assertEqual(git("log", "-1", "--format=%an|%s").stdout.strip()[:33], "Cortex hub|migration: 0001 baseli")
+            self.assertIn("Cortex hub|migration: 0001 baseline", git("log", "-3", "--format=%an|%s").stdout)
+            self.assertIn("Cortex hub|migration: 0002 the push token", git("log", "-1", "--format=%an|%s").stdout)
             self.assertEqual(cortex_hub.migrate_vaults(Path(tmp)), [], "migrated: nothing to do")
