@@ -551,6 +551,8 @@ Then bump the engine version and set the template's `config.json` `schema` to th
 
 ### Known gaps (not verified or not built)
 
+Each one is parked on purpose, with what to do later and how to know it worked, in [PENDING.md](PENDING.md).
+
 - `install.ps1` and `install.sh` were only syntax-checked; the manual path (`docker compose up -d hub`) is the tested one.
 - MCP configs for Codex, Gemini and OpenCode are generated but were not tried against those clients; Claude Code is.
 - *Save to remote* was tested only with a stubbed git; try it on a throwaway private repository first.
