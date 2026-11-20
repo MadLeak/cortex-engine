@@ -32,8 +32,8 @@ claude mcp add --transport http --scope user claude-cortex "http://cortex.localh
 ```
 
 A new cortex can start with the agent's Claude Code memory: tick its projects in the form, and the memories are imported
-into the graph by rule (no model). The agent starts each task with `action=brief` and ends it with `action=finish`, which commits what it learned under
-the agent's own name. The command line is `./cortex.sh` (Windows `.\cortex.ps1`): `list`, `new <folder> [--from
+into the graph by rule (no model). The agent starts each task with `action=brief` and ends it with `action=finish`, which commits what it learned, signed with
+your `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL` (the agent's name goes in the message; with none set, it signs as itself). The command line is `./cortex.sh` (Windows `.\cortex.ps1`): `list`, `new <folder> [--from
 kitchen-cortex]`, `brain <vault> recall "..."`, `doctor`, `upgrade`, `token <vault> [--rotate]`, `commit <vault> -m`.
 Options: `--lan` / `-Lan` serves the cortexes you mark LAN to the local network over HTTPS; `--trusted` / `-Trusted`
 (administrator) gives `https://cortex.local` with no warning by trusting the hub's CA on this machine. See the
@@ -119,7 +119,7 @@ The engine's suite has 62 tests, including a 1,000-node performance check, and r
 
 ## Status
 
-Engine version 2.20.1. Since 2.16 it runs in Docker only, with an MCP service per vault, vault migrations with no model, Claude Code memory import, per-cortex *Settings* (config, remote, push token, MCP token, delete) on the hub and from each panel, and a panel whose recalls are drawn as lightning. Known gaps are listed in the [runbook](docs/RUNBOOK.md#known-gaps-not-verified-or-not-built). Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.20.2. Since 2.16 it runs in Docker only, with an MCP service per vault, vault migrations with no model, Claude Code memory import, per-cortex *Settings* (config, remote, push token, MCP token, delete) on the hub and from each panel, and a panel whose recalls are drawn as lightning. Known gaps are listed in the [runbook](docs/RUNBOOK.md#known-gaps-not-verified-or-not-built). Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 

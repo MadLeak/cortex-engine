@@ -22,7 +22,7 @@ limit is spent (stop reading and answer with what you have).
 
 Sessions (engine 2.16+): brief opens the agent's task session (session new --by <agent>) and returns its id; the
 agent's calls use it with or without session=<id>, and finish credits, stores, closes it and, when the server was
-started to (the Cortex hub), commits what the task learned under the agent's own name. A call with no task session
+started to (the Cortex hub), commits what the task learned as the owner (CORTEX_GIT_NAME / CORTEX_GIT_EMAIL), else as the agent. A call with no task session
 open uses the agent's fallback session, closed after the vault's auto_idle_minutes. Older engines keep the single
 automatic session per vault. Only learn writes; the engine takes the vault's own lock and waits about 10 seconds
 for it, because a curator or a consolidation timer can be writing at the same time.
@@ -665,14 +665,21 @@ def brief(st, a: dict, vault: Path) -> tuple[bool, str]:
     return True, "\n\n".join(parts)
 
 
+TITLE_FORBIDDEN = set(':?/\\#^[]|*"<>')   # the engine's own list (brain_core.FORBIDDEN)
+
+
 def finish(st, a: dict) -> tuple[bool, str]:
     """End of a task in one call: credit, the learnings, the session closed and, on a server that commits (the Cortex
-    hub), one commit of what this task changed, under the agent's own name."""
+    hub), one commit of what this task changed, signed as the owner when known, else as the agent."""
     ls = a.get("learnings") or []
     if not isinstance(ls, list):
         raise BadCall("finish's learnings is a list of objects")
     if not a.get("used") and not ls:
         raise BadCall("finish needs used, learnings or both")
+    for i, l in enumerate(ls[:5], 1):   # a bad title fails the whole call before anything is credited or written
+        bad = sorted(set(str(l.get("title") or "")) & TITLE_FORBIDDEN) if isinstance(l, dict) else []
+        if bad:
+            raise BadCall(f"learning {i}: the title contains forbidden characters ({' '.join(bad)}); nothing was stored")
     before = git_dirty(st.vault) if st.commit and ls else None
     parts, ok, learned = [], True, []
     sid = {"session": a["session"]} if a.get("session") else {}
@@ -748,7 +755,7 @@ def fix_filemode(vault: Path) -> None:
 def agent_commit(vault: Path, by: str | None, titles: list[str], before: set[str]) -> str:
     """Commits what this task changed, and only that: paths that were already changed before it (the owner's own
     edits, say) are left alone, and nothing is committed while something else is staged. The author and committer
-    are the agent, by name; the vault's pre-commit hook validates the commit as it does any other."""
+    are the owner when the hub knows who that is, else the agent, by name; the vault's pre-commit hook validates the commit as it does any other."""
     after = git_dirty(vault)
     if after is None:
         return "not a git repository: nothing committed"
@@ -760,8 +767,13 @@ def agent_commit(vault: Path, by: str | None, titles: list[str], before: set[str
         return "something else is already staged in this vault: left uncommitted for its owner"
     fix_filemode(vault)
     name = by or "cortex-agent"
-    email = (re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "agent") + "@cortex.local"
-    env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_COMMITTER_NAME": name,
+    # the owner's identity signs the commit when the hub knows it (CORTEX_GIT_NAME / CORTEX_GIT_EMAIL): the agent
+    # stays named in the message. Without it, the agent signs as itself.
+    sign, email = os.environ.get("CORTEX_GIT_NAME", "").strip(), os.environ.get("CORTEX_GIT_EMAIL", "").strip()
+    if not (sign and email):
+        sign = name
+        email = (re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "agent") + "@cortex.local"
+    env = {**os.environ, "GIT_AUTHOR_NAME": sign, "GIT_COMMITTER_NAME": sign,
            "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_EMAIL": email}
     left = sorted(p for p in before & after if not p.startswith(ENGINE_STATE))
     if git(vault, "add", "--", *mine).returncode != 0:
@@ -773,7 +785,7 @@ def agent_commit(vault: Path, by: str | None, titles: list[str], before: set[str
         git(vault, "reset", "-q", "--", *mine)
         return "the commit was refused, the changes stay on disk: " + (r.stderr or r.stdout).strip()[-600:]
     head = git(vault, "log", "-1", "--format=%h").stdout.strip()
-    return (f"committed {head} as {name} <{email}>: {len(mine)} files" +
+    return (f"committed {head} as {sign} <{email}> (learned by {name}): {len(mine)} files" +
             (f" · left alone, already changed before this task: {', '.join(left[:5])}" if left else ""))
 
 
