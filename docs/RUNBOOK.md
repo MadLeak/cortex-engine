@@ -408,7 +408,8 @@ change is a click of its own:
   the last run's result and the model server's address (§6, *REM in the container*). Saved in `_brain/config.json` as
   `rem_enabled`, `rem_interval_minutes` and `rem_budget_minutes`.
 
-Not yet in Settings, and a project of its own: the number of layers (L1 to L3 are built into the engine).
+Not yet in Settings, and a project of its own: the number of layers (L1 to L3 are built into the engine; why it is not
+built and how it could be: [DESIGN-LAYERS.md](DESIGN-LAYERS.md)).
 
 **The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
 
@@ -553,7 +554,7 @@ Then bump the engine version and set the template's `config.json` `schema` to th
 - `install.ps1` and `install.sh` were only syntax-checked; the manual path (`docker compose up -d hub`) is the tested one.
 - MCP configs for Codex, Gemini and OpenCode are generated but were not tried against those clients; Claude Code is.
 - *Save to remote* was tested only with a stubbed git; try it on a throwaway private repository first.
-- Not built: configurable number of layers.
+- Not built: configurable number of layers (a design note says what blocks it: [DESIGN-LAYERS.md](DESIGN-LAYERS.md)).
 - REM in the container was tested against a stand-in model server, not a real Strata: try *Dream now* on a small throwaway
   cortex first.
 
