@@ -1,5 +1,9 @@
 # Plan: Cortex solo en Docker (sin tocar el host)
 
+> **Documento histórico.** Es el borrador de diseño de 2026-11-18. Lo que se decidió e implementó, y cómo aplicarlo, está en
+> [DECISIONS.md](DECISIONS.md) (en inglés); la operación diaria, en el [RUNBOOK](RUNBOOK.md). Donde este plan y esos
+> documentos difieran, mandan ellos.
+
 Rama `docker-only` · worktree `cortex-engine-docker` · **fases 1-8 implementadas (2026-11-18)**; el estado en
 memoria quedó aplazado y los instaladores sin ejecutar (ver los resultados de cada fase al final).
 

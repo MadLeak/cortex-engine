@@ -31,9 +31,10 @@ memory (under 50 ms) was deferred. *Apply:* key any token cache by file mtime an
 working; never spawn a process per MCP call.
 
 **3. Task sessions: `brief` opens, `finish` closes and commits (PR 1).** Each task is an engine session with its
-own budget. `finish` commits only the paths the task changed, under the agent's own name; owner edits are left out,
+own budget. `finish` commits only the paths the task changed, signed with the owner's identity (`CORTEX_GIT_NAME` and
+`CORTEX_GIT_EMAIL`, 2.20.2; the agent's name goes in the commit message, and only without those variables does the agent sign as itself); owner edits are left out,
 and `_brain/state` counts as bookkeeping. Task sessions have no idle timeout; only the per-agent fallback session
-closes after `auto_idle_minutes` (default 30). The MCP `initialize` answer carries server `instructions` that tell
+closes after `auto_idle_minutes` (default 30). `finish` checks every learning's title before it credits or stores anything, so a bad one fails the whole call. The MCP `initialize` answer carries server `instructions` that tell
 the agent to use the cortex as its memory. *Apply:* do not add a timeout to task sessions.
 
 **4. Empty vaults lose nothing (2.16.2, PR 2).** A learning with no L2 concept to hang from goes to `_inbox` instead
