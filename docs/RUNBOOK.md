@@ -42,7 +42,7 @@ Check the engine before you use it:
 cd template-vault/_brain/scripts && python3 -m unittest discover -s tests
 ```
 
-Expect `Ran 62 tests ... OK`, plus a timing line for the 1,000-node performance test.
+Expect `Ran 67 tests ... OK`, plus a timing line for the 1,000-node performance test.
 
 ## 2. Create a vault
 
@@ -173,7 +173,7 @@ Two tools. `cortex` is the funnel — `recall`, `read`, `credit`, `stats`, `lear
 
 `argparse` exits 2 too and never prints the `✖`, so a call it cannot parse comes back as wrong arguments rather than as a spent budget. A call the engine does not answer in time is stopped and reported the same way.
 
-Nothing here keeps an engine alive between calls: one costs about 0.04 seconds and 17 MB (timed twice on Alastor, 2026-11-03, engine 2.13.0). One call runs at a time per vault, because every read writes the automatic session and the telemetry and the vault lock covers neither. Agents behind the HTTP service share that gate; agents on separate stdio processes do not, and still share the session of §5.
+Run on its own (`cortex_mcp.py --http` or `--vault`), nothing here keeps an engine alive between calls: one costs about 0.04 seconds and 17 MB (timed twice on Alastor, 2026-11-03, engine 2.13.0). The hub's resident engine is different, see *Resident engine* in §8. One call runs at a time per vault, because every read writes the automatic session and the telemetry and the vault lock covers neither. Agents behind the HTTP service share that gate; agents on separate stdio processes do not, and still share the session of §5.
 
 A client that reads Claude Desktop's `mcpServers` block — as Strata's does — takes it verbatim:
 
@@ -340,6 +340,25 @@ hub (`/agents?settings=<cortex>`). Opened from the disk, or from another machine
 `http://<agent>.cortex.localhost:8790`, MCP at `/mcp/<vault>`, HTTPS only on the LAN listener. `compose.trusted.yaml`
 brings back the host-trusted setup below (`https://cortex.local`, its DNS and CA).
 
+**Resident engine (2.21.0).** The hub imports the engine once and calls it in its own process. Between calls it keeps,
+per vault (at most 8, least recently used dropped): the vault's file list (refreshed every `CORTEX_SCAN_SECONDS`, 5 by
+default, and at once after any call that may write notes), the parsed graph, the BM25 index, the parsed glossary and
+the decayed usage sums. Every piece carries the stamp it was built from (names, mtimes and sizes of the notes; the
+glossary's and questions file's own mtime and size) and is dropped the moment the stamp stops matching, so an edit
+made outside (Obsidian) shows up within `CORTEX_SCAN_SECONDS` and one made through the engine at once; session files,
+`config.json` and the usage log are still read on every call. `state/telemetry.pickle` is saved at most every 30 s by
+a process that keeps the sums in memory; any other process catches up from the log. The MCP token is a separate cache
+keyed by `mcp.token`'s mtime and size, so a rotated token works at once. Measure: `docker compose --profile tools run
+--rm bench` (add `-v <host folder>:/b` and `--dir /b` to time a bind mount). Engine 2.21.0, 1,000 nodes:
+
+| where | recall before | recall now | read before | read now |
+|---|---|---|---|---|
+| tmpfs in the container | 27.9 ms | 23.1 ms | 18.9 ms | 14.7 ms |
+| Docker Desktop bind mount (Windows, slow: ~10 ms per call on the share) | 842 ms | 96 ms | 757 ms | 61 ms |
+
+A new process per call costs 150 to 175 ms on tmpfs and over a second on that bind mount. What is left on the bind mount
+is the writes a recall must make (session, usage log, activity feed) and the stats of the lock and the log.
+
 **Settings of a cortex.** Each card on the hub has *Settings* (this machine only, behind the page's token). Every
 change is a click of its own:
 - **General and Memory:** name, the agent that learns there (`learner`), domain scope, session idle minutes, weight
@@ -500,8 +519,7 @@ Then bump the engine version and set the template's `config.json` `schema` to th
 - `install.ps1` and `install.sh` were only syntax-checked; the manual path (`docker compose up -d hub`) is the tested one.
 - MCP configs for Codex, Gemini and OpenCode are generated but were not tried against those clients; Claude Code is.
 - *Save to remote* was tested only with a stubbed git; try it on a throwaway private repository first.
-- Not built: configurable number of layers, REM dreaming in the container, the ideas miner; the resident engine still
-  reads state from disk (keeping it in memory to go under 50 ms was deferred).
+- Not built: configurable number of layers, REM dreaming in the container, the ideas miner.
 
 ## 12. Reference
 

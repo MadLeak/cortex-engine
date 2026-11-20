@@ -709,6 +709,42 @@ class ResidentTests(unittest.TestCase):
             time.sleep(0.1)
         self.assertEqual(len(self.res.lists[key][1]), before + 1)
 
+    def test_memory_never_serves_a_changed_vault(self):
+        """In-memory state (graph, index, usage sums) is keyed by the files: a note edited outside shows once the
+        file list does, and a note written through the engine shows at once."""
+        cortex_mcp.RESIDENT = self.res
+        run = lambda *a: cortex_mcp.run_engine(self.brain, self.v, list(a), 30)
+        self.assertIn("Water before 9 am", run("recall", "when are the beds watered", "--no-body")[1])
+        note = self.v / "Garden" / "Water before 9 am.md"
+        note.write_text(note.read_text(encoding="utf-8").replace(
+            "Beds are watered in the morning only, so leaves dry before night.",
+            "Pumps run on solar power only after noon, an entirely new summary here."), encoding="utf-8")
+        deadline, got = time.time() + 5, ""
+        while time.time() < deadline and "solar power" not in got:
+            time.sleep(0.2)
+            got = run("recall", "solar pumps noon", "--no-body")[1]
+        self.assertIn("solar power", got)
+        self.assertNotIn("leaves dry before night", run("recall", "solar pumps noon", "--no-body")[1])
+        ok, _ = run("new", "--layer", "2", "--up", "Garden", "--title", "Frost covers go on at dusk",
+                    "--summary", "Frost covers protect seedlings on cold nights.")
+        self.assertTrue(ok)
+        self.assertIn("Frost covers go on at dusk", run("recall", "frost covers seedlings", "--no-body")[1])
+
+    def test_a_call_in_memory_costs_no_state_reads(self):
+        """After the first call the resident engine reads no snapshot, index or glossary from disk."""
+        cortex_mcp.RESIDENT = self.res
+        run = lambda *a: cortex_mcp.run_engine(self.brain, self.v, list(a), 30)
+        for _ in range(2):          # the first calls may still write generated files, which changes the file list
+            run("recall", "when are the beds watered", "--no-body")
+        bc, reads = self.res.bc, []
+        real = bc.load_state
+        bc.load_state = lambda path: (reads.append(Path(path).name), real(path))[1]
+        try:
+            self.assertTrue(run("recall", "slugs lettuce copper", "--no-body")[0])
+        finally:
+            bc.load_state = real
+        self.assertEqual([n for n in reads if n != "telemetry.pickle"], [], reads)
+
     def test_output_is_captured_per_thread(self):
         cortex_mcp.RESIDENT = self.res
         seen = []
