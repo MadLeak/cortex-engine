@@ -359,7 +359,7 @@ v = bc.Vault(sys.argv[1]); w = bc.Telemetry(v).weights()
 own = getattr(bc, "own_text", None)
 out = []
 for n in v.net.values():
-    if n.layer not in getattr(bc, "LAYER_ROLE", (1, 2, 3)) or n.status == "obsolete": continue
+    if n.layer not in getattr(v, "layer_set", (1, 2, 3)) or n.status == "obsolete": continue
     text = re.sub(r"\s+", " ", own(n.body) if own else re.sub(r"(?ms)^## Connections.*", "", n.body)).strip()[:1100]
     # the staleness hash must not depend on the engine version: a port to an engine with own_text would redo every note
     plain = re.sub(r"\s+", " ", re.sub(r"(?ms)^## Connections.*", "", n.body)).strip()

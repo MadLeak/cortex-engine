@@ -143,7 +143,7 @@ def items(vault: Path, owner: str = "its owner") -> list[dict]:
     bc, v = load(vault)
     reads, used = usage(vault)
     cfg = json.loads((vault / "_brain/config.json").read_text(encoding="utf-8"))
-    nodes = [n for n in v.net.values() if n.layer in getattr(bc, "LAYER_ROLE", (1, 2, 3))]
+    nodes = [n for n in v.net.values() if n.layer in getattr(v, "layer_set", (1, 2, 3))]
     by_title = {n.title: n for n in nodes}
     kids: dict[str, list] = {}
     for n in nodes:

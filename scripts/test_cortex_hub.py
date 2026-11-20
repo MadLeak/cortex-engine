@@ -70,6 +70,14 @@ class HubTest(unittest.TestCase):
         (v,) = json.loads(body)["vaults"]
         self.assertEqual((status, v["name"], v["version"], v["nodes"], v["inbox"]), (200, "Fern Cortex", "2.11.0", 3, 2))
         self.assertEqual((v["layers"], v["status"]["seed"], v["status"]["provisional"]), ({"1": 1, "2": 0, "3": 2}, 1, 1))
+        cfg = Path(self.tmp.name) / "Fern Cortex" / "_brain" / "config.json"
+        cfg.write_text(json.dumps({"layers": 4}))
+        (v4,) = json.loads(self.get("/api/vaults")[1])["vaults"]
+        self.assertEqual(list(v4["layers"]), ["1", "2", "3", "4"], "a card counts the layers its vault has")
+        cfg.write_text(json.dumps({"layers": 9}))
+        (v9,) = json.loads(self.get("/api/vaults")[1])["vaults"]
+        self.assertEqual(list(v9["layers"]), ["1", "2", "3"], "a count nobody builds falls back to three")
+        cfg.write_text("{}")
         self.assertEqual([e["e"] for e in v["recent"]], ["recall"], "activated events are left out of the card")
         self.assertFalse(v["live"])
         self.assertIn("Cortex hub", self.get("/")[1])

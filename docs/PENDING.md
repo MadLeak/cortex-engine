@@ -52,5 +52,5 @@ parked, what to do, and what proves it done. When one is done, delete its entry 
 
 In progress (decided 2026-11-20): see [DESIGN-LAYERS.md](DESIGN-LAYERS.md). Step 1 (roles instead of the numbers
 1, 2, 3, golden-proved) shipped in 2.24.0 and step 2 (`layers: 3` in `_brain/config.json`, migration 0003, schema 3, shown read
-only in Settings) in 2.25.0. Left: step 3 (levels 4 and 5, generated panel, an explicit command to add one). Still parked inside it: the 240-query recall bench
+only in Settings) in 2.25.0. Step 3 (levels 4 and 5, generated panel, `layers --to N`) in 2.26.0. Nothing is left to build; parked inside it: try `layers --to 4` on a copy of a real cortex, and the 240-query recall bench
 lives in the owner's vaults, so hit@1 was not re-measured; run it once on a copy when the vaults move.

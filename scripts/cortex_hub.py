@@ -58,8 +58,13 @@ ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
 # the only files of a vault the hub serves, relative to its _brain folder
 SERVED = {"Panel.html": "text/html; charset=utf-8", "state/activity.js": "text/javascript; charset=utf-8",
           "generated/orbit.svg": "image/svg+xml"}
-# the layers a card counts, by number; the vault's own table is not read yet (the engine's default is three levels)
+# the layers a card counts, by number: three to five, as the vault's config says (a vault that does not say has three)
 DEFAULT_LAYER_NUMBERS = (1, 2, 3)
+
+
+def layer_numbers(v: Path) -> tuple:
+    n = read_json(v / "_brain/config.json", {}).get("layers", 3)
+    return tuple(range(1, n + 1)) if isinstance(n, int) and not isinstance(n, bool) and 3 <= n <= 5 else DEFAULT_LAYER_NUMBERS
 LIVE_MINUTES = 10   # a vault with activity this recent shows as live
 TEXT = "text/plain; charset=utf-8"
 VIEWS = ("/", "/agents", "/wall", "/review", "/connect")
@@ -169,7 +174,7 @@ def summary(name: str, v: Path) -> dict:
     """The figures of one vault's card: size by layer and status, and its latest activity."""
     g = read_json(v / "_brain/generated/graph.json", {})
     nodes = g.get("nodes", [])
-    layers = {str(L): sum(n.get("layer") == L for n in nodes) for L in DEFAULT_LAYER_NUMBERS}
+    layers = {str(L): sum(n.get("layer") == L for n in nodes) for L in layer_numbers(v)}
     status = {s: sum(n.get("status") == s for n in nodes) for s in ("provisional", "seed", "consolidated", "obsolete")}
     events = activity(v)
     now = datetime.now()
@@ -822,7 +827,7 @@ PAGE = r"""<!doctype html>
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
   --border: rgba(11,11,11,0.10); --wash: rgba(11,11,11,0.04);
-  --l1: #2a78d6; --l2: #eb6834; --l3: #1baf7a; --good: #0ca30c; --warning: #fab219;
+  --l1: #2a78d6; --l2: #eb6834; --l3: #1baf7a; --l4: #d1a21c; --l5: #d6527e; --good: #0ca30c; --warning: #fab219;
   --shadow: 0 6px 24px rgba(11,11,11,0.12);
 }
 @media (prefers-color-scheme: dark) {
@@ -830,14 +835,14 @@ PAGE = r"""<!doctype html>
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
     --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
-    --l1: #3987e5; --l2: #d95926; --l3: #199e70; --shadow: 0 6px 24px rgba(0,0,0,0.5);
+    --l1: #3987e5; --l2: #d95926; --l3: #199e70; --l4: #e0b83a; --l5: #e86a92; --shadow: 0 6px 24px rgba(0,0,0,0.5);
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
   --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
-  --l1: #3987e5; --l2: #d95926; --l3: #199e70; --shadow: 0 6px 24px rgba(0,0,0,0.5);
+  --l1: #3987e5; --l2: #d95926; --l3: #199e70; --l4: #e0b83a; --l5: #e86a92; --shadow: 0 6px 24px rgba(0,0,0,0.5);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -1367,7 +1372,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
         (sdata.unpushed == null ? 'never saved to a remote' : `${sdata.unpushed} not saved to the remote`) + ` · schema ${sdata.schema}` +
         (sdata.last_commit ? `\nlast: ${sdata.last_commit}` : '')
       : `folder ${sdata.folder} · not a git repository`;
-    $('#s-git').textContent = g + ` · ${sdata.layers} layers (fixed)`; $('#s-git').style.whiteSpace = 'pre-line';
+    $('#s-git').textContent = g + ` · ${sdata.layers} layers (read only; add one with the layers command)`; $('#s-git').style.whiteSpace = 'pre-line';
     $('#s-ideas').textContent = `${sdata.ideas_waiting} ${sdata.ideas_waiting === 1 ? 'idea' : 'ideas'} waiting in the inbox`;
     const rem = sdata.rem || {};
     $('#s-rem').textContent = (rem.running ? 'Dreaming now…' : rem.last ? `Last run ${rem.last.replace('T', ' ').slice(0, 16)}: ${rem.result}` : 'Never run.') +

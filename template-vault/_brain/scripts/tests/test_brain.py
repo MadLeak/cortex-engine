@@ -711,12 +711,14 @@ class LayerRoleTests(Base):
     """The levels are one table of roles; the default is the paper's three (golden output proves nothing else moved)."""
 
     def test_the_default_table_is_the_three_levels(self):
-        self.assertEqual([(d["n"], d["role"]) for d in brain.LAYERS], [(1, "domain"), (2, "concept"), (3, "leaf")])
-        self.assertEqual(brain.LAYER_ROLE, {1: brain.DOMAIN, 2: brain.CONCEPT, 3: brain.LEAF})
+        self.assertEqual([(d["n"], d["role"]) for d in brain.layers_for({})], [(1, "domain"), (2, "concept"), (3, "leaf")])
+        self.assertEqual([d["n"] for d in brain.layers_for({"layers": 5})], [1, 2, 3, 4, 5])
+        self.assertEqual(brain.LAYER_ROLE, {1: brain.DOMAIN, 2: brain.CONCEPT, 3: brain.LEAF, 4: brain.LEAF, 5: brain.LEAF})
+        self.assertEqual(brain.ROLE_LAYER[brain.LEAF], 3, "a role's layer is its first")
         self.assertEqual([brain.layer_of(r) for r in (brain.DOMAIN, brain.CONCEPT, brain.LEAF)], [1, 2, 3])
-        self.assertEqual(brain.MAX_WORDS, {1: 250, 2: 300, 3: 300})
+        self.assertEqual(brain.MAX_WORDS, {1: 250, 2: 300, 3: 300, 4: 300, 5: 300})
         self.assertEqual(brain.CHILD_SECTION, {1: "Branches", 2: "Details"})
-        self.assertEqual(brain.number_list(brain.LAYER_ROLE), "1, 2 or 3")
+        self.assertEqual(brain.number_list(sorted(brain.Vault(self.v).layer_set)), "1, 2 or 3")
 
     def test_a_node_knows_its_role(self):
         self.seed()
@@ -724,6 +726,167 @@ class LayerRoleTests(Base):
         self.assertEqual([v.node(t).role for t in ("Orders", "Order cutoff is at 2pm EST", "Late orders went to the wrong wave")],
                          [brain.DOMAIN, brain.CONCEPT, brain.LEAF])
         self.assertIsNone(brain.Node(Path("Odd.md"), "Odd one", {"layer": 9}, "", []).role)
+
+
+class MoreLayersTests(Base):
+    """Three to five layers: the levels beyond the third refine a detail, and adding one moves no note."""
+
+    DETAIL = "Late orders went to the wrong wave"
+    CONCEPT = "Order cutoff is at 2pm EST"
+
+    def layered(self, to=None):
+        self.seed()
+        (self.v / ".obsidian").mkdir()
+        (self.v / ".obsidian" / "graph.json").write_text(json.dumps({"colorGroups": [{"query": "[layer:3]", "color": {"a": 1, "rgb": 1}}]}), encoding="utf-8")
+        (self.v / "AGENTS.md").write_text("# A\n\n## Layers\n| Layer | What | Max words |\n|---|---|---|\n| L0 | x | - |\n"
+                                          "| L3 | Detail | 300 |\n| Cold | `_inbox` | - |\n\n## Truth\n", encoding="utf-8")
+        (self.v / "_brain" / "Layers.base").write_text("views:\n  - type: table\n    name: Seeds to review\n", encoding="utf-8")
+        if to:
+            self.ok("layers", "--to", str(to))
+
+    def notes(self):
+        return {p.relative_to(self.v).as_posix(): p.read_bytes() for p in self.v.rglob("*.md")
+                if "_templates" not in p.parts and p.name != "AGENTS.md"}
+
+    def cfg(self):
+        return json.loads((self.v / "_brain" / "config.json").read_text(encoding="utf-8"))
+
+    def test_layers_only_go_up_and_only_by_the_command(self):
+        self.layered()
+        self.assertIn("3 layers", self.ok("layers"))
+        for bad, text in (("3", "already has 3"), ("2", "never removed"), ("6", "3 to 5 layers")):
+            code, _, err = run(self.v, "layers", "--to", bad)
+            self.assertEqual(code, 1, bad)
+            self.assertIn(text, err)
+        self.assertNotIn("layers", self.cfg())
+        self.ok("layers", "--to", "5")
+        code, _, err = run(self.v, "layers", "--to", "4")
+        self.assertIn("never removed", err)
+        self.assertEqual(self.cfg()["layers"], 5)
+
+    def test_adding_a_layer_moves_no_note_and_says_so_everywhere(self):
+        self.layered()
+        before = self.notes()
+        self.ok("layers", "--to", "5")
+        self.assertEqual(self.notes(), before)
+        self.assertEqual(self.cfg()["layers"], 5)
+        for k in (4, 5):
+            tpl = (self.v / "_templates" / f"L{k} Refinement.md").read_text(encoding="utf-8")
+            self.assertIn(f"layer: {k}", tpl)
+        agents = (self.v / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("| L4 | Refinement of an L3 detail", agents)
+        self.assertIn("| L5 | Refinement of an L4 detail", agents)
+        self.assertIn("This vault has 5 layers", agents)
+        self.assertEqual(agents.count("| L3 |"), 1)
+        graph = json.loads((self.v / ".obsidian" / "graph.json").read_text(encoding="utf-8"))
+        self.assertEqual([g["query"] for g in graph["colorGroups"]], ["[layer:3]", "[layer:4]", "[layer:5]"])
+        base = (self.v / "_brain" / "Layers.base").read_text(encoding="utf-8")
+        self.assertIn("name: L4 Refinements", base)
+        self.assertLess(base.index("L5 Refinements"), base.index("Seeds to review"))
+        self.assertEqual(self.code("lint"), 0)
+
+    def test_a_refinement_nests_under_its_detail_and_lint_accepts_it(self):
+        self.layered(4)
+        self.ok("new", "--layer", "4", "--up", self.DETAIL, "--type", "fact", "--title", "The clock fix was in the sync job",
+                "--summary", "The UTC clock came from the sync job that restarts the server.")
+        path = self.v / "Orders" / self.CONCEPT / self.DETAIL / "The clock fix was in the sync job.md"
+        self.assertTrue(path.exists(), "folder named for the parent")
+        parent = (self.v / "Orders" / self.CONCEPT / f"{self.DETAIL}.md").read_text(encoding="utf-8")
+        self.assertIn("## Refinements", parent)
+        self.assertIn("[[The clock fix was in the sync job]]", parent)
+        code, out, _ = run(self.v, "lint")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("expected location", out)
+        self.assertNotIn("does not link", out)
+
+    def test_layer_five_nests_one_folder_deeper_and_a_sixth_does_not_exist(self):
+        self.layered(5)
+        self.ok("new", "--layer", "4", "--up", self.DETAIL, "--title", "First refinement",
+                "--summary", "A refinement of the late orders detail.")
+        self.ok("new", "--layer", "5", "--up", "First refinement", "--title", "Second refinement",
+                "--summary", "A refinement of the refinement of the late orders detail.")
+        self.assertTrue((self.v / "Orders" / self.CONCEPT / self.DETAIL / "First refinement" / "Second refinement.md").exists())
+        self.assertEqual(self.code("lint"), 0)
+        self.assertNotIn(6, brain.Vault(self.v).layer_set)
+
+    def test_a_layer_the_vault_does_not_have_is_refused_and_linted(self):
+        self.layered()
+        code, _, err = run(self.v, "new", "--layer", "4", "--up", self.DETAIL, "--title", "Too soon", "--summary", "Not yet.")
+        self.assertEqual(code, 1)
+        self.assertIn("this vault has 3 layers, not 4", err)
+        write_node(self.v, "Orders/Stray.md", 4, "Stray refinement", self.DETAIL, "A refinement in a three-layer vault.", type="fact")
+        code, out, _ = run(self.v, "lint")
+        self.assertEqual(code, 1)
+        self.assertIn("layer must be 1, 2 or 3", out)
+
+    def test_a_refinement_hangs_only_from_the_layer_above(self):
+        self.layered(4)
+        code, _, err = run(self.v, "new", "--layer", "4", "--up", self.CONCEPT, "--title", "Wrong parent", "--summary", "Under a concept.")
+        self.assertEqual(code, 1)
+        self.assertIn("an L4 must hang from an L3", err)
+        code, _, err = run(self.v, "new", "--layer", "3", "--up", self.DETAIL, "--title", "Wrong again", "--summary", "A detail under a detail.")
+        self.assertIn("an L3 must hang from an L2", err)
+
+    def test_recall_hot_consolidate_and_learn_work_with_refinements(self):
+        self.layered(4)
+        self.ok("new", "--layer", "4", "--up", self.DETAIL, "--title", "The sync job restarts the server",
+                "--summary", "The nightly sync job restarts the server and resets its clock to UTC.")
+        out = self.ok("recall", "sync job restarts clock")
+        self.assertIn("[L4] The sync job restarts the server", out)
+        self.assertIn("consolidate", self.ok("consolidate") + "consolidate")
+        self.ok("learn", "--up", self.CONCEPT, "--title", "Cutoffs follow the carrier", "--summary", "A learned fact about the carrier cutoff.",
+                "--content", "The carrier sets the cutoff.", "--evidence", "test", "--truth", "historical")
+        learned = [p for p in self.v.rglob("Cutoffs follow the carrier.md")]
+        self.assertEqual(len(learned), 1)
+        self.assertIn("layer: 3", learned[0].read_text(encoding="utf-8"))
+        self.assertEqual(self.code("lint"), 0)
+
+    def test_the_folder_of_refinements_travels_with_its_detail(self):
+        self.layered(4)
+        self.ok("new", "--layer", "4", "--up", self.DETAIL, "--title", "A refinement", "--summary", "A refinement of the late orders detail.")
+        self.ok("move", self.DETAIL, "--up", "The shipping window limits the cutoff")
+        moved = self.v / "Orders" / "The shipping window limits the cutoff" / self.DETAIL
+        self.assertTrue((moved / "A refinement.md").exists())
+        self.assertFalse((self.v / "Orders" / self.CONCEPT / self.DETAIL).exists())
+        self.ok("rename", self.DETAIL, "Late orders joined the wrong wave")
+        self.assertTrue((self.v / "Orders" / "The shipping window limits the cutoff" / "Late orders joined the wrong wave" / "A refinement.md").exists())
+        self.assertEqual(self.code("lint"), 0)
+        code, _, err = run(self.v, "promote", "Late orders joined the wrong wave")
+        self.assertEqual(code, 1)
+        self.assertIn("promoted by the curator", err)
+
+    def test_build_draws_every_layer(self):
+        self.layered(5)
+        self.ok("new", "--layer", "4", "--up", self.DETAIL, "--title", "First refinement", "--summary", "A refinement of the late orders detail.")
+        self.ok("new", "--layer", "5", "--up", "First refinement", "--title", "Second refinement", "--summary", "A refinement of the refinement.")
+        self.ok("build")
+        svg = (self.v / "_brain" / "generated" / "orbit.svg").read_text(encoding="utf-8")
+        self.assertIn("L4 1 · L5 1", svg)
+        self.assertEqual(svg.count('fill="none" stroke="#888780"'), 4 + 2, "a ring per layer (L1, L2, L3, L4, L5) and the cold ring")
+        self.assertIn('fill="#d1a21c"', svg)
+        self.assertIn('fill="#d6527e"', svg)
+        md = (self.v / "_brain" / "Panel.md").read_text(encoding="utf-8")
+        self.assertIn("| L4 Refinements | 1 |", md)
+        self.assertIn("| L5 Refinements | 1 |", md)
+        html = (self.v / "_brain" / "Panel.html").read_text(encoding="utf-8")
+        data = json.loads(html.split('<script id="brain-data" type="application/json">')[1].split("</script>")[0])
+        self.assertEqual(data["layers"], 5)
+        self.assertEqual(sorted({n["layer"] for n in data["nodes"]}), [1, 2, 3, 4, 5])
+        self.assertIn("layerTable(DATA.layers)", html)
+
+    def test_a_default_vault_gives_the_panel_no_layer_count(self):
+        self.seed()
+        self.ok("build")
+        html = (self.v / "_brain" / "Panel.html").read_text(encoding="utf-8")
+        data = json.loads(html.split('<script id="brain-data" type="application/json">')[1].split("</script>")[0])
+        self.assertNotIn("layers", data)
+
+    def test_doctor_accepts_three_to_five_and_refuses_the_rest(self):
+        for n, ok in ((3, True), (4, True), (5, True), (6, False), (2, False)):
+            cfg = self.cfg()
+            cfg["layers"] = n
+            (self.v / "_brain" / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+            self.assertEqual("layers; this engine builds 3 to 5" in run(self.v, "doctor")[1], not ok, n)
 
 
 class IdeasTests(Base):
@@ -1118,10 +1281,10 @@ class MigrationTests(Base):
     def test_doctor_refuses_a_layer_count_this_engine_does_not_build(self):
         cfg_path = self.v / "_brain" / "config.json"
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        cfg["layers"] = 4
+        cfg["layers"] = 7
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
         code, out, _ = run(self.v, "doctor")
-        self.assertIn("this vault has 4 layers; this engine builds 3", out)
+        self.assertIn("this vault has 7 layers; this engine builds 3 to 5", out)
         self.assertEqual(brain.layer_count({"layers": "x"}), 3)
 
 

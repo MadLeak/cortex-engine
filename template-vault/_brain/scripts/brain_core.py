@@ -25,7 +25,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.25.0"
+VERSION = "2.26.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -47,6 +47,17 @@ DEFAULT_LAYERS = [
      "max_words": 300, "template": "L3 Detail.md", "section": None, "label": "L3 Details", "color": "#1baf7a",
      "dot": 2.5},
 ]
+# Levels beyond the third are further refinements of a detail: the same role (leaf), the same types and word limit, a
+# folder named for the parent (Domain/Concept/Detail/Refinement.md), so no existing note ever moves when one is added.
+REFINEMENT_TYPES = DEFAULT_LAYERS[2]["types"]
+EXTRA_LAYERS = [
+    {"n": 4, "role": LEAF, "types": REFINEMENT_TYPES, "default_type": "fact", "max_words": 300,
+     "template": "L4 Refinement.md", "section": None, "label": "L4 Refinements", "color": "#d1a21c", "dot": 2},
+    {"n": 5, "role": LEAF, "types": REFINEMENT_TYPES, "default_type": "fact", "max_words": 300,
+     "template": "L5 Refinement.md", "section": None, "label": "L5 Refinements", "color": "#d6527e", "dot": 1.6},
+]
+ALL_LAYERS = DEFAULT_LAYERS + EXTRA_LAYERS
+MIN_LAYERS, MAX_LAYERS = len(DEFAULT_LAYERS), len(ALL_LAYERS)
 
 
 def layer_count(cfg: dict | None = None) -> int:
@@ -57,9 +68,9 @@ def layer_count(cfg: dict | None = None) -> int:
 
 
 def layers_for(cfg: dict | None = None) -> list:
-    """The layer table of a vault. This engine builds only the default three; a vault that asks for another count
-    is refused by `doctor` rather than guessed at."""
-    return DEFAULT_LAYERS
+    """The layer table of a vault: the first `layers` of the levels this engine knows (three to five). A count outside
+    that is refused by `doctor` rather than guessed at."""
+    return ALL_LAYERS[:max(MIN_LAYERS, min(layer_count(cfg), MAX_LAYERS))]
 
 
 def number_list(nums) -> str:
@@ -78,9 +89,23 @@ def section_of(role: str) -> str:
     return CHILD_SECTION[ROLE_LAYER[role]]
 
 
-LAYERS = layers_for()
-LAYER_ROLE = {d["n"]: d["role"] for d in LAYERS}          # layer number -> role (also: "is this a graph layer")
-ROLE_LAYER = {d["role"]: d["n"] for d in reversed(LAYERS)}  # role -> its first layer number
+def child_section(layer: int) -> str:
+    """The heading under which a node of this layer lists its children (a detail lists its refinements)."""
+    return CHILD_SECTION.get(layer) or "Refinements"
+
+
+def depth_limit(layer: int) -> int:
+    """Folders a note of this layer may sit in: three, and one more for each refinement level."""
+    return max(MAX_DEPTH, layer)
+
+
+# The tables below cover every level the engine knows; whether a note's layer exists in a vault is that vault's
+# `layer_set` (a resident engine serves vaults of different sizes, so nothing here depends on one vault's count).
+LAYERS = ALL_LAYERS
+LAYER_ROLE = {d["n"]: d["role"] for d in LAYERS}          # layer number -> role
+ROLE_LAYER: dict = {}                                       # role -> its first layer number
+for _d in LAYERS:
+    ROLE_LAYER.setdefault(_d["role"], _d["n"])
 TYPES_BY_LAYER = {d["n"]: set(d["types"]) for d in LAYERS}
 DEFAULT_TYPE = {d["n"]: d["default_type"] for d in LAYERS}
 # provisional: an agent's own learning (brain.py learn), ranked low until use confirms it (2026-10-29)
@@ -97,7 +122,7 @@ MAX_WORDS = {d["n"]: d["max_words"] for d in LAYERS}
 MAX_SUMMARY = 140
 MAX_TITLE = 80
 MAX_L1_CHILDREN = 12
-MAX_DEPTH = 3
+MAX_DEPTH = 3   # folders of a layer 1 to 3 note; see depth_limit
 MAX_BODY = 2000
 # read hands over only the lines and sentences of a body that match the session's last question when the body is
 # longer than EXCERPT_MIN characters: a unit stays when it holds at least EXCERPT_KEEP of the best unit's idf; the
@@ -644,6 +669,7 @@ class Vault:
         except FileNotFoundError:
             pass
         self.name = self.cfg["vault"]
+        self.layer_set = frozenset(d["n"] for d in layers_for(self.cfg))   # the layers this vault has
         self.state_dir = self.root / "_brain" / "state"
         self.gen_dir = self.root / "_brain" / "generated"
         self.net: dict[str, Node] = {}
@@ -1213,8 +1239,8 @@ def expected_path(layer: int, title: str, parent: Node | None) -> Path:
         path = parent.path.parent / f"{title}.md"
     else:
         path = parent.path.parent / parent.title / f"{title}.md"
-    if len(path.parent.parts) > MAX_DEPTH:
-        raise BrainError(f"would exceed the maximum depth of {MAX_DEPTH} folders: {path.as_posix()}")
+    if len(path.parent.parts) > depth_limit(layer):
+        raise BrainError(f"would exceed the maximum depth of {depth_limit(layer)} folders: {path.as_posix()}")
     return path
 
 
@@ -1238,8 +1264,10 @@ def validate_parent(layer: int, parent: Node | None) -> None:
         raise BrainError("an L1 can only hang from MAP or from another L1 (subdomain)")
     if role == CONCEPT and parent.role != DOMAIN:
         raise BrainError("an L2 must hang from an L1")
-    if role == LEAF and parent.role != CONCEPT:
+    if role == LEAF and layer == layer_of(LEAF) and parent.role != CONCEPT:
         raise BrainError("an L3 must hang from an L2")
+    if role == LEAF and layer > layer_of(LEAF) and parent.layer != layer - 1:
+        raise BrainError(f"an L{layer} must hang from an L{layer - 1}")
 
 
 def contract_errors(intent, keywords, checks) -> list[str]:
@@ -1298,8 +1326,8 @@ def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
             E(r, f"duplicate id with {ids[str(i)].as_posix()}")
         else:
             ids[str(i)] = r
-        if n.layer not in LAYER_ROLE:
-            E(r, "layer must be " + number_list(LAYER_ROLE))
+        if n.layer not in v.layer_set:
+            E(r, "layer must be " + number_list(sorted(v.layer_set)))
             continue
         for e in contract_errors(n.fm.get("verify_intent"), n.fm.get("verify_keywords"), n.fm.get("verify")):
             E(r, e)
@@ -1346,7 +1374,7 @@ def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
                 except BrainError as ex:
                     E(r, str(ex))
                 if k not in {norm(t) for t in p.links}:
-                    W(r, f'parent "{p.title}" does not link to this node in ## {CHILD_SECTION.get(p.layer, "Branches")}')
+                    W(r, f'parent "{p.title}" does not link to this node in ## {child_section(p.layer)}')
                 if has_cycle(v, n):
                     E(r, "cycle in the up chain")
         # synapses
@@ -1802,7 +1830,7 @@ def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
     idf = {t: qw[t] * math.log(1 + (ix["n"] - ix["df"].get(t, 0) + 0.5) / (ix["df"].get(t, 0) + 0.5)) for t in q}
     raw = {}
     for k, n in v.net.items():
-        if STATUS_FACTOR.get(n.status, 0.8) == 0 or n.layer not in LAYER_ROLE:
+        if STATUS_FACTOR.get(n.status, 0.8) == 0 or n.layer not in v.layer_set:
             continue
         tf, length = ix["docs"][k]
         norm_len = BM25_K1 * (1 - BM25_B + BM25_B * length / ix["avg"])
@@ -2393,6 +2421,8 @@ def capture_learning(v: Vault, a, by: str, content: str, evidence: str, why: str
 # --------------------------------------------------------------------------- write commands
 def cmd_new(v: Vault, a) -> int:
     layer = a.layer
+    if layer not in v.layer_set:
+        raise BrainError(f"this vault has {len(v.layer_set)} layers, not {layer}: add one with `brain.py layers --to {layer}`")
     typ = a.type or DEFAULT_TYPE[layer]
     if typ not in TYPES_BY_LAYER[layer]:
         raise BrainError(f'type "{typ}" not valid for L{layer}: {", ".join(sorted(TYPES_BY_LAYER[layer]))}')
@@ -2422,7 +2452,7 @@ def cmd_new(v: Vault, a) -> int:
     with v.lock():
         save_node(v.root, n, touch=False)
         if parent:
-            parent.body = add_to_section(parent.body, CHILD_SECTION[parent.layer], f"- [[{a.title}]] — {a.summary.strip()}")
+            parent.body = add_to_section(parent.body, child_section(parent.layer), f"- [[{a.title}]] — {a.summary.strip()}")
             save_node(v.root, parent)
     Telemetry(v).record("planted", [n.key], extra={"st": "seed"})
     print(f"created {rel.as_posix()} (L{layer} {typ}, seed)")
@@ -2481,7 +2511,7 @@ def _move_paths(v: Vault, n: Node, target: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     os.replace(src, dest)
     details = src.parent / n.title
-    if n.role == CONCEPT and details.is_dir():
+    if n.role in (CONCEPT, LEAF) and details.is_dir():
         os.replace(details, dest.parent / dest.stem)
     try:
         if not any(src.parent.iterdir()):
@@ -2500,7 +2530,7 @@ def cmd_move(v: Vault, a) -> int:
     old = v.parent(n)
     with v.lock():
         if old and (not new or old.k != new.k):
-            old.body = remove_from_section(old.body, CHILD_SECTION[old.layer], n.title)
+            old.body = remove_from_section(old.body, child_section(old.layer), n.title)
             save_node(v.root, old)
         if target != n.path:
             _move_paths(v, n, target)
@@ -2509,7 +2539,7 @@ def cmd_move(v: Vault, a) -> int:
         save_node(v.root, n)
         if new and (not old or old.k != new.k):
             nv = Vault(v.root).node(new.title)
-            nv.body = add_to_section(nv.body, CHILD_SECTION[nv.layer], f"- [[{n.title}]] — {n.summary}")
+            nv.body = add_to_section(nv.body, child_section(nv.layer), f"- [[{n.title}]] — {n.summary}")
             save_node(v.root, nv)
     print(f"moved to {target.as_posix()}")
     return 0
@@ -2532,6 +2562,9 @@ def cmd_promote(v: Vault, a) -> int:
     n = v.node(a.title)
     parent = v.parent(n)
     if n.role == LEAF:
+        if n.layer > layer_of(LEAF) or v.children.get(n.k):
+            raise BrainError("a refinement, or a detail that has refinements, is promoted by the curator: "
+                             "move its refinements first")
         grandparent = v.parent(parent) if parent else None
         if not grandparent or grandparent.role != DOMAIN:
             raise BrainError("the parent concept does not hang from an L1")
@@ -2586,7 +2619,7 @@ def cmd_demote(v: Vault, a) -> int:
     old = v.parent(n)
     with v.lock():
         if old:
-            old.body = remove_from_section(old.body, CHILD_SECTION[old.layer], n.title)
+            old.body = remove_from_section(old.body, child_section(old.layer), n.title)
             save_node(v.root, old)
         (v.root / target).parent.mkdir(parents=True, exist_ok=True)
         os.replace(v.root / n.path, v.root / target)
@@ -2613,7 +2646,7 @@ def cmd_rename(v: Vault, a) -> int:
         else:
             os.replace(src, src.with_name(f"{a.new}.md"))
             details = src.parent / old_t
-            if n.role == CONCEPT and details.is_dir():
+            if n.role in (CONCEPT, LEAF) and details.is_dir():
                 os.replace(details, details.with_name(a.new))
         changed = 0
         for rel in v.md_files(include_brain=True):
@@ -2698,7 +2731,7 @@ def cmd_questions(v: Vault, a) -> int:
     """Generated questions (doc2query): the engine writes none itself. `todo` prints the nodes whose questions are
     missing or stale with the instructions for an LLM, `import` checks and stores its JSON Lines answer."""
     qs = questions(v)
-    ranked = [n for n in v.net.values() if n.layer in LAYER_ROLE and STATUS_FACTOR.get(n.status, 0.8)]
+    ranked = [n for n in v.net.values() if n.layer in v.layer_set and STATUS_FACTOR.get(n.status, 0.8)]
     missing = [n for n in ranked if n.key not in qs]
     stale = [n for n in ranked if n.key in qs and qs[n.key].get("hash") != content_hash(n)]
     if a.action == "status":
@@ -2765,7 +2798,7 @@ def mine_ideas(v: Vault, min_count: int = 4) -> list[dict]:
     or domain title or alias, with the nodes that carry it. Link: two nodes with no link between them that were credited
     together (co-activation between IDEAS_CO_MIN and the point where `consolidate` already proposes it), or that share
     IDEAS_SHARED rare words. Titles and summaries only: a body mentions everything."""
-    nodes = [n for n in v.net.values() if n.layer in LAYER_ROLE and n.status != "obsolete"]
+    nodes = [n for n in v.net.values() if n.layer in v.layer_set and n.status != "obsolete"]
     covered: set[str] = set()
     stems: dict[str, set[str]] = {}               # node key -> its stems
     surface: dict[str, dict[str, int]] = {}       # stem -> written forms
@@ -2981,7 +3014,7 @@ def compute_proposals(v: Vault) -> dict[str, list[str]]:
     vals = sorted(weights.values())
     p90 = vals[int(len(vals) * 0.9)] if vals else 1.0
     for n in sorted(v.net.values(), key=lambda x: x.k):
-        if n.layer not in LAYER_ROLE:
+        if n.layer not in v.layer_set:
             continue
         wn, age = weights.get(n.key, 0.0), age_days(v, n)
         children = v.children.get(n.k, [])
@@ -3018,7 +3051,7 @@ def compute_proposals(v: Vault) -> dict[str, list[str]]:
             P["learned"].append(f"- [ ] sample :: [[{n.title}]] — confirmed by use on {n.fm['confirmed']}: spot-check it")
         if n.status == "seed" and not n.fm.get("reviewed") and age > 30:
             P["validate"].append(f"- [ ] validate :: [[{n.title}]] — seed {age} days old without human review")
-    nodes = [n for n in v.net.values() if n.layer in LAYER_ROLE]
+    nodes = [n for n in v.net.values() if n.layer in v.layer_set]
     sigs = {n.k: tokens(n.title) | tokens(n.summary) for n in nodes}
     for i, n in enumerate(nodes):
         for m in nodes[i + 1:]:
@@ -3074,7 +3107,7 @@ def cmd_consolidate(v: Vault, a) -> int:
                 parent = v.parent(n)
                 with v.lock():
                     if parent:
-                        parent.body = remove_from_section(parent.body, CHILD_SECTION[parent.layer], n.title)
+                        parent.body = remove_from_section(parent.body, child_section(parent.layer), n.title)
                         save_node(v.root, parent)
                     n.fm["archived"] = today()
                     save_node(v.root, n)
@@ -3160,7 +3193,7 @@ def cmd_externals(v: Vault, a) -> int:
 # --------------------------------------------------------------------------- visualization
 def layout(v: Vault, weights: dict, max_l3: int = 150):
     net = v.net
-    nodes = [n for n in net.values() if n.layer in LAYER_ROLE]
+    nodes = [n for n in net.values() if n.layer in v.layer_set]
     roots = sorted([n for n in nodes if not (n.up and norm(n.up) in net)], key=lambda n: (n.layer, n.k))
     leaves: dict[str, int] = {}
 
@@ -3197,11 +3230,19 @@ def layout(v: Vault, weights: dict, max_l3: int = 150):
     r1 = max(700, counts[DOMAIN] * 320 / (2 * math.pi))
     r2 = max(r1 + 800, counts[CONCEPT] * 260 / (2 * math.pi))
     r3 = max(r2 + 700, min(counts[LEAF], max_l3) * 220 / (2 * math.pi))
-    radii = {DOMAIN: r1, "sub": (r1 + r2) / 2, CONCEPT: r2, LEAF: r3, "cold": r3 + 700}
+    radii = {DOMAIN: r1, "sub": (r1 + r2) / 2, CONCEPT: r2, LEAF: r3}
+    last = r3
+    for L in sorted(v.layer_set):                    # a ring for each refinement level, outside the details'
+        if L > layer_of(LEAF):
+            last += 600
+            radii[L] = last
+    radii["cold"] = last + 700
 
     def radius(n: Node) -> float:
         if n.role == DOMAIN:
             return radii["sub"] if n.up and norm(n.up) in net else radii[DOMAIN]
+        if n.layer > layer_of(LEAF):
+            return radii[n.layer]
         return radii[CONCEPT] if n.role == CONCEPT else radii[LEAF]
 
     pos = {n.k: (radius(n) * math.cos(angle[n.k]), radius(n) * math.sin(angle[n.k])) for n in nodes if n.k in visible}
@@ -3217,7 +3258,7 @@ def render_panel_svg(v: Vault, weights: dict) -> str:
     scale = 270 / radii["cold"]
     cx = cy = 300
     p = ['<svg xmlns="http://www.w3.org/2000/svg" width="600" height="640" viewBox="0 0 600 640" font-family="sans-serif">']
-    for key in (DOMAIN, CONCEPT, LEAF, "cold"):
+    for key in (DOMAIN, CONCEPT, LEAF, *[L for L in sorted(v.layer_set) if L > layer_of(LEAF)], "cold"):
         dash = ' stroke-dasharray="4 6"' if key == "cold" else ""
         p.append(f'<circle cx="{cx}" cy="{cy}" r="{radii[key] * scale:.1f}" fill="none" stroke="#888780" stroke-opacity="0.5" stroke-width="1"{dash}/>')
     for n in v.net.values():
@@ -3248,9 +3289,10 @@ def render_panel_svg(v: Vault, weights: dict) -> str:
         r = base[n.layer] * (1 + 1.2 * weights.get(n.key, 0.0))
         border = ' fill-opacity="0.25" stroke="#898781" stroke-width="1.2"' if n.status == "seed" else ""
         p.append(f'<circle cx="{cx + x * scale:.1f}" cy="{cy + y * scale:.1f}" r="{r:.1f}" fill="{COLORS[n.layer]}"{border}/>')
-    counts = {role: sum(1 for n in v.net.values() if n.role == role) for role in (DOMAIN, CONCEPT, LEAF)}
+    counts = {L: sum(1 for n in v.net.values() if n.layer == L) for L in sorted(v.layer_set)}
     cold = sum(len(x) for x in v.cold.values())
-    p.append(f'<text x="300" y="618" text-anchor="middle" font-size="14" fill="#888780">L{layer_of(DOMAIN)} {counts[DOMAIN]} · L{layer_of(CONCEPT)} {counts[CONCEPT]} · L{layer_of(LEAF)} {counts[LEAF]} · cold {cold} · faded with gray ring = seed</text>')
+    shown = " · ".join(f"L{L} {c}" for L, c in counts.items())
+    p.append(f'<text x="300" y="618" text-anchor="middle" font-size="14" fill="#888780">{shown} · cold {cold} · faded with gray ring = seed</text>')
     p.append("</svg>")
     return "\n".join(p) + "\n"
 
@@ -3395,7 +3437,7 @@ def record_history(v: Vault) -> list[dict]:
             parts = line.split(",")
             if len(parts) == len(head):
                 rows.append(dict(zip(head, parts)))
-    net = [n for n in v.net.values() if n.layer in LAYER_ROLE]
+    net = [n for n in v.net.values() if n.layer in v.layer_set]
     current = {"date": today(), "l1": sum(n.role == DOMAIN for n in net), "l2": sum(n.role == CONCEPT for n in net),
                "l3": sum(n.role == LEAF for n in net), "seeds": sum(n.status == "seed" for n in net),
                "consolidated": sum(n.status == "consolidated" for n in net), "obsolete": sum(n.status == "obsolete" for n in net),
@@ -3407,20 +3449,20 @@ def record_history(v: Vault) -> list[dict]:
 
 def render_panel(v: Vault, weights: dict, history: list[dict], findings: list, co: dict, commits: list) -> str:
     keys = v.by_key()
-    net = [n for n in v.net.values() if n.layer in LAYER_ROLE]
+    net = [n for n in v.net.values() if n.layer in v.layer_set]
     out = [f"# {v.name} panel", "", f"%% Generated by brain.py build on {now().isoformat(' ')} — do not edit. %%", "",
            f"Vault **{v.name}** · engine v{VERSION} · interactive panel with 2D orbit and 3D sphere views: [[_brain/Panel.html|Panel.html]] "
            "(open it in a browser, or inside Obsidian with an HTML viewer plugin)", "",
            "![[_brain/generated/orbit.svg]]", "", "## Layers", "",
            "| Layer | Nodes | Seeds | Consolidated | Obsolete |", "|---|---|---|---|---|"]
-    names = {d["role"]: d["label"] for d in LAYERS}
-    for c in (DOMAIN, CONCEPT, LEAF):
-        g = [n for n in net if n.role == c]
+    names = {d["n"]: d["label"] for d in LAYERS}
+    for c in sorted(v.layer_set):
+        g = [n for n in net if n.layer == c]
         out.append(f"| {names[c]} | {len(g)} | {sum(n.status == 'seed' for n in g)} | "
                    f"{sum(n.status == 'consolidated' for n in g)} | {sum(n.status == 'obsolete' for n in g)} |")
     cold = {k: len(x) for k, x in v.cold.items()}
     out.append(f"| Cold ring | {sum(cold.values())} | — | — | — |")
-    data = [(names[c], sum(n.role == c for n in net)) for c in (DOMAIN, CONCEPT, LEAF)]
+    data = [(names[c], sum(n.layer == c for n in net)) for c in sorted(v.layer_set)]
     if any(x for _, x in data):
         out += ["", "```mermaid", "pie showData", "    title Nodes by layer"]
         out += [f'    "{e}" : {x}' for e, x in data if x]
@@ -3489,7 +3531,7 @@ def recent_commits(v: Vault, limit: int = 10) -> list[tuple[str, str, str]]:
 
 def render_panel_html(v: Vault, weights: dict, history: list[dict], findings: list, co: dict, commits: list) -> str:
     """Interactive panel, one page with both views (2D orbit and 3D sphere): panel.html with this vault's data inlined (works offline)."""
-    net = sorted((n for n in v.net.values() if n.layer in LAYER_ROLE), key=lambda x: x.k)
+    net = sorted((n for n in v.net.values() if n.layer in v.layer_set), key=lambda x: x.k)
     keys = v.by_key()
     warns = [h for h in findings if h[0] == "WARN"]
 
@@ -3507,6 +3549,7 @@ def render_panel_html(v: Vault, weights: dict, history: list[dict], findings: li
     strongest = sorted(((val, a, b) for (a, b), val in co.items() if a in keys and b in keys), reverse=True)[:5]
     data = {
         "vault": v.name, "version": VERSION, "generated": now().isoformat(" ", "seconds"),
+        **({"layers": len(v.layer_set)} if len(v.layer_set) != MIN_LAYERS else {}),
         "siblings": sorted(v.cfg.get("siblings", {})),
         "nodes": [{"id": n.fm.get("id"), "title": n.title, "layer": n.layer, "type": n.type, "status": n.status,
                    "weight": round(weights.get(n.key, 0.0), 3), "summary": n.summary, "up": n.up,
@@ -3920,6 +3963,79 @@ def cmd_migrate(v: Vault, a) -> int:
     return 0
 
 
+LAYER_GRAPH_RGB = {4: 13738524, 5: 14045822}   # #d1a21c, #d6527e: the panel's colours for L4 and L5
+
+
+def _agents_layers(text: str, count: int) -> str:
+    """AGENTS.md's Layers table for `count` layers: a row for each refinement level and the sentence that says so."""
+    lines = text.split("\n")
+    have = {m.group(1) for m in (re.match(r"\| L(\d) \|", x) for x in lines) if m}
+    text = "\n".join(x for x in lines if not (x.startswith("This vault has ") and " layers" in x))
+    rows = "".join(f"| L{d['n']} | Refinement of an L{d['n'] - 1} detail, in a folder named for it | {d['max_words']} |\n"
+                   for d in layers_for({"layers": count}) if d["n"] > MIN_LAYERS and str(d["n"]) not in have)
+    if rows:
+        text = re.sub(r"(?m)^(\| L3 \|.*\n)((?:\| L[45] \|.*\n)*)", lambda m: m.group(1) + m.group(2) + rows, text, count=1)
+    if count > MIN_LAYERS:
+        sentence = (f"This vault has {count} layers: L1 to L3 as above, and L4"
+                    + (" and L5" if count == 5 else "")
+                    + " refine an L3 detail (the same types and word limit; a note's folder is named for its parent). "
+                      "`learn` writes an L3 under an L2 concept; refinements are placed by the curator.")
+        text = re.sub(r"(?m)^(\| Cold \|.*\n)", lambda m: m.group(1) + "\n" + sentence + "\n", text, count=1)
+    return text
+
+
+def cmd_layers(v: Vault, a) -> int:
+    """Shows the vault's layers, or adds levels (3 to 5): `layers --to N`. Only upward and only here, so the count
+    never changes by accident; no note moves, because every new level refines a detail."""
+    have = layer_count(v.cfg)
+    if a.to is None:
+        print(f"{have} layers: " + ", ".join(f"L{d['n']} {d['role']}" for d in layers_for(v.cfg)))
+        return 0
+    if a.to == have:
+        raise BrainError(f"the vault already has {have} layers")
+    if a.to < have:
+        raise BrainError(f"the vault has {have} layers and layers are only added, never removed ({a.to} is fewer); "
+                         "removing a level means deciding where every note goes, which is the curator's task")
+    if a.to > MAX_LAYERS:
+        raise BrainError(f"a vault has {MIN_LAYERS} to {MAX_LAYERS} layers")
+    root = v.root
+    with v.lock():
+        cfg = json.loads(v.cfg_path.read_text(encoding="utf-8")) if v.cfg_path.exists() else {}
+        cfg["layers"] = a.to
+        write_atomic(v.cfg_path, json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+        tpl = root / "_templates"
+        base = tpl / TEMPLATES[layer_of(LEAF)]
+        for d in layers_for({"layers": a.to}):
+            if d["n"] > MIN_LAYERS and tpl.is_dir() and not (tpl / d["template"]).exists():
+                text = base.read_text(encoding="utf-8") if base.exists() else "---\nlayer: 3\n---\n\n## Content\n"
+                text = text.replace("layer: 3", f"layer: {d['n']}").replace("## Content", "## Content")
+                write_atomic(tpl / d["template"], text)
+        agents = root / "AGENTS.md"
+        if agents.exists():
+            write_atomic(agents, _agents_layers(agents.read_text(encoding="utf-8"), a.to))
+        graph = root / ".obsidian" / "graph.json"
+        if graph.exists():
+            g = json.loads(graph.read_text(encoding="utf-8"))
+            queries = {x.get("query") for x in g.get("colorGroups", [])}
+            for L in range(MIN_LAYERS + 1, a.to + 1):
+                if f"[layer:{L}]" not in queries:
+                    g.setdefault("colorGroups", []).append({"query": f"[layer:{L}]", "color": {"a": 1, "rgb": LAYER_GRAPH_RGB[L]}})
+            write_atomic(graph, json.dumps(g, indent=2) + "\n")
+        base_file = root / "_brain" / "Layers.base"
+        if base_file.exists():
+            text = base_file.read_text(encoding="utf-8")
+            for d in layers_for({"layers": a.to}):
+                if d["n"] > MIN_LAYERS and f"note.layer == {d['n']}" not in text:
+                    view = (f"  - type: table\n    name: {d['label']}\n    filters:\n      and:\n        - note.layer == {d['n']}\n"
+                            "    order:\n      - file.name\n      - type\n      - up\n      - summary\n      - status\n")
+                    marker = "  - type: table\n    name: Seeds to review"
+                    text = text.replace(marker, view + marker, 1) if marker in text else text + view
+            write_atomic(base_file, text)
+    print(f"the vault now has {a.to} layers (was {have}): config, templates, AGENTS.md and the Obsidian files are updated; "
+          "no note moved. Run `brain.py build` for the panel, then commit.")
+    return 0
+
+
 def cmd_doctor(v: Vault, a) -> int:
     failures = 0
 
@@ -3951,8 +4067,8 @@ def cmd_doctor(v: Vault, a) -> int:
                 check(seen != "public", f"remote {parts[0]} is {seen} (a cortex is never public)")
     check(v.cfg_path.exists(), "_brain/config.json")
     have, want = vault_schema(v), engine_schema()
-    if layer_count(v.cfg) != len(LAYERS):
-        check(False, f"this vault has {layer_count(v.cfg)} layers; this engine builds {len(LAYERS)}")
+    if not MIN_LAYERS <= layer_count(v.cfg) <= MAX_LAYERS:
+        check(False, f"this vault has {layer_count(v.cfg)} layers; this engine builds {MIN_LAYERS} to {MAX_LAYERS}")
     check(have == want, f"vault schema {have} (this engine's: {want})" +
           ("" if have == want else ": run `brain.py migrate`" if have < want else ": the engine is older than the vault"))
     check((v.root / "CLAUDE.md").exists(), "CLAUDE.md (L0)")
@@ -4151,6 +4267,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--by", help="who the memories come from (default: the owner)")
     p.add_argument("--commit", action="store_true", help="one git commit of what the import added")
     p.set_defaults(func=cmd_import_memory)
+
+    p = sub.add_parser("layers", help="shows the vault's layers, or adds levels (3 to 5): layers --to N, upward only")
+    p.add_argument("--to", type=int, help="the number of layers wanted: more than the vault has now, at most 5")
+    p.set_defaults(func=cmd_layers)
 
     p = sub.add_parser("migrate", help="brings the vault's data up to this engine's schema (no model involved)")
     p.add_argument("--dry-run", action="store_true", help="say what would change, change nothing")

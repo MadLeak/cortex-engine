@@ -408,10 +408,20 @@ change is a click of its own:
   the last run's result and the model server's address (§6, *REM in the container*). Saved in `_brain/config.json` as
   `rem_enabled`, `rem_interval_minutes` and `rem_budget_minutes`.
 
-**Layers** (engine 2.25.0): the number of layers is shown, read only, beside the schema (`3 layers (fixed)`). It is the
-`layers` key of `_brain/config.json`, written by migration 0003 (schema 3) and by the template for new vaults; it is not a
-setting, and `doctor` fails a vault whose count this engine does not build. The engine expresses its levels as roles in one
-table (`DEFAULT_LAYERS` in `brain_core.py`); levels 4 and 5 are step 3 of [DESIGN-LAYERS.md](DESIGN-LAYERS.md).
+**Layers** (engine 2.26.0): a vault has three to five. The count is shown, read only, beside the schema; it is the `layers`
+key of `_brain/config.json` (migration 0003 wrote `3`; the template says it for new vaults) and it is not a setting. The levels
+beyond the third refine a detail: same role (leaf), same types and word limit, and a folder named for the parent
+(`Domain/Concept/Detail/Refinement.md`, one folder deeper for L5), so no existing note ever moves when one is added.
+`learn`, `import-memory` and the ideas miner keep working on the first three levels; refinements are placed by the curator
+(`new --layer 4 --up "<an L3 detail>"`), and `promote` refuses a detail that has refinements.
+
+To add layers: `B layers` shows the count; `B layers --to 4` (or 5) adds them. It is the only way the count changes, only
+upward (a smaller number is refused: removing a level means deciding where every note goes, a curator's task), and it writes
+the config, the templates `_templates/L4 Refinement.md` and `L5 Refinement.md`, the Layers table and a sentence in the vault's
+`AGENTS.md`, and the Obsidian colour groups and `Layers.base` views. Nothing is committed: run `B build`, then commit (from the
+host: `./cortex.sh brain <vault> layers --to 4`). The vault must already run this engine (the hub upgrades it on start). `doctor`
+fails a count outside 3 to 5. The panel draws a ring, a colour, a filter chip and a legend row per layer (orbit and sphere); a
+vault with three layers renders exactly as before. The growth chart still groups every detail level under `L3`.
 
 **The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
 
@@ -572,8 +582,8 @@ Each one is parked on purpose, with what to do later and how to know it worked, 
 - `install.ps1` and `install.sh` were only syntax-checked; the manual path (`docker compose up -d hub`) is the tested one.
 - MCP configs for Codex, Gemini and OpenCode are generated but were not tried against those clients; Claude Code is.
 - *Save to remote* was tested only with a stubbed git; try it on a throwaway private repository first.
-- In progress: configurable number of layers. Step 1 (2.24.0, roles instead of the numbers 1, 2, 3) is done; the config key and
-  levels 4 and 5 are not built yet ([DESIGN-LAYERS.md](DESIGN-LAYERS.md)).
+- Configurable layers (3 to 5, [DESIGN-LAYERS.md](DESIGN-LAYERS.md)) are built but have been tried only on throwaway vaults: add
+  a layer to a copy of a real cortex first. Inserting or removing a level stays a curator task, by design.
 - REM in the container was tested against a stand-in model server, not a real Strata: try *Dream now* on a small throwaway
   cortex first.
 
