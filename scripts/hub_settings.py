@@ -31,9 +31,12 @@ CONFIG = {
     "confirm_sessions": ("int", 1, 20, "sessions in which a provisional learning must help before it becomes a seed"),
     "confirm_min_days": ("int", 0, 60, "days those sessions must span at least"),
     "max_provisional": ("int", 1, 500, "provisional learnings allowed to wait; past it, learnings go to _inbox"),
+    "rem_enabled": ("bool", 0, 1, "dream the questions each note answers on a schedule (needs the local model server)"),
+    "rem_interval_minutes": ("int", 15, 10080, "minutes between two dreaming runs"),
+    "rem_budget_minutes": ("int", 1, 240, "most minutes one dreaming run may take"),
 }
 DEFAULTS = {"auto_idle_minutes": 30, "half_life_days": 30, "confirm_sessions": 3, "confirm_min_days": 2,
-            "max_provisional": 25}
+            "max_provisional": 25, "rem_enabled": False, "rem_interval_minutes": 1440, "rem_budget_minutes": 30}
 REMOTE = re.compile(r"^(https://[A-Za-z0-9.-]+(:\d+)?/[\w.~/-]+?(\.git)?|git@[A-Za-z0-9.-]+:[\w.~/-]+?(\.git)?)$")
 
 
@@ -90,7 +93,11 @@ def save(v: Path, changes: dict) -> str:
         if k not in CONFIG:
             raise ValueError(f"unknown setting {k}")
         kind, low, high, _ = CONFIG[k]
-        if kind == "int":
+        if kind == "bool":
+            if val not in (True, False, "true", "false", "on", "off"):
+                raise ValueError(f"{k}: on or off")
+            val = val in (True, "true", "on")
+        elif kind == "int":
             try:
                 val = int(val)
             except (TypeError, ValueError):

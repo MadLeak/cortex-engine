@@ -15,7 +15,7 @@
 
 Only REM calls a model (the local one); nothing here marks a node consolidated, or writes outside the vaults' own engine commands; data lives in
 ~/.local/share/cortex-life (usage mirror, bench history, nightly reports, log)."""
-import argparse, datetime as dt, fcntl, json, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, datetime as dt, json, os, re, shutil, subprocess, sys, tempfile, time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -369,24 +369,26 @@ print(json.dumps(out, ensure_ascii=False))
 '''
 
 
-def strata_up():
+def strata_up(url=None):
     import urllib.request
     try:
-        with urllib.request.urlopen(f"{STRATA}/health", timeout=5) as r:
+        with urllib.request.urlopen(f"{url or STRATA}/health", timeout=5) as r:
             return json.load(r).get("status") == "ok"
     except (OSError, ValueError):
         return False
 
 
-def strata_questions(notes):
+def strata_questions(notes, url=None, key_file=None):
+    """url and key_file default to this module's (the host service); the hub passes its own."""
     import urllib.request
     text = REM_PROMPT + "\n\n" + "\n".join(f"### ID: {n['id']}\nTITLE: {n['title']}\nSUMMARY: {n['summary']}\nTEXT: {n['text']}\n" for n in notes)
     body = {"messages": [{"role": "user", "content": text}], "temperature": 0.7, "max_tokens": 700 * len(notes),
             "chat_template_kwargs": {"enable_thinking": False}}
     headers = {"Content-Type": "application/json"}
-    if STRATA_KEY.exists():   # Strata asks for a Bearer key on the API (not on /health); it is passed unread
-        headers["Authorization"] = f"Bearer {STRATA_KEY.read_text().strip()}"
-    req = urllib.request.Request(f"{STRATA}/v1/chat/completions", json.dumps(body).encode(), headers)
+    key_file = Path(key_file) if key_file else STRATA_KEY
+    if key_file.exists():   # Strata asks for a Bearer key on the API (not on /health); it is passed unread
+        headers["Authorization"] = f"Bearer {key_file.read_text().strip()}"
+    req = urllib.request.Request(f"{url or STRATA}/v1/chat/completions", json.dumps(body).encode(), headers)
     with urllib.request.urlopen(req, timeout=900) as r:
         reply = json.load(r)["choices"][0]["message"]["content"]
     wanted, got = {n["id"] for n in notes}, {}
@@ -530,6 +532,7 @@ def main():
     a = ap.parse_args()
     if a.cmd == "install":
         return install()
+    import fcntl   # POSIX only; the hub imports this module for REM's model calls and never needs it
     DATA.mkdir(parents=True, exist_ok=True)
     if a.cmd == "rem":   # reads the vaults only, so it has its own lock and never holds up a nap
         with open(DATA / ".rem.lock", "w") as lock:
