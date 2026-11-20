@@ -115,11 +115,11 @@ docker compose --profile tools run --rm bench    # what one engine call costs, n
 cd template-vault/_brain/scripts && python3 -m unittest discover -s tests -v   # the engine alone, with Python
 ```
 
-The engine's suite has 62 tests, including a 1,000-node performance check, and runs in about 5 seconds.
+The engine's suite has 62 tests, including a 1,000-node performance check, and runs in about 5 seconds; the hub has 25 and the MCP service 91.
 
 ## Status
 
-Engine version 2.20.1. Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.20.1. Since 2.16 it runs in Docker only, with an MCP service per vault, vault migrations with no model, Claude Code memory import, per-cortex *Settings* (config, remote, push token, MCP token, delete) on the hub and from each panel, and a panel whose recalls are drawn as lightning. Known gaps are listed in the [runbook](docs/RUNBOOK.md#known-gaps-not-verified-or-not-built). Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 

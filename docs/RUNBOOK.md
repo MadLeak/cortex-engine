@@ -324,6 +324,14 @@ Point at a sibling's node; never copy it. Create siblings before or alongside ea
 - `_brain/Panel.md`: the same summary for Obsidian, with `generated/orbit.svg`.
 - `_brain/generated/index.tsv` (one row per node; the only file agents may grep; the final columns are `id` and `tokens`), `graph.json` and `hot.md`.
 
+**Lightning.** A recall is drawn as a thin storm, not a single line: a stepped leader walks the graph breadth-first from
+the query (with a little jitter, so branches start almost together), with a jagged shape, a return stroke that can
+re-strike, particles that gather on the nodes that were *read*, and an afterglow. Each recall groups its activated
+and read nodes, so the reads show up hierarchically. It needs `activity.js`, which the engine writes on every call.
+
+**Settings button.** When a panel is served by the hub, its header has *Settings*: it opens that cortex's Settings on the
+hub (`/agents?settings=<cortex>`). Opened from the disk, or from another machine, the button is not shown.
+
 `Panel.html?embed` shows the orbit alone, filling its frame, and `?theme=dark` or `?theme=light` overrides the saved theme.
 
 **In the container** the hub runs with `--mcp --local-http`: `http://cortex.localhost:8790` and each agent at
@@ -479,11 +487,23 @@ Then bump the engine version and set the template's `config.json` `schema` to th
 | lint `expected location: ...` | a node's folder does not match its `up` | `B move "<title>" --up "<parent>"`, never by hand |
 | lint `not_english` warning | a Spanish title or summary | translate it. Put proper nouns in `aliases` |
 | the MCP tool answers `another call to this vault is still running` | the previous call in that server process is still going | retry once: the server keeps one engine call at a time on purpose |
+| the MCP client says `ECONNREFUSED` on `cortex.localhost:8790` | the hub container is not running (Docker Desktop was closed or the machine restarted) | start Docker, then `docker compose up -d hub` in the engine folder; the agent's MCP config does not change |
+| on Windows, git in a vault shows every file as modified | a Docker bind mount presents host files as mode 0777 | the engine sets `core.fileMode false` when it detects the mount; if it was created elsewhere run `git config core.fileMode false` in the vault |
+| scripts fail with `^M` (a carriage return) or `bad interpreter` in the container | CRLF line endings from `core.autocrlf=true` | the repository's `.gitattributes` forces LF (`* text=auto eol=lf`); check the working tree out again |
+| `sh ./cortex.sh` does nothing useful in PowerShell | the POSIX script was run from the wrong shell or folder | use `.\cortex.ps1` from the engine folder |
 | a read crashed with `auto.json.tmp: No such file or directory` | two processes wrote one session file in the same moment, on an engine copy older than this repository's | `python3 scripts/upgrade_engine.py` on every sibling (§10) |
+
+### Known gaps (not verified or not built)
+
+- `install.ps1` and `install.sh` were only syntax-checked; the manual path (`docker compose up -d hub`) is the tested one.
+- MCP configs for Codex, Gemini and OpenCode are generated but were not tried against those clients; Claude Code is.
+- *Save to remote* was tested only with a stubbed git; try it on a throwaway private repository first.
+- Not built: configurable number of layers, REM dreaming in the container, the ideas miner; the resident engine still
+  reads state from disk (keeping it in memory to go under 50 ms was deferred).
 
 ## 12. Reference
 
-Commands, in the order the parser takes them: `session`, `stats`, `recall`, `read`, `credit`, `new`, `learn`, `link`, `unlink`, `move`, `promote`, `demote`, `rename`, `status`, `activity`, `questions`, `lint`, `build`, `precommit`, `consolidate`, `external`, `externals`, `doctor`. Global flags: `--vault <path>` and `--version`. Over MCP (§4): one tool `cortex`, with `action` among `recall`, `read`, `credit`, `stats`, `learn`.
+Commands, in the order the parser takes them: `session`, `stats`, `recall`, `read`, `credit`, `new`, `learn`, `link`, `unlink`, `move`, `promote`, `demote`, `rename`, `status`, `activity`, `questions`, `lint`, `build`, `precommit`, `prepush`, `consolidate`, `external`, `externals`, `import-memory`, `migrate`, `doctor`. Global flags: `--vault <path>` and `--version`. Over MCP (§4): one tool `cortex`, with `action` among `brief`, `recall`, `read`, `credit`, `stats`, `learn`, `finish`.
 
 Exit codes: 0 ok · 1 usage or validation error · 2 budget or limit spent.
 
