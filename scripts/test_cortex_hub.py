@@ -471,6 +471,10 @@ class SettingsTest(unittest.TestCase):
         hs.set_push_token(self.v, "ghp_secretsecret")
         got = hs.read(self.v, "local")
         self.assertTrue(got["push_token"])
+        self.assertEqual(got["layers"], 3, "the number of layers is shown, not a setting")
+        self.assertNotIn("layers", hs.CONFIG)
+        with self.assertRaises(ValueError):
+            hs.save(self.v, {"layers": 4})
         self.assertNotIn("ghp_secretsecret", json.dumps(got))
         self.assertEqual(self.git("check-ignore", "_brain/state/remote.token").returncode, 0, "never committed")
         hs.set_remote(self.v, "git@github.com:me/my-cortex.git")
@@ -625,5 +629,6 @@ class UpgradeTest(unittest.TestCase):
             moved = cortex_hub.migrate_vaults(Path(tmp))
             self.assertTrue(any(x.startswith("Old Cortex: applied 0001") for x in moved), moved)
             self.assertIn("Cortex hub|migration: 0001 baseline", git("log", "-3", "--format=%an|%s").stdout)
-            self.assertIn("Cortex hub|migration: 0002 the push token", git("log", "-1", "--format=%an|%s").stdout)
+            self.assertIn("Cortex hub|migration: 0003 the vault states its number of layers", git("log", "-1", "--format=%an|%s").stdout)
+            self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["layers"], 3)
             self.assertEqual(cortex_hub.migrate_vaults(Path(tmp)), [], "migrated: nothing to do")

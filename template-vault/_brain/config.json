@@ -1,6 +1,7 @@
 {
   "vault": "{{VAULT}}",
-  "schema": 2,
+  "schema": 3,
+  "layers": 3,
   "siblings": {},
   "warn_dependency_on": [],
   "half_life_days": 30,

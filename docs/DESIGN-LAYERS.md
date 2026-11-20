@@ -1,7 +1,7 @@
 # A configurable number of layers: the plan and its progress (2026-11)
 
 Status (2026-11-20): **wanted; being built in four steps.** The owner decided it is wanted.
-**Step 1 is done (engine 2.24.0)**: roles replace the literal numbers, with golden proof. Steps 2 and 3 follow, one PR each.
+**Steps 1 and 2 are done (engine 2.24.0 and 2.25.0)**: roles replace the literal numbers, with golden proof, and every vault states `layers: 3` (migration 0003). Step 3 follows.
 The rest of this note is the original analysis (written at 2.20.2, when it was not built), kept because it still says why
 the steps are ordered as they are.
 
@@ -51,7 +51,7 @@ It is not one setting. It is a disk layout, a set of roles and a drawing, all ke
    the config's `layers` list, with the default exactly today's. Prove it with golden output: `lint`, `build`, `recall`
    and `consolidate` byte-identical on the example vaults, the bench vault and a copy of each real vault, and the 240-query
    bench equal to the point. Ship this alone.
-2. **Config and migration 0003.** (next) Write `layers: 3` into `_brain/config.json` for every vault (a no-op for content;
+2. **Config and migration 0003. DONE in 2.25.0 (decision 14).** Write `layers: 3` into `_brain/config.json` for every vault (a no-op for content;
    schema 3), so a vault states what it is. Tested on fossils like the earlier migrations.
 3. **Leaf-end levels only.** Allow `layers` of 3 to 5, where levels beyond L3 are further refinements of a detail
    (nested folders named for the parent, the L3 types and limits), so no existing note ever moves. Panel rings, colours,

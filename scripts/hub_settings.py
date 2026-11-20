@@ -75,7 +75,7 @@ def read(v: Path, scope: str) -> dict:
     in_git = git(v, "rev-parse", "--is-inside-work-tree").stdout.strip() == "true"
     remote = git(v, "remote", "get-url", "origin").stdout.strip() if in_git else ""
     out = {"folder": v.name, "config": config, "help": {k: d[3] for k, d in CONFIG.items()}, "scope": scope,
-           "schema": cfg.get("schema", 0), "ideas_waiting": ideas_waiting(v), "git": in_git, "remote": remote,
+           "schema": cfg.get("schema", 0), "layers": cfg.get("layers", 3), "ideas_waiting": ideas_waiting(v), "git": in_git, "remote": remote,
            "push_token": push_token_path(v).is_file() and bool(push_token_path(v).read_text(encoding="utf-8").strip())}
     if in_git:
         out["branch"] = git(v, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()

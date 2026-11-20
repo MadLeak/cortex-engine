@@ -1076,13 +1076,53 @@ class MigrationTests(Base):
         with mock.patch.dict(os.environ, GIT_ID):
             self.assertIn("committed", self.ok("migrate", "--commit"))
         log = self.git("log", "-2", "--format=%an|%s").stdout.strip().splitlines()
-        self.assertTrue(log[1].startswith("Cortex hub|migration: 0001 baseline"), log)
-        self.assertTrue(log[0].startswith("Cortex hub|migration: 0002 the push token"), log)
+        log = self.git("log", "-3", "--format=%an|%s").stdout.strip().splitlines()
+        self.assertTrue(log[2].startswith("Cortex hub|migration: 0001 baseline"), log)
+        self.assertTrue(log[1].startswith("Cortex hub|migration: 0002 the push token"), log)
+        self.assertTrue(log[0].startswith("Cortex hub|migration: 0003 the vault states"), log)
         self.assertEqual(self.git("status", "--porcelain", "--", ".gitignore", "_brain/config.json").stdout, "")
 
     def test_new_vaults_start_on_the_current_schema(self):
         cfg = json.loads((HERE.parents[1] / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(cfg["schema"], brain.engine_schema())
+        self.assertEqual(cfg["layers"], 3, "a new vault states its layers")
+
+    def test_a_schema_2_vault_gains_its_layer_count_and_nothing_else(self):
+        """Fossil of engine 2.24: schema 2, no `layers`. Migration 0003 writes `layers: 3` and moves nothing."""
+        self.seed()
+        brain.set_schema(self.v, 2)
+        (self.v / ".gitignore").write_text("_brain/state/remote.token" + chr(10), encoding="utf-8")
+        cfg_path = self.v / "_brain" / "config.json"
+        before = json.loads(cfg_path.read_text(encoding="utf-8"))
+        self.assertNotIn("layers", before)
+        notes = sorted(p.relative_to(self.v).as_posix() for p in self.v.rglob("*.md") if "_templates" not in p.parts)
+        self.assertIn("would apply 0003", self.ok("migrate", "--dry-run"))
+        self.assertEqual(json.loads(cfg_path.read_text(encoding="utf-8")), before, "dry run")
+        self.assertIn("applied 0003", self.ok("migrate"))
+        after = json.loads(cfg_path.read_text(encoding="utf-8"))
+        self.assertEqual(after, {**before, "layers": 3, "schema": 3})
+        self.assertEqual(sorted(p.relative_to(self.v).as_posix() for p in self.v.rglob("*.md") if "_templates" not in p.parts), notes)
+        raw = cfg_path.read_bytes()
+        self.assertIn("up to date", self.ok("migrate"))
+        self.assertEqual(cfg_path.read_bytes(), raw, "a second run changes nothing")
+
+    def test_a_vault_that_already_states_its_layers_keeps_them(self):
+        brain.set_schema(self.v, 2)
+        cfg_path = self.v / "_brain" / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["layers"] = 4
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        self.ok("migrate")
+        self.assertEqual(json.loads(cfg_path.read_text(encoding="utf-8"))["layers"], 4)
+
+    def test_doctor_refuses_a_layer_count_this_engine_does_not_build(self):
+        cfg_path = self.v / "_brain" / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["layers"] = 4
+        cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        code, out, _ = run(self.v, "doctor")
+        self.assertIn("this vault has 4 layers; this engine builds 3", out)
+        self.assertEqual(brain.layer_count({"layers": "x"}), 3)
 
 
 class ConcurrencyTests(Base):
