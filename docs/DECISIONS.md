@@ -1,4 +1,4 @@
-# Decisions log (2026-11, engine 2.16 to 2.20.1)
+# Decisions log (2026-11, engine 2.16 to 2.22)
 
 For the next model or developer: what was decided while Cortex moved to Docker-only, why, and how to apply it
 when you change the code. The owner is Adhonys Diaz. PR numbers are those of MadLeak/cortex-engine.
@@ -61,16 +61,27 @@ panel has its own *Settings* button that opens `/agents?settings=<cortex>`.
 (breadth-first, jitter), midpoint displacement, return stroke, gather particles on *read* nodes, afterglow, with
 `vector-effect: non-scaling-stroke`. Each recall groups its activated and read nodes (`playEvents`).
 
+**9. REM dreaming runs in the hub (2.22.0).** A scheduler thread in the hub (`scripts/hub_rem.py`) dreams the cortexes
+whose `rem_enabled` is true, every `rem_interval_minutes`, for at most `rem_budget_minutes`, one run per cortex at a time;
+Settings has the three keys and *Dream now*, and `cortex rem <vault>` does it from the CLI. It is the one place the hub calls a
+model (the owner's local server, `CORTEX_STRATA`), only when turned on, never started by the hub. The answers are not kept
+in a side store as the host job does: they go through the vault's own `questions import` and are committed as the owner
+(`CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL`); with no identity set the run does not even call the model, and with anything
+else staged it leaves the file uncommitted. The panel's feed gets `dreamed` events as before. `lifecycle.py` stays for hosts
+with systemd and now takes the model URL and key as arguments so the hub reuses its prompt and parser. *Apply:* a new
+background job in the hub must be opt-in per cortex, commit only as the owner, and report its last result in Settings.
+
 ## Environment lessons
 
 - Windows bind mounts show files as mode 0777: the engine detects the mount in `/proc/self/mounts` and sets
   `core.fileMode false`. The repo forces LF (`* text=auto eol=lf`).
 - `ECONNREFUSED` from the MCP on `cortex.localhost:8790` means Docker Desktop is off: start it, then
   `docker compose up -d hub`. No config change is needed.
-- Run the suites with `docker compose --profile tools run --rm test` (engine 62, hub 25, MCP 91, review 4).
+- Run the suites with `docker compose --profile tools run --rm test` (engine 62, hub 25, MCP 93, REM 11, review 4). After a
+  code change build first (`docker compose --profile tools build test`): `run` reuses an image that already has the tag.
   In PowerShell use `.\cortex.ps1` from the engine folder, never `sh ./cortex.sh`.
 
 ## Still open
 
-Configurable layers, REM dreaming in the container, the ideas miner, in-memory state for recall, a real run of the
+Configurable layers, the ideas miner, in-memory state for recall, REM against a real Strata, a real run of the
 installers, the Codex/Gemini/OpenCode configs, and *Save to remote* against a real private repository.

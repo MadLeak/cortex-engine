@@ -14,6 +14,8 @@
     token <vault> [--rotate]          the vault's MCP token (a new one with --rotate: the old one stops working)
     commit <vault> -m MESSAGE         a commit of everything changed, as you (CORTEX_GIT_NAME / CORTEX_GIT_EMAIL)
     precommit <vault>                 the vault's pre-commit check (what its git hook runs)
+    rem <vault> [--minutes N]         REM dreaming now: the questions each note answers, written by the local model
+                                      server (CORTEX_STRATA) and committed as you; also on a schedule from Settings
     memories                          Claude Code's memory folders (~/.claude/projects/*/memory) and their notes
     import <vault> <project>...       those memories into the vault's graph, by rule (no model), committed as you;
                                       new <folder> --memory <project>... does it as the vault is made
@@ -112,6 +114,9 @@ def main(argv=None) -> int:
     p.add_argument("-m", "--message", required=True)
     p = sub.add_parser("precommit")
     p.add_argument("vault")
+    p = sub.add_parser("rem")
+    p.add_argument("vault")
+    p.add_argument("--minutes", type=float, default=None)
     sub.add_parser("memories")
     p = sub.add_parser("import")
     p.add_argument("vault")
@@ -190,6 +195,12 @@ def main(argv=None) -> int:
         return 0
     if a.cmd == "import":
         return import_into(vault(a.vault), a.projects)
+    if a.cmd == "rem":
+        import hub_rem
+        v = vault(a.vault)
+        res = hub_rem.dream(v, a.minutes if a.minutes is not None else float(hub_rem.settings(v)["rem_budget_minutes"]))
+        print(f"rem {v.name}: {res['result']}")
+        return 0 if res.get("done") or res["result"].startswith("dreamed") else 1
     return 2
 
 
