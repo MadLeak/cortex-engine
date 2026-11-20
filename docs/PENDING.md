@@ -50,4 +50,7 @@ parked, what to do, and what proves it done. When one is done, delete its entry 
 
 ## 5. Number of layers
 
-See [DESIGN-LAYERS.md](DESIGN-LAYERS.md): what blocks it and the steps. Its status is kept there.
+In progress (decided 2026-11-20): see [DESIGN-LAYERS.md](DESIGN-LAYERS.md). Step 1 (roles instead of the numbers
+1, 2, 3, golden-proved) shipped in 2.24.0. Left: step 2 (`layers: 3` in `_brain/config.json`, migration 0003, schema 3) and
+step 3 (levels 4 and 5, generated panel, an explicit command to add one). Still parked inside it: the 240-query recall bench
+lives in the owner's vaults, so hit@1 was not re-measured; run it once on a copy when the vaults move.

@@ -25,7 +25,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.23.0"
+VERSION = "2.24.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -33,8 +33,48 @@ COLD_FOLDERS = ("_inbox", "_sources", "_log", "_archive")
 IGNORED = {".git", ".obsidian", ".trash", ".claude", ".githooks", "node_modules"}
 ROOT_FILES = {"CLAUDE.md", "AGENTS.md", "MAP.md"}
 # "tools" / "tool": the agent's limbs, one L2 per tool it uses, its L3 lessons are experience with that tool
-TYPES_BY_LAYER = {1: {"domain", "tools"}, 2: {"concept", "tool"}, 3: {"fact", "procedure", "example", "error", "decision"}}
-DEFAULT_TYPE = {1: "domain", 2: "concept", 3: "fact"}
+# The levels of a vault, each with a role. The engine's rules hang on the roles, never on the numbers: a domain groups
+# concepts, a concept holds one standing fact or rule, a leaf holds the lesson or episode under it. A level's number is
+# what a note's `layer` front matter says (and the folder depth it sits at). The default is the three levels of the
+# paper; `layers_for(config)` is the one place a vault's own set will come from.
+DOMAIN, CONCEPT, LEAF = "domain", "concept", "leaf"
+DEFAULT_LAYERS = [
+    {"n": 1, "role": DOMAIN, "types": ("domain", "tools"), "default_type": "domain", "max_words": 250,
+     "template": "L1 Domain.md", "section": "Branches", "label": "L1 Domains", "color": "#2a78d6", "dot": 6},
+    {"n": 2, "role": CONCEPT, "types": ("concept", "tool"), "default_type": "concept", "max_words": 300,
+     "template": "L2 Concept.md", "section": "Details", "label": "L2 Concepts", "color": "#eb6834", "dot": 4},
+    {"n": 3, "role": LEAF, "types": ("fact", "procedure", "example", "error", "decision"), "default_type": "fact",
+     "max_words": 300, "template": "L3 Detail.md", "section": None, "label": "L3 Details", "color": "#1baf7a",
+     "dot": 2.5},
+]
+
+
+def layers_for(cfg: dict | None = None) -> list:
+    """The layer table of a vault: its config's `layers` list when it has one, else the default three."""
+    return DEFAULT_LAYERS
+
+
+def number_list(nums) -> str:
+    """1, 2 or 3"""
+    nums = [str(n) for n in nums]
+    return ", ".join(nums[:-1]) + " or " + nums[-1] if len(nums) > 1 else nums[0]
+
+
+def layer_of(role: str) -> int:
+    """The number of a role's (first) layer: what `new --layer` takes and the front matter's `layer:` holds."""
+    return ROLE_LAYER[role]
+
+
+def section_of(role: str) -> str:
+    """The heading under which a node of this role lists its children."""
+    return CHILD_SECTION[ROLE_LAYER[role]]
+
+
+LAYERS = layers_for()
+LAYER_ROLE = {d["n"]: d["role"] for d in LAYERS}          # layer number -> role (also: "is this a graph layer")
+ROLE_LAYER = {d["role"]: d["n"] for d in reversed(LAYERS)}  # role -> its first layer number
+TYPES_BY_LAYER = {d["n"]: set(d["types"]) for d in LAYERS}
+DEFAULT_TYPE = {d["n"]: d["default_type"] for d in LAYERS}
 # provisional: an agent's own learning (brain.py learn), ranked low until use confirms it (2026-10-29)
 STATUS_FACTOR = {"provisional": 0.6, "seed": 0.8, "consolidated": 1.0, "obsolete": 0.0}
 # a fact known to be wrong now answers less often than a current one; a node another one `supersedes` counts as
@@ -45,7 +85,7 @@ CONFIRM_SESSIONS, CONFIRM_MIN_DAYS, MAX_PROVISIONAL = 3, 2, 25  # config: confir
 SYNAPSES = {"depends_on": 1, "contradicts": 1, "supersedes": 1, "causes": 2, "example_of": 3, "related": 4}
 MAX_SYNAPSES = 7
 HEBB_THRESHOLD = 2.9  # ≈3 recent joint uses (decay takes off a few tenths)
-MAX_WORDS = {1: 250, 2: 300, 3: 300}
+MAX_WORDS = {d["n"]: d["max_words"] for d in LAYERS}
 MAX_SUMMARY = 140
 MAX_TITLE = 80
 MAX_L1_CHILDREN = 12
@@ -69,8 +109,8 @@ GATE = {"bias": 0.9537, "w": (-0.2875, 0.8957, -0.0917, 0.0454, 0.1065), "mu": (
 # that read bodies but credited none credits the last body it read (the funnel stopped there)
 AUTO_IDLE = 1800
 FORBIDDEN = set(':?/\\#^[]|*"<>')
-CHILD_SECTION = {1: "Branches", 2: "Details"}
-TEMPLATES = {1: "L1 Domain.md", 2: "L2 Concept.md", 3: "L3 Detail.md"}
+CHILD_SECTION = {d["n"]: d["section"] for d in LAYERS if d["section"]}
+TEMPLATES = {d["n"]: d["template"] for d in LAYERS}
 FM_ORDER = ["id", "layer", "type", "summary", "up", "aliases", "status", "source", "external",
             "created", "updated", "reviewed"]
 # verify contract: how renewal checks a current note against the live system with code before any model. The intent
@@ -452,6 +492,10 @@ class Node:
         return c if isinstance(c, int) else None
 
     @property
+    def role(self):
+        return LAYER_ROLE.get(self.layer)
+
+    @property
     def type(self):
         return self.fm.get("type")
 
@@ -520,7 +564,7 @@ def parse_body(body: str):
 
 def over_limit(n) -> bool:
     """Episodes are evidence and are not atomized: the limit applies to knowledge (2026-10-28)."""
-    if n.layer == 3 and n.type == "example" and n.fm.get("truth") == "historical":
+    if n.role == LEAF and n.type == "example" and n.fm.get("truth") == "historical":
         return False
     return n.words > MAX_WORDS[n.layer]
 
@@ -1151,12 +1195,13 @@ def validate_summary(summary: str) -> None:
 
 
 def expected_path(layer: int, title: str, parent: Node | None) -> Path:
-    if layer == 1:
+    role = LAYER_ROLE[layer]
+    if role == DOMAIN:
         base = Path() if parent is None else parent.path.parent
         while len(base.parts) > 1:  # a subdomain of a subdomain sits beside its parent: its details must still fit MAX_DEPTH
             base = base.parent
         path = base / title / f"{title}.md"
-    elif layer == 2:
+    elif role == CONCEPT:
         path = parent.path.parent / f"{title}.md"
     else:
         path = parent.path.parent / parent.title / f"{title}.md"
@@ -1176,15 +1221,16 @@ def has_cycle(v: Vault, n: Node) -> bool:
 
 
 def validate_parent(layer: int, parent: Node | None) -> None:
+    role = LAYER_ROLE[layer]
     if parent is None:
-        if layer != 1:
+        if role != DOMAIN:
             raise BrainError("only L1 nodes hang from MAP")
         return
-    if layer == 1 and parent.layer != 1:
+    if role == DOMAIN and parent.role != DOMAIN:
         raise BrainError("an L1 can only hang from MAP or from another L1 (subdomain)")
-    if layer == 2 and parent.layer != 1:
+    if role == CONCEPT and parent.role != DOMAIN:
         raise BrainError("an L2 must hang from an L1")
-    if layer == 3 and parent.layer != 2:
+    if role == LEAF and parent.role != CONCEPT:
         raise BrainError("an L3 must hang from an L2")
 
 
@@ -1244,8 +1290,8 @@ def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
             E(r, f"duplicate id with {ids[str(i)].as_posix()}")
         else:
             ids[str(i)] = r
-        if n.layer not in (1, 2, 3):
-            E(r, "layer must be 1, 2 or 3")
+        if n.layer not in LAYER_ROLE:
+            E(r, "layer must be " + number_list(LAYER_ROLE))
             continue
         for e in contract_errors(n.fm.get("verify_intent"), n.fm.get("verify_keywords"), n.fm.get("verify")):
             E(r, e)
@@ -1275,7 +1321,7 @@ def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
         if not n.up:
             E(r, "missing up")
         elif norm(n.up) == "map":
-            if n.layer != 1:
+            if n.role != DOMAIN:
                 E(r, "only L1 nodes hang from MAP")
             elif n.path != Path(n.title) / f"{n.title}.md":
                 W(r, f"expected location: {n.title}/{n.title}.md (use brain.py move)")
@@ -1329,11 +1375,11 @@ def audit(v: Vault, warnings: bool = True) -> list[tuple[str, str, str]]:
                 W(r, f'external dependency on "{ref[0]}": keep it minimal')
         if over_limit(n):
             W(r, f"{n.words} words (max {MAX_WORDS[n.layer]}): atomize")
-        if n.layer == 1:
-            l2 = [h for h in v.children.get(k, []) if h.layer == 2]
+        if n.role == DOMAIN:
+            l2 = [h for h in v.children.get(k, []) if h.role == CONCEPT]
             if len(l2) > MAX_L1_CHILDREN:
                 W(r, f"{len(l2)} concepts (max {MAX_L1_CHILDREN}): split into subdomains")
-        if k not in v.mentions and n.layer != 1:
+        if k not in v.mentions and n.role != DOMAIN:
             W(r, "orphan: no node links to it")
 
     # secrets and personal data across all written content
@@ -1748,7 +1794,7 @@ def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
     idf = {t: qw[t] * math.log(1 + (ix["n"] - ix["df"].get(t, 0) + 0.5) / (ix["df"].get(t, 0) + 0.5)) for t in q}
     raw = {}
     for k, n in v.net.items():
-        if STATUS_FACTOR.get(n.status, 0.8) == 0 or n.layer not in (1, 2, 3):
+        if STATUS_FACTOR.get(n.status, 0.8) == 0 or n.layer not in LAYER_ROLE:
             continue
         tf, length = ix["docs"][k]
         norm_len = BM25_K1 * (1 - BM25_B + BM25_B * length / ix["avg"])
@@ -1761,8 +1807,8 @@ def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
     # an atomized concept keeps its facts in its details: it inherits part of its best detail's match
     lift = {}
     for k, s in raw.items():
-        p = v.parent(v.net[k]) if v.net[k].layer == 3 else None
-        if p is not None and p.layer == 2 and STATUS_FACTOR.get(p.status, 0.8):
+        p = v.parent(v.net[k]) if v.net[k].role == LEAF else None
+        if p is not None and p.role == CONCEPT and STATUS_FACTOR.get(p.status, 0.8):
             lift[p.k] = max(lift.get(p.k, 0.0), s)
     res, host = {}, host_system(v)
     twins = twinned(v, host)
@@ -1776,7 +1822,7 @@ def score(v: Vault, query: str, weights: dict) -> list[tuple[float, Node]]:
     # detail's borrowed match, and the detail holds the fact (2026-10-29 bench: 11 of 18 misses in one vault were this)
     for k, s in raw.items():
         n = v.net[k]
-        p = v.parent(n) if n.layer == 3 else None
+        p = v.parent(n) if n.role == LEAF else None
         # never a superseded detail: it stays below the concept that holds today's fact
         if p is not None and p.k in res and s >= raw.get(p.k, 0.0) and res[k] < res[p.k] and truth_factor(v, n) >= 1.0:
             res[k] = res[p.k] * 1.0001
@@ -1940,9 +1986,9 @@ def cmd_recall(v: Vault, a) -> int:
     if translate_query(v, a.query) != a.query:
         print(f'# searched as: {translate_query(v, a.query)}')
     if not lines:
-        print("# no matches. Orientation (L1):")
-        for n in sorted((x for x in v.net.values() if x.layer == 1 and x.up and norm(x.up) == "map"), key=lambda x: -weights.get(x.key, 0))[:8]:
-            print(f"[L1] {n.title} — {n.summary}")
+        print(f"# no matches. Orientation (L{layer_of(DOMAIN)}):")
+        for n in sorted((x for x in v.net.values() if x.role == DOMAIN and x.up and norm(x.up) == "map"), key=lambda x: -weights.get(x.key, 0))[:8]:
+            print(f"[L{layer_of(DOMAIN)}] {n.title} — {n.summary}")
     else:
         print("\n".join(lines))
     if a.all:
@@ -1962,7 +2008,7 @@ def cmd_recall(v: Vault, a) -> int:
     if ranked and not a.no_body and data["total_bodies"] < mode["session_bodies"]:
         n = ranked[0][1]
         p, cov = gate_probability(v, a.query, ranked)
-        if (n.layer in (2, 3) and n.status in ("seed", "consolidated") and n.key not in data["visited"]
+        if (n.role in (CONCEPT, LEAF) and n.status in ("seed", "consolidated") and n.key not in data["visited"]
                 and p >= GATE["threshold"]):
             other = f" · {'/'.join(node_systems(n)).upper()} ONLY, not this {host_system(v)}" if foreign(n, host_system(v)) else ""
             print(f"# answer: [L{n.layer}] {n.title} ({n.path.as_posix()}) · {n.status}{other} · "
@@ -2242,9 +2288,9 @@ def sensitive(text: str, allowed: set) -> str | None:
 def cmd_learn(v: Vault, a) -> int:
     """An agent's own learning: one provisional L3 under an existing concept, checked before anything is written.
     Agents never edit nodes: a node they find wrong is answered with a learning that contradicts it."""
-    typ = a.type or "fact"
-    if typ not in TYPES_BY_LAYER[3]:
-        raise BrainError(f'type "{typ}" not valid: {", ".join(sorted(TYPES_BY_LAYER[3]))}')
+    typ = a.type or DEFAULT_TYPE[layer_of(LEAF)]
+    if typ not in TYPES_BY_LAYER[layer_of(LEAF)]:
+        raise BrainError(f'type "{typ}" not valid: {", ".join(sorted(TYPES_BY_LAYER[layer_of(LEAF)]))}')
     by = a.by or v.cfg.get("learner") or "agent"
     if not re.fullmatch(r"[\w-]{1,32}", by):
         raise BrainError("--by is a short agent name")
@@ -2252,7 +2298,7 @@ def cmd_learn(v: Vault, a) -> int:
     validate_summary(a.summary)
     try:
         parent = v.node(a.up)
-        validate_parent(3, parent)
+        validate_parent(layer_of(LEAF), parent)
         missing = None
     except BrainError as e:   # no concept to hang it from (a new vault has none): it goes to _inbox, not lost
         parent, missing = None, str(e)
@@ -2291,10 +2337,10 @@ def cmd_learn(v: Vault, a) -> int:
         if m is not target and sig and other and len(sig & other) / len(sig | other) >= 0.6:
             raise BrainError(f'"{m.title}" already says something close: credit it if it holds, '
                              f'or learn with --contradicts "{m.title}" if it is wrong')
-    rel = expected_path(3, a.title, parent)
+    rel = expected_path(layer_of(LEAF), a.title, parent)
     if (v.root / rel).exists():
         raise BrainError(f"{rel.as_posix()} already exists")
-    fm = {"id": new_id(), "layer": 3, "type": typ, "summary": a.summary.strip(), "up": f"[[{parent.title}]]",
+    fm = {"id": new_id(), "layer": layer_of(LEAF), "type": typ, "summary": a.summary.strip(), "up": f"[[{parent.title}]]",
           "aliases": [], "status": "provisional", "source": f"learned by {by} {today()}", "external": [],
           "created": today(), "updated": today(), "reviewed": None, "truth": a.truth, "learned_by": by}
     if a.verify_intent:
@@ -2308,7 +2354,7 @@ def cmd_learn(v: Vault, a) -> int:
     n = Node(rel, a.title, fm, body, [])
     with v.lock():
         save_node(v.root, n, touch=False)
-        parent.body = add_to_section(parent.body, CHILD_SECTION[2], f"- [[{a.title}]] — {a.summary.strip()}")
+        parent.body = add_to_section(parent.body, section_of(CONCEPT), f"- [[{a.title}]] — {a.summary.strip()}")
         save_node(v.root, parent, touch=False)
     Telemetry(v).record("planted", [n.key], extra={"st": "provisional"})
     need = int(v.cfg.get("confirm_sessions", CONFIRM_SESSIONS))
@@ -2344,7 +2390,7 @@ def cmd_new(v: Vault, a) -> int:
         raise BrainError(f'type "{typ}" not valid for L{layer}: {", ".join(sorted(TYPES_BY_LAYER[layer]))}')
     validate_title(v, a.title)
     validate_summary(a.summary)
-    up = a.up or ("MAP" if layer == 1 else None)
+    up = a.up or ("MAP" if LAYER_ROLE[layer] == DOMAIN else None)
     if not up:
         raise BrainError("--up is required for L2 and L3")
     parent = None if norm(up) == "map" else v.node(up)
@@ -2356,7 +2402,7 @@ def cmd_new(v: Vault, a) -> int:
           "up": f"[[{parent.title if parent else 'MAP'}]]", "aliases": a.aliases or [], "status": "seed",
           "source": a.source or None, "external": [], "created": today(), "updated": today(), "reviewed": None}
     if a.verify_intent or a.verify:
-        if layer == 1:
+        if LAYER_ROLE[layer] == DOMAIN:
             raise BrainError("a verify contract belongs on an L2 or L3 note")
         contract = contract_errors(a.verify_intent, a.verify_keywords or [], a.verify or [])
         if contract:
@@ -2412,7 +2458,7 @@ def cmd_unlink(v: Vault, a) -> int:
 def _move_paths(v: Vault, n: Node, target: Path) -> None:
     src = v.root / n.path
     dest = v.root / target
-    if n.layer == 1 and n.path.parent.name == n.title and n.path.parent != Path():
+    if n.role == DOMAIN and n.path.parent.name == n.title and n.path.parent != Path():
         dest_folder = dest.parent
         if dest_folder.exists() and dest_folder != src.parent:
             raise BrainError(f"folder {target.parent.as_posix()} already exists")
@@ -2427,7 +2473,7 @@ def _move_paths(v: Vault, n: Node, target: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     os.replace(src, dest)
     details = src.parent / n.title
-    if n.layer == 2 and details.is_dir():
+    if n.role == CONCEPT and details.is_dir():
         os.replace(details, dest.parent / dest.stem)
     try:
         if not any(src.parent.iterdir()):
@@ -2477,38 +2523,38 @@ def cmd_promote(v: Vault, a) -> int:
     """L3 → L2 under its concept's L1 · L2 → L1 subdomain (its details become concepts)."""
     n = v.node(a.title)
     parent = v.parent(n)
-    if n.layer == 3:
+    if n.role == LEAF:
         grandparent = v.parent(parent) if parent else None
-        if not grandparent or grandparent.layer != 1:
+        if not grandparent or grandparent.role != DOMAIN:
             raise BrainError("the parent concept does not hang from an L1")
-        target = expected_path(2, n.title, grandparent)
+        target = expected_path(layer_of(CONCEPT), n.title, grandparent)
         with v.lock():
-            parent.body = remove_from_section(parent.body, CHILD_SECTION[2], n.title)
+            parent.body = remove_from_section(parent.body, section_of(CONCEPT), n.title)
             save_node(v.root, parent)
             (v.root / target).parent.mkdir(parents=True, exist_ok=True)
             os.replace(v.root / n.path, v.root / target)
             _remove_empty_folder((v.root / n.path).parent)
             n.path = target
-            n.fm.update(layer=2, type="concept", up=f"[[{grandparent.title}]]")
+            n.fm.update(layer=layer_of(CONCEPT), type="concept", up=f"[[{grandparent.title}]]")
             save_node(v.root, n)
-            grandparent.body = add_to_section(grandparent.body, CHILD_SECTION[1], f"- [[{n.title}]] — {n.summary}")
+            grandparent.body = add_to_section(grandparent.body, section_of(DOMAIN), f"- [[{n.title}]] — {n.summary}")
             save_node(v.root, grandparent)
         print(f'"{n.title}" promoted to L2 under "{grandparent.title}" → {target.as_posix()}')
         return 0
-    if n.layer == 2:
-        if not parent or parent.layer != 1:
+    if n.role == CONCEPT:
+        if not parent or parent.role != DOMAIN:
             raise BrainError("the concept does not hang from an L1")
-        target = expected_path(1, n.title, parent)
+        target = expected_path(layer_of(DOMAIN), n.title, parent)
         children = v.children.get(n.k, [])
         with v.lock():
             (v.root / target).parent.mkdir(parents=True, exist_ok=True)
             os.replace(v.root / n.path, v.root / target)
             n.path = target
-            n.fm.update(layer=1, type="domain")
-            n.body = _rename_section(n.body, CHILD_SECTION[2], CHILD_SECTION[1])
+            n.fm.update(layer=layer_of(DOMAIN), type="domain")
+            n.body = _rename_section(n.body, section_of(CONCEPT), section_of(DOMAIN))
             save_node(v.root, n)
             for h in children:
-                h.fm.update(layer=2, type="concept")
+                h.fm.update(layer=layer_of(CONCEPT), type="concept")
                 save_node(v.root, h)
         print(f'"{n.title}" promoted to L1 (subdomain of "{parent.title}") · {len(children)} details become concepts')
         return 0
@@ -2518,17 +2564,17 @@ def cmd_promote(v: Vault, a) -> int:
 def cmd_demote(v: Vault, a) -> int:
     """L2 → L3 under another concept (only if it has no details)."""
     n = v.node(a.title)
-    if n.layer != 2:
+    if n.role != CONCEPT:
         raise BrainError("only an L2 can be demoted to L3")
     if v.children.get(n.k):
         raise BrainError("it has details: move them to another concept before demoting")
     new = v.node(a.up)
-    if new.layer != 2 or new.k == n.k:
+    if new.role != CONCEPT or new.k == n.k:
         raise BrainError("the new parent must be another L2")
-    typ = a.type or "fact"
-    if typ not in TYPES_BY_LAYER[3]:
-        raise BrainError(f"invalid L3 type: {', '.join(sorted(TYPES_BY_LAYER[3]))}")
-    target = expected_path(3, n.title, new)
+    typ = a.type or DEFAULT_TYPE[layer_of(LEAF)]
+    if typ not in TYPES_BY_LAYER[layer_of(LEAF)]:
+        raise BrainError(f"invalid L3 type: {', '.join(sorted(TYPES_BY_LAYER[layer_of(LEAF)]))}")
+    target = expected_path(layer_of(LEAF), n.title, new)
     old = v.parent(n)
     with v.lock():
         if old:
@@ -2538,9 +2584,9 @@ def cmd_demote(v: Vault, a) -> int:
         os.replace(v.root / n.path, v.root / target)
         _remove_empty_folder((v.root / n.path).parent / n.title)
         n.path = target
-        n.fm.update(layer=3, type=typ, up=f"[[{new.title}]]")
+        n.fm.update(layer=layer_of(LEAF), type=typ, up=f"[[{new.title}]]")
         save_node(v.root, n)
-        new.body = add_to_section(new.body, CHILD_SECTION[2], f"- [[{n.title}]] — {n.summary}")
+        new.body = add_to_section(new.body, section_of(CONCEPT), f"- [[{n.title}]] — {n.summary}")
         save_node(v.root, new)
     print(f'"{n.title}" demoted to L3 ({typ}) under "{new.title}" → {target.as_posix()}')
     return 0
@@ -2552,14 +2598,14 @@ def cmd_rename(v: Vault, a) -> int:
     old_t = n.title
     with v.lock():
         src = v.root / n.path
-        if n.layer == 1 and n.path.parent.name == old_t and not n.cold:
+        if n.role == DOMAIN and n.path.parent.name == old_t and not n.cold:
             folder = src.parent.with_name(a.new)
             os.replace(src.parent, folder)
             os.replace(folder / src.name, folder / f"{a.new}.md")
         else:
             os.replace(src, src.with_name(f"{a.new}.md"))
             details = src.parent / old_t
-            if n.layer == 2 and details.is_dir():
+            if n.role == CONCEPT and details.is_dir():
                 os.replace(details, details.with_name(a.new))
         changed = 0
         for rel in v.md_files(include_brain=True):
@@ -2644,7 +2690,7 @@ def cmd_questions(v: Vault, a) -> int:
     """Generated questions (doc2query): the engine writes none itself. `todo` prints the nodes whose questions are
     missing or stale with the instructions for an LLM, `import` checks and stores its JSON Lines answer."""
     qs = questions(v)
-    ranked = [n for n in v.net.values() if n.layer in (1, 2, 3) and STATUS_FACTOR.get(n.status, 0.8)]
+    ranked = [n for n in v.net.values() if n.layer in LAYER_ROLE and STATUS_FACTOR.get(n.status, 0.8)]
     missing = [n for n in ranked if n.key not in qs]
     stale = [n for n in ranked if n.key in qs and qs[n.key].get("hash") != content_hash(n)]
     if a.action == "status":
@@ -2711,12 +2757,12 @@ def mine_ideas(v: Vault, min_count: int = 4) -> list[dict]:
     or domain title or alias, with the nodes that carry it. Link: two nodes with no link between them that were credited
     together (co-activation between IDEAS_CO_MIN and the point where `consolidate` already proposes it), or that share
     IDEAS_SHARED rare words. Titles and summaries only: a body mentions everything."""
-    nodes = [n for n in v.net.values() if n.layer in (1, 2, 3) and n.status != "obsolete"]
+    nodes = [n for n in v.net.values() if n.layer in LAYER_ROLE and n.status != "obsolete"]
     covered: set[str] = set()
     stems: dict[str, set[str]] = {}               # node key -> its stems
     surface: dict[str, dict[str, int]] = {}       # stem -> written forms
     for n in sorted(nodes, key=lambda x: x.k):
-        if n.layer in (1, 2):
+        if n.role in (DOMAIN, CONCEPT):
             covered |= set(term_list(n.title + " " + " ".join(n.aliases)))
         words = [w for w in re.findall(r"[a-z0-9]+", norm(idea_surface(n))) if w not in STOPWORDS and len(w) > 1]
         mine = set()
@@ -2728,7 +2774,7 @@ def mine_ideas(v: Vault, min_count: int = 4) -> list[dict]:
         stems[n.key] = mine
     df: dict[str, list[Node]] = {}
     for n in sorted(nodes, key=lambda x: x.k):
-        if n.layer in (2, 3):
+        if n.role in (CONCEPT, LEAF):
             for t in stems[n.key]:
                 df.setdefault(t, []).append(n)
     out: list[dict] = []
@@ -2927,7 +2973,7 @@ def compute_proposals(v: Vault) -> dict[str, list[str]]:
     vals = sorted(weights.values())
     p90 = vals[int(len(vals) * 0.9)] if vals else 1.0
     for n in sorted(v.net.values(), key=lambda x: x.k):
-        if n.layer not in (1, 2, 3):
+        if n.layer not in LAYER_ROLE:
             continue
         wn, age = weights.get(n.key, 0.0), age_days(v, n)
         children = v.children.get(n.k, [])
@@ -2939,15 +2985,15 @@ def compute_proposals(v: Vault) -> dict[str, list[str]]:
             P["archive"].append(f"- [ ] archive :: [[{n.title}]] — seed unused for {age} days")
         if over_limit(n):
             P["atomize"].append(f"- [ ] atomize :: [[{n.title}]] — {n.words} words (max {MAX_WORDS[n.layer]})")
-        if n.layer == 1 and len([h for h in children if h.layer == 2]) > MAX_L1_CHILDREN:
+        if n.role == DOMAIN and len([h for h in children if h.role == CONCEPT]) > MAX_L1_CHILDREN:
             P["subdomain"].append(f"- [ ] subdomain :: [[{n.title}]] — {len(children)} branches: group them into subdomains")
-        if n.layer == 2 and wn >= p90 and wn > 0.5 and len(children) >= 5:
+        if n.role == CONCEPT and wn >= p90 and wn > 0.5 and len(children) >= 5:
             P["promote"].append(f"- [ ] promote :: [[{n.title}]] — central L2 with {len(children)} details: candidate for an L1 subdomain")
-        if n.layer == 3 and wn >= p90 and wn > 0.5 and uses.get(n.key, 0) >= 5:
+        if n.role == LEAF and wn >= p90 and wn > 0.5 and uses.get(n.key, 0) >= 5:
             P["promote"].append(f"- [ ] promote :: [[{n.title}]] — L3 used {uses[n.key]} times: candidate for an L2 concept")
-        if n.layer == 2 and not children and wn < 0.1 and age > 60:
+        if n.role == CONCEPT and not children and wn < 0.1 and age > 60:
             P["demote"].append(f"- [ ] demote :: [[{n.title}]] — concept without details and rarely used: is it a detail of another concept?")
-        if n.layer == 1:
+        if n.role == DOMAIN:
             desc = [h for h in children] + [d for h in children for d in v.children.get(h.k, [])]
             latest = max((str(d.fm.get("updated") or "") for d in desc), default="")
             if latest and latest > str(n.fm.get("updated") or ""):
@@ -2964,7 +3010,7 @@ def compute_proposals(v: Vault) -> dict[str, list[str]]:
             P["learned"].append(f"- [ ] sample :: [[{n.title}]] — confirmed by use on {n.fm['confirmed']}: spot-check it")
         if n.status == "seed" and not n.fm.get("reviewed") and age > 30:
             P["validate"].append(f"- [ ] validate :: [[{n.title}]] — seed {age} days old without human review")
-    nodes = [n for n in v.net.values() if n.layer in (1, 2, 3)]
+    nodes = [n for n in v.net.values() if n.layer in LAYER_ROLE]
     sigs = {n.k: tokens(n.title) | tokens(n.summary) for n in nodes}
     for i, n in enumerate(nodes):
         for m in nodes[i + 1:]:
@@ -3106,7 +3152,7 @@ def cmd_externals(v: Vault, a) -> int:
 # --------------------------------------------------------------------------- visualization
 def layout(v: Vault, weights: dict, max_l3: int = 150):
     net = v.net
-    nodes = [n for n in net.values() if n.layer in (1, 2, 3)]
+    nodes = [n for n in net.values() if n.layer in LAYER_ROLE]
     roots = sorted([n for n in nodes if not (n.up and norm(n.up) in net)], key=lambda n: (n.layer, n.k))
     leaves: dict[str, int] = {}
 
@@ -3137,34 +3183,34 @@ def layout(v: Vault, weights: dict, max_l3: int = 150):
     assign(roots, -math.pi / 2, 1.5 * math.pi)
     for i, n in enumerate(x for x in nodes if x.k not in angle):
         angle[n.k] = -math.pi / 2 + 0.05 * (i + 1)
-    l3 = sorted((n for n in nodes if n.layer == 3), key=lambda n: (-weights.get(n.key, 0.0), n.k))
-    visible = {n.k for n in nodes if n.layer != 3} | {n.k for n in l3[:max_l3]}
-    counts = {c: sum(1 for n in nodes if n.layer == c) for c in (1, 2, 3)}
-    r1 = max(700, counts[1] * 320 / (2 * math.pi))
-    r2 = max(r1 + 800, counts[2] * 260 / (2 * math.pi))
-    r3 = max(r2 + 700, min(counts[3], max_l3) * 220 / (2 * math.pi))
-    radii = {"L1": r1, "SUB": (r1 + r2) / 2, "L2": r2, "L3": r3, "COLD": r3 + 700}
+    l3 = sorted((n for n in nodes if n.role == LEAF), key=lambda n: (-weights.get(n.key, 0.0), n.k))
+    visible = {n.k for n in nodes if n.role != LEAF} | {n.k for n in l3[:max_l3]}
+    counts = {role: sum(1 for n in nodes if n.role == role) for role in (DOMAIN, CONCEPT, LEAF)}
+    r1 = max(700, counts[DOMAIN] * 320 / (2 * math.pi))
+    r2 = max(r1 + 800, counts[CONCEPT] * 260 / (2 * math.pi))
+    r3 = max(r2 + 700, min(counts[LEAF], max_l3) * 220 / (2 * math.pi))
+    radii = {DOMAIN: r1, "sub": (r1 + r2) / 2, CONCEPT: r2, LEAF: r3, "cold": r3 + 700}
 
     def radius(n: Node) -> float:
-        if n.layer == 1:
-            return radii["SUB"] if n.up and norm(n.up) in net else radii["L1"]
-        return radii["L2"] if n.layer == 2 else radii["L3"]
+        if n.role == DOMAIN:
+            return radii["sub"] if n.up and norm(n.up) in net else radii[DOMAIN]
+        return radii[CONCEPT] if n.role == CONCEPT else radii[LEAF]
 
     pos = {n.k: (radius(n) * math.cos(angle[n.k]), radius(n) * math.sin(angle[n.k])) for n in nodes if n.k in visible}
     return pos, radii, visible
 
 
 # same layer colors as Panel.html and the Obsidian graph groups
-COLORS = {0: "#EF9F27", 1: "#2a78d6", 2: "#eb6834", 3: "#1baf7a", "synapse": "#898781", "contradicts": "#d03b3b"}
+COLORS = {0: "#EF9F27", **{d["n"]: d["color"] for d in LAYERS}, "synapse": "#898781", "contradicts": "#d03b3b"}
 
 
 def render_panel_svg(v: Vault, weights: dict) -> str:
     pos, radii, _ = layout(v, weights, max_l3=400)
-    scale = 270 / radii["COLD"]
+    scale = 270 / radii["cold"]
     cx = cy = 300
     p = ['<svg xmlns="http://www.w3.org/2000/svg" width="600" height="640" viewBox="0 0 600 640" font-family="sans-serif">']
-    for key in ("L1", "L2", "L3", "COLD"):
-        dash = ' stroke-dasharray="4 6"' if key == "COLD" else ""
+    for key in (DOMAIN, CONCEPT, LEAF, "cold"):
+        dash = ' stroke-dasharray="4 6"' if key == "cold" else ""
         p.append(f'<circle cx="{cx}" cy="{cy}" r="{radii[key] * scale:.1f}" fill="none" stroke="#888780" stroke-opacity="0.5" stroke-width="1"{dash}/>')
     for n in v.net.values():
         if n.k not in pos:
@@ -3173,7 +3219,7 @@ def render_panel_svg(v: Vault, weights: dict) -> str:
         parent = v.parent(n)
         if parent and parent.k in pos:
             px, py = pos[parent.k]
-        elif n.layer == 1:
+        elif n.role == DOMAIN:
             px = py = 0
         else:
             continue
@@ -3186,7 +3232,7 @@ def render_panel_svg(v: Vault, weights: dict) -> str:
                 color = COLORS["contradicts" if s.type == "contradicts" else "synapse"]
                 p.append(f'<line x1="{cx + x1 * scale:.1f}" y1="{cy + y1 * scale:.1f}" x2="{cx + x2 * scale:.1f}" y2="{cy + y2 * scale:.1f}" stroke="{color}" stroke-opacity="0.7" stroke-width="1.2"/>')
     p.append(f'<circle cx="{cx}" cy="{cy}" r="12" fill="{COLORS[0]}"/>')
-    base = {1: 6, 2: 4, 3: 2.5}
+    base = {d["n"]: d["dot"] for d in LAYERS}
     for n in sorted(v.net.values(), key=lambda x: -(x.layer or 0)):
         if n.k not in pos:
             continue
@@ -3194,9 +3240,9 @@ def render_panel_svg(v: Vault, weights: dict) -> str:
         r = base[n.layer] * (1 + 1.2 * weights.get(n.key, 0.0))
         border = ' fill-opacity="0.25" stroke="#898781" stroke-width="1.2"' if n.status == "seed" else ""
         p.append(f'<circle cx="{cx + x * scale:.1f}" cy="{cy + y * scale:.1f}" r="{r:.1f}" fill="{COLORS[n.layer]}"{border}/>')
-    counts = {c: sum(1 for n in v.net.values() if n.layer == c) for c in (1, 2, 3)}
+    counts = {role: sum(1 for n in v.net.values() if n.role == role) for role in (DOMAIN, CONCEPT, LEAF)}
     cold = sum(len(x) for x in v.cold.values())
-    p.append(f'<text x="300" y="618" text-anchor="middle" font-size="14" fill="#888780">L1 {counts[1]} · L2 {counts[2]} · L3 {counts[3]} · cold {cold} · faded with gray ring = seed</text>')
+    p.append(f'<text x="300" y="618" text-anchor="middle" font-size="14" fill="#888780">L{layer_of(DOMAIN)} {counts[DOMAIN]} · L{layer_of(CONCEPT)} {counts[CONCEPT]} · L{layer_of(LEAF)} {counts[LEAF]} · cold {cold} · faded with gray ring = seed</text>')
     p.append("</svg>")
     return "\n".join(p) + "\n"
 
@@ -3205,7 +3251,7 @@ def hot_nodes(v: Vault, tel: Telemetry) -> list[Node]:
     """The HOT_MAX most active concepts and details above HOT_MIN, hottest first."""
     act, by_key = tel.activation(), v.by_key()
     hot = [(b, by_key[k]) for k, b in act.items() if b >= HOT_MIN and k in by_key]
-    hot = [(b, n) for b, n in hot if n.layer in (2, 3) and n.status not in ("obsolete", "provisional")]
+    hot = [(b, n) for b, n in hot if n.role in (CONCEPT, LEAF) and n.status not in ("obsolete", "provisional")]
     return [n for _, n in sorted(hot, key=lambda x: (-x[0], x[1].k))[:HOT_MAX]]
 
 
@@ -3278,11 +3324,11 @@ def write_hot(v: Vault, tel: Telemetry) -> list[Node]:
 
 
 def render_map(v: Vault, weights: dict, hot: list[Node] | None = None) -> str:
-    l1 = [n for n in v.net.values() if n.layer == 1 and (not n.up or norm(n.up) == "map")]
+    l1 = [n for n in v.net.values() if n.role == DOMAIN and (not n.up or norm(n.up) == "map")]
     l1.sort(key=lambda n: (-weights.get(n.key, 0.0), n.k))
-    counts = {c: sum(1 for n in v.net.values() if n.layer == c) for c in (1, 2, 3)}
+    counts = {role: sum(1 for n in v.net.values() if n.role == role) for role in (DOMAIN, CONCEPT, LEAF)}
     out = ["# MAP", "", "%% L0 core. Generated by brain.py build — do not edit by hand. %%", "",
-           f"Vault **{v.name}** · {counts[1]} domains · {counts[2]} concepts · {counts[3]} details · updated {today()}",
+           f"Vault **{v.name}** · {counts[DOMAIN]} domains · {counts[CONCEPT]} concepts · {counts[LEAF]} details · updated {today()}",
            "", "## Domains"]
     lines = 0
     for n in l1:
@@ -3292,7 +3338,7 @@ def render_map(v: Vault, weights: dict, hot: list[Node] | None = None) -> str:
         branches = [h for h in v.children.get(n.k, [])]
         out.append(f"- [[{n.title}]] — {n.summary} · {len(branches)} branches")
         lines += 1
-        subs = [h for h in branches if h.layer == 1]
+        subs = [h for h in branches if h.role == DOMAIN]
         for s in subs[:3]:
             out.append(f"    - [[{s.title}]] — {s.summary}")
             lines += 1
@@ -3341,9 +3387,9 @@ def record_history(v: Vault) -> list[dict]:
             parts = line.split(",")
             if len(parts) == len(head):
                 rows.append(dict(zip(head, parts)))
-    net = [n for n in v.net.values() if n.layer in (1, 2, 3)]
-    current = {"date": today(), "l1": sum(n.layer == 1 for n in net), "l2": sum(n.layer == 2 for n in net),
-               "l3": sum(n.layer == 3 for n in net), "seeds": sum(n.status == "seed" for n in net),
+    net = [n for n in v.net.values() if n.layer in LAYER_ROLE]
+    current = {"date": today(), "l1": sum(n.role == DOMAIN for n in net), "l2": sum(n.role == CONCEPT for n in net),
+               "l3": sum(n.role == LEAF for n in net), "seeds": sum(n.status == "seed" for n in net),
                "consolidated": sum(n.status == "consolidated" for n in net), "obsolete": sum(n.status == "obsolete" for n in net),
                "synapses": sum(len(n.synapses) for n in net), "cold": sum(len(x) for x in v.cold.values())}
     rows = [f for f in rows if f["date"] != today()] + [{k: str(x) for k, x in current.items()}]
@@ -3353,20 +3399,20 @@ def record_history(v: Vault) -> list[dict]:
 
 def render_panel(v: Vault, weights: dict, history: list[dict], findings: list, co: dict, commits: list) -> str:
     keys = v.by_key()
-    net = [n for n in v.net.values() if n.layer in (1, 2, 3)]
+    net = [n for n in v.net.values() if n.layer in LAYER_ROLE]
     out = [f"# {v.name} panel", "", f"%% Generated by brain.py build on {now().isoformat(' ')} — do not edit. %%", "",
            f"Vault **{v.name}** · engine v{VERSION} · interactive panel with 2D orbit and 3D sphere views: [[_brain/Panel.html|Panel.html]] "
            "(open it in a browser, or inside Obsidian with an HTML viewer plugin)", "",
            "![[_brain/generated/orbit.svg]]", "", "## Layers", "",
            "| Layer | Nodes | Seeds | Consolidated | Obsolete |", "|---|---|---|---|---|"]
-    names = {1: "L1 Domains", 2: "L2 Concepts", 3: "L3 Details"}
-    for c in (1, 2, 3):
-        g = [n for n in net if n.layer == c]
+    names = {d["role"]: d["label"] for d in LAYERS}
+    for c in (DOMAIN, CONCEPT, LEAF):
+        g = [n for n in net if n.role == c]
         out.append(f"| {names[c]} | {len(g)} | {sum(n.status == 'seed' for n in g)} | "
                    f"{sum(n.status == 'consolidated' for n in g)} | {sum(n.status == 'obsolete' for n in g)} |")
     cold = {k: len(x) for k, x in v.cold.items()}
     out.append(f"| Cold ring | {sum(cold.values())} | — | — | — |")
-    data = [(names[c], sum(n.layer == c for n in net)) for c in (1, 2, 3)]
+    data = [(names[c], sum(n.role == c for n in net)) for c in (DOMAIN, CONCEPT, LEAF)]
     if any(x for _, x in data):
         out += ["", "```mermaid", "pie showData", "    title Nodes by layer"]
         out += [f'    "{e}" : {x}' for e, x in data if x]
@@ -3435,7 +3481,7 @@ def recent_commits(v: Vault, limit: int = 10) -> list[tuple[str, str, str]]:
 
 def render_panel_html(v: Vault, weights: dict, history: list[dict], findings: list, co: dict, commits: list) -> str:
     """Interactive panel, one page with both views (2D orbit and 3D sphere): panel.html with this vault's data inlined (works offline)."""
-    net = sorted((n for n in v.net.values() if n.layer in (1, 2, 3)), key=lambda x: x.k)
+    net = sorted((n for n in v.net.values() if n.layer in LAYER_ROLE), key=lambda x: x.k)
     keys = v.by_key()
     warns = [h for h in findings if h[0] == "WARN"]
 
@@ -3720,13 +3766,13 @@ def cmd_import_memory(v: Vault, a) -> int:
             continue
         vv = Vault(root)
         if not vv.exists(domain):
-            cmd_new(vv, argparse.Namespace(layer=1, type=None, title=domain, summary=dsum, up=None, aliases=[],
+            cmd_new(vv, argparse.Namespace(layer=layer_of(DOMAIN), type=None, title=domain, summary=dsum, up=None, aliases=[],
                                            source=None, verify_intent=None, verify=None, verify_keywords=None,
                                            system=None))
             vv = Vault(root)
-        elif vv.node(domain).layer != 1:
+        elif vv.node(domain).role != DOMAIN:
             raise BrainError(f'"{domain}" exists and is not an L1: rename it, then import again')
-        cmd_new(vv, argparse.Namespace(layer=2, type=None, title=title, summary=summary, up=domain, aliases=[],
+        cmd_new(vv, argparse.Namespace(layer=layer_of(CONCEPT), type=None, title=title, summary=summary, up=domain, aliases=[],
                                        source=source, verify_intent=None, verify=None, verify_keywords=None,
                                        system=None))
         vv = Vault(root)
@@ -3968,7 +4014,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_credit)
 
     p = sub.add_parser("new", help="creates a node from its template in its right place")
-    p.add_argument("--layer", type=int, choices=[1, 2, 3], required=True)
+    p.add_argument("--layer", type=int, choices=sorted(LAYER_ROLE), required=True)
     p.add_argument("--type")
     p.add_argument("--up")
     p.add_argument("--title", required=True)
@@ -3987,7 +4033,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--up", required=True, help="the L2 concept it belongs under")
     p.add_argument("--title", required=True)
     p.add_argument("--summary", required=True)
-    p.add_argument("--type", choices=sorted(TYPES_BY_LAYER[3]))
+    p.add_argument("--type", choices=sorted(TYPES_BY_LAYER[layer_of(LEAF)]))
     p.add_argument("--content", required=True)
     p.add_argument("--evidence", required=True)
     p.add_argument("--truth", choices=["current", "historical"], default="current")
