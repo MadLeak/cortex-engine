@@ -52,6 +52,7 @@ except ImportError:   # a hub copied out of the repository: views only, no conne
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cortex_mcp  # noqa: E402  (the MCP service rides the hub's own port: /mcp/<vault>)
 import hub_rem  # noqa: E402  (REM dreaming inside the container)
+import hub_sync  # noqa: E402  (a cortex kept in step with its remote)
 import hub_settings  # noqa: E402  (each cortex's Settings dialog)
 
 ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
@@ -477,12 +478,19 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
     creating = threading.Lock()
     server_version = "CortexHub/1"
     _rem: tuple | None = None       # (root, REM scheduler)
+    _sync: tuple | None = None      # (root, sync scheduler)
 
     @classmethod
     def rem_scheduler(cls) -> hub_rem.Scheduler:
         if cls._rem is None or cls._rem[0] != cls.root:
             Hub._rem = (cls.root, hub_rem.Scheduler(cls.root, lambda: vaults(Hub.root)))
         return Hub._rem[1]
+
+    @classmethod
+    def sync_scheduler(cls) -> hub_sync.Scheduler:
+        if cls._sync is None or cls._sync[0] != cls.root:
+            Hub._sync = (cls.root, hub_sync.Scheduler(cls.root, lambda: vaults(Hub.root)))
+        return Hub._sync[1]
 
     def log_message(self, fmt, *args):   # quiet: the panels poll every few seconds
         pass
@@ -695,6 +703,10 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                     if not self.rem_scheduler().start_now(v):
                         raise ValueError("this cortex is already dreaming")
                     out = {"message": "dreaming started: the result shows here when it ends"}
+                elif action == "sync-run":
+                    if not self.sync_scheduler().start_now(v):
+                        raise ValueError("this cortex is already syncing")
+                    out = {"message": "sync started: the result shows here when it ends"}
                 elif action == "delete":
                     out = {"message": hub_settings.delete(v, str(body.get("confirm") or ""))}
                     if self.data:
@@ -759,6 +771,7 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
             out = hub_settings.read(v, load_scopes(self.data).get(v.name, "local"))
             out["lan"] = bool(self.lan_domain)
             out["rem"] = self.rem_scheduler().status(v)
+            out["sync"] = self.sync_scheduler().status(v)
             return self.send(200, json.dumps(out, ensure_ascii=False).encode(), "application/json")
         if path == "/api/memories":   # the owner's Claude Code memory folders, for Connect an agent
             if self.scope != "localhost":
@@ -1067,7 +1080,13 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
       <label>Minutes between runs <input name="rem_interval_minutes" type="number" min="15" max="10080"></label>
       <label>Most minutes one run may take <input name="rem_budget_minutes" type="number" min="1" max="240"></label>
       <div class="sub" id="s-rem"></div>
-      <div class="row"><button type="submit" class="primary">Save settings</button><button type="button" id="s-dream">Dream now</button></div>
+      <h3>Sync with the remote</h3>
+      <div class="sub">Keeps this cortex in step with its git remote: what changed here is committed as you, the remote is pulled, and what is ahead is pushed. Nothing is forced; a conflict is left for you. Needs a push token (below, or one shared file <code>.cortex-hub/push.token</code> beside the cortexes).</div>
+      <label>Sync <select name="sync_enabled"><option value="false">Off</option><option value="true">On</option></select></label>
+      <label>Minutes between syncs <input name="sync_interval_minutes" type="number" min="1" max="1440"></label>
+      <label>Pull first when a task starts after this many idle minutes <input name="sync_idle_minutes" type="number" min="5" max="10080"></label>
+      <div class="sub" id="s-sync"></div>
+      <div class="row"><button type="submit" class="primary">Save settings</button><button type="button" id="s-dream">Dream now</button><button type="button" id="s-sync-now">Sync now</button></div>
     </form>
     <section class="form">
       <h3>MCP token</h3>
@@ -1379,6 +1398,9 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
       (rem.model ? `
 Model server: ${rem.model}` : '');
     $('#s-rem').style.whiteSpace = 'pre-line'; $('#s-dream').disabled = !!rem.running;
+    const sy = sdata.sync || {};
+    $('#s-sync').textContent = (sy.running ? 'Syncing now…' : sy.last ? `Last sync ${sy.last.replace('T', ' ').slice(0, 16)}: ${sy.result}` + (sy.result === 'ok' ? ` (committed ${sy.committed ? 'yes' : 'no'}, pulled ${sy.pulled || 0}, pushed ${sy.pushed || 0})` : '') : 'Never synced.') + (sy.enabled && !sy.token ? '\nNo push token yet: it cannot sync.' : '');
+    $('#s-sync').style.whiteSpace = 'pre-line'; $('#s-sync-now').disabled = !!sy.running;
     rform.url.value = sdata.remote || ''; rform.token.value = '';
     rform.token.placeholder = sdata.push_token ? 'a token is saved (hidden): paste a new one to replace it' : 'kept in this vault, out of git: paste or let your password manager fill it';
     $('#s-push').disabled = !(sdata.remote && sdata.remote.startsWith('https://') && sdata.push_token);
@@ -1420,6 +1442,7 @@ Model server: ${rem.model}` : '');
   });
   $('#s-find-ideas').addEventListener('click', ev => run(ev.target, 'ideas', {}));
   $('#s-dream').addEventListener('click', ev => run(ev.target, 'rem-run', {}));
+  $('#s-sync-now').addEventListener('click', ev => run(ev.target, 'sync-run', {}));
   $('#s-rotate').addEventListener('click', ev => {
     if (!confirm('Make a new MCP token? The agent stops reaching this cortex until its MCP client gets the new one.')) return;
     run(ev.target, 'rotate-token', {}, out => { const t = $('#s-token'); t.hidden = false;
@@ -1707,6 +1730,7 @@ def main() -> None:
     print(f"cortex hub, {scope} scope, {scheme} for {', '.join(dns + ips)} · listening on {a.host}:{a.port} · "
           f"{len(vaults(Hub.root))} vaults under {Hub.root}", flush=True)
     Hub.rem_scheduler().start()   # REM dreaming for the cortexes that turned it on (Settings)
+    Hub.sync_scheduler().start()  # sync with the remote for the cortexes that turned it on, at start and every few minutes
     if a.mcp:
         Hub.mcp_hub, Hub.mcp_require_token = cortex_mcp.Hub(Hub.root, 60.0, commit=True), True
         cortex_mcp.RESIDENT = cortex_mcp.Resident(ENGINE / "template-vault" / "_brain" / "scripts",

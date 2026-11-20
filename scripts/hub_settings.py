@@ -36,10 +36,14 @@ CONFIG = {
     "rem_enabled": ("bool", 0, 1, "dream the questions each note answers on a schedule (needs the local model server)"),
     "rem_interval_minutes": ("int", 15, 10080, "minutes between two dreaming runs"),
     "rem_budget_minutes": ("int", 1, 240, "most minutes one dreaming run may take"),
+    "sync_enabled": ("bool", 0, 1, "keep this cortex in step with its remote: commit what changed here, pull, push"),
+    "sync_interval_minutes": ("int", 1, 1440, "minutes between two syncs"),
+    "sync_idle_minutes": ("int", 5, 10080, "minutes without a sync after which a task starting here pulls first"),
 }
 DEFAULTS = {"auto_idle_minutes": 30, "half_life_days": 30, "confirm_sessions": 3, "confirm_min_days": 2,
             "max_provisional": 25, "ideas_min_count": 4, "rem_enabled": False, "rem_interval_minutes": 1440,
-            "rem_budget_minutes": 30}
+            "rem_budget_minutes": 30,
+            "sync_enabled": False, "sync_interval_minutes": 10, "sync_idle_minutes": 30}
 REMOTE = re.compile(r"^(https://[A-Za-z0-9.-]+(:\d+)?/[\w.~/-]+?(\.git)?|git@[A-Za-z0-9.-]+:[\w.~/-]+?(\.git)?)$")
 
 
@@ -67,6 +71,14 @@ def push_token_path(v: Path) -> Path:
     return v.joinpath(*PUSH_TOKEN)
 
 
+def shared_token(v: Path) -> str:
+    """One token for every cortex, in <vaults>/.cortex-hub/push.token: used when the cortex has none of its own."""
+    try:
+        return v.parent.joinpath(".cortex-hub", "push.token").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def read(v: Path, scope: str) -> dict:
     """What the dialog shows. Secrets are never sent: only whether a push token is set."""
     cfg = read_config(v)
@@ -76,7 +88,7 @@ def read(v: Path, scope: str) -> dict:
     remote = git(v, "remote", "get-url", "origin").stdout.strip() if in_git else ""
     out = {"folder": v.name, "config": config, "help": {k: d[3] for k, d in CONFIG.items()}, "scope": scope,
            "schema": cfg.get("schema", 0), "layers": cfg.get("layers", 3), "ideas_waiting": ideas_waiting(v), "git": in_git, "remote": remote,
-           "push_token": push_token_path(v).is_file() and bool(push_token_path(v).read_text(encoding="utf-8").strip())}
+           "push_token": (push_token_path(v).is_file() and bool(push_token_path(v).read_text(encoding="utf-8").strip())) or bool(shared_token(v))}
     if in_git:
         out["branch"] = git(v, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         out["uncommitted"] = len([x for x in git(v, "status", "--porcelain").stdout.splitlines() if x.strip()])
@@ -227,7 +239,7 @@ def push(v: Path) -> str:
     if not remote.startswith("https://"):
         raise ValueError("the hub pushes over https only (ssh keys stay on your machine): use an https remote")
     p = push_token_path(v)
-    token = p.read_text(encoding="utf-8").strip() if p.is_file() else ""
+    token = (p.read_text(encoding="utf-8").strip() if p.is_file() else "") or shared_token(v)
     if not token:
         raise ValueError("set a push token first")
     basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
