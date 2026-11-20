@@ -1,4 +1,4 @@
-# Decisions log (2026-11, engine 2.16 to 2.24)
+# Decisions log (2026-11, engine 2.16 to 2.25)
 
 For the next model or developer: what was decided while Cortex moved to Docker-only, why, and how to apply it
 when you change the code. The owner is Adhonys Diaz. PR numbers are those of MadLeak/cortex-engine.
@@ -112,13 +112,21 @@ the default set), `graph.json`'s `layer` and `history.csv`'s `l1/l2/l3` columns 
 `lifecycle.py` and `renewal.py`, which read a vault's graph without importing its engine. *Apply:* a new rule keys on a
 role (`n.role == CONCEPT`), never on a number; a number is only what a note's `layer:` holds.
 
+**14. A vault states its layer count; the hub only shows it (2.25.0, step 2).** Migration 0003 writes `layers: 3` into
+`_brain/config.json` (schema 3; the template says it too). It is frozen and mechanical: every vault before it has three levels, so
+no note moves, and a vault that already carries a `layers` key keeps it. The hub's Settings shows the count next to the
+schema, read only, and refuses it as a setting (changing it is step 3's explicit command, upward only). `doctor` fails a vault
+whose count this engine does not build, and says nothing otherwise, so existing output stays byte-identical except for the
+schema number in `doctor`'s line (the golden digest changed in those five lines and nowhere else). *Apply:* read the count
+with `layer_count(cfg)`, never `cfg["layers"]` directly.
+
 ## Environment lessons
 
 - Windows bind mounts show files as mode 0777: the engine detects the mount in `/proc/self/mounts` and sets
   `core.fileMode false`. The repo forces LF (`* text=auto eol=lf`).
 - `ECONNREFUSED` from the MCP on `cortex.localhost:8790` means Docker Desktop is off: start it, then
   `docker compose up -d hub`. No config change is needed.
-- Run the suites with `docker compose --profile tools run --rm test` (engine 76, hub 28, MCP 95, REM 11, review 4). After a code
+- Run the suites with `docker compose --profile tools run --rm test` (engine 79, hub 28, MCP 95, REM 11, review 4). After a code
   change build first (`docker compose --profile tools build test`): `run` reuses an image that already has the tag.
   In PowerShell use `.\cortex.ps1` from the engine folder, never `sh ./cortex.sh`.
 

@@ -25,7 +25,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.24.0"
+VERSION = "2.25.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -49,8 +49,16 @@ DEFAULT_LAYERS = [
 ]
 
 
+def layer_count(cfg: dict | None = None) -> int:
+    """How many layers a vault says it has (`layers` in _brain/config.json, written by migration 0003); a vault that
+    does not say has three."""
+    n = (cfg or {}).get("layers", 3)
+    return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 3
+
+
 def layers_for(cfg: dict | None = None) -> list:
-    """The layer table of a vault: its config's `layers` list when it has one, else the default three."""
+    """The layer table of a vault. This engine builds only the default three; a vault that asks for another count
+    is refused by `doctor` rather than guessed at."""
     return DEFAULT_LAYERS
 
 
@@ -3943,6 +3951,8 @@ def cmd_doctor(v: Vault, a) -> int:
                 check(seen != "public", f"remote {parts[0]} is {seen} (a cortex is never public)")
     check(v.cfg_path.exists(), "_brain/config.json")
     have, want = vault_schema(v), engine_schema()
+    if layer_count(v.cfg) != len(LAYERS):
+        check(False, f"this vault has {layer_count(v.cfg)} layers; this engine builds {len(LAYERS)}")
     check(have == want, f"vault schema {have} (this engine's: {want})" +
           ("" if have == want else ": run `brain.py migrate`" if have < want else ": the engine is older than the vault"))
     check((v.root / "CLAUDE.md").exists(), "CLAUDE.md (L0)")

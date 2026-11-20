@@ -408,9 +408,10 @@ change is a click of its own:
   the last run's result and the model server's address (§6, *REM in the container*). Saved in `_brain/config.json` as
   `rem_enabled`, `rem_interval_minutes` and `rem_budget_minutes`.
 
-Not yet in Settings: the number of layers. The engine now expresses its levels as roles (domain, concept, leaf) in one
-table (`DEFAULT_LAYERS` in `brain_core.py`), with three levels as the only set; the config key, migration 0003 and levels 4
-and 5 follow, step by step: [DESIGN-LAYERS.md](DESIGN-LAYERS.md).
+**Layers** (engine 2.25.0): the number of layers is shown, read only, beside the schema (`3 layers (fixed)`). It is the
+`layers` key of `_brain/config.json`, written by migration 0003 (schema 3) and by the template for new vaults; it is not a
+setting, and `doctor` fails a vault whose count this engine does not build. The engine expresses its levels as roles in one
+table (`DEFAULT_LAYERS` in `brain_core.py`); levels 4 and 5 are step 3 of [DESIGN-LAYERS.md](DESIGN-LAYERS.md).
 
 **The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
 
@@ -511,6 +512,10 @@ B migrate [--commit]     # the pending migrations, in order; --commit makes one 
 - With Docker, the hub runs `migrate --commit` on every vault at start, right after upgrading engines, and commits
   as `Cortex hub` (`migration: 0001 ...`); `./cortex.sh upgrade` does the same by hand.
 - Engine state (`_brain/state/`) is never migrated: it is a cache and rebuilds.
+
+**Migrations so far:** 0001 baseline (engine state and the MCP token stay out of git), 0002 the push token stays out of git,
+0003 the vault states its number of layers (`layers: 3` in `_brain/config.json`; no note or folder moves; a vault that
+already says its count keeps it). Schema 3 is the current one.
 
 **Writing a migration** (engine developers). Add `template-vault/_brain/scripts/migrations/mNNNN_<what>.py` with the
 next number. It defines `ID`, `TITLE`, `plan(root)` (the vault-relative paths it would write, `[]` when there is

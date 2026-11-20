@@ -1367,7 +1367,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
         (sdata.unpushed == null ? 'never saved to a remote' : `${sdata.unpushed} not saved to the remote`) + ` · schema ${sdata.schema}` +
         (sdata.last_commit ? `\nlast: ${sdata.last_commit}` : '')
       : `folder ${sdata.folder} · not a git repository`;
-    $('#s-git').textContent = g; $('#s-git').style.whiteSpace = 'pre-line';
+    $('#s-git').textContent = g + ` · ${sdata.layers} layers (fixed)`; $('#s-git').style.whiteSpace = 'pre-line';
     $('#s-ideas').textContent = `${sdata.ideas_waiting} ${sdata.ideas_waiting === 1 ? 'idea' : 'ideas'} waiting in the inbox`;
     const rem = sdata.rem || {};
     $('#s-rem').textContent = (rem.running ? 'Dreaming now…' : rem.last ? `Last run ${rem.last.replace('T', ' ').slice(0, 16)}: ${rem.result}` : 'Never run.') +
