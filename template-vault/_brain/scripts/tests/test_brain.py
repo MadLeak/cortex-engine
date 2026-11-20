@@ -707,6 +707,106 @@ class VisualizationTests(Base):
         self.assertLess(len(output), brain.MODES["normal"]["chars"] + 600)
 
 
+class IdeasTests(Base):
+    """The ideas miner: deterministic candidates, written to _inbox for the curator, never into the graph."""
+
+    def garden(self):
+        write_node(self.v, "Farms/Farms.md", 1, "Farms", "MAP", "Where the flowers grow.")
+        write_node(self.v, "Dispatch/Dispatch.md", 1, "Dispatch", "MAP", "How orders leave the dock.")
+        for up, dom, title, summary in (
+                ("Roses farm", "Farms", None, "Roses from the north farm."),
+                ("Carnation farm", "Farms", None, "Carnations from the south farm."),
+                ("Wave planning", "Dispatch", None, "Which orders ship in which wave.")):
+            write_node(self.v, f"{dom}/{up}.md", 2, up, dom, summary)
+        for up, dom, title, summary in (
+                ("Roses farm", "Farms", "Pallets leave at dawn", "Pallets of roses leave the farm at dawn."),
+                ("Carnation farm", "Farms", "Pallets need cooling", "Carnation pallets are cooled before loading."),
+                ("Wave planning", "Dispatch", "Pallet labels print late", "Pallet labels are printed after the wave closes."),
+                ("Wave planning", "Dispatch", "Pallets wait at dock three", "Loaded pallets wait at dock three."),
+                ("Roses farm", "Farms", "Cold chain truck fails at dusk", "The cold chain truck fails at dusk on hot days."),
+                ("Wave planning", "Dispatch", "Dusk repairs of the cold chain truck", "Repairs of the cold chain truck happen at dusk.")):
+            write_node(self.v, f"{dom}/{up}/{title}.md", 3, title, up, summary)
+
+    def test_a_word_that_recurs_under_different_parents_is_proposed_as_a_concept(self):
+        self.garden()
+        self.ok("build")
+        ideas = brain.mine_ideas(brain.Vault(self.v), 4)
+        concepts = {i["word"]: i for i in ideas if i["kind"] == "concept"}
+        self.assertIn("pallets", concepts)
+        self.assertEqual(concepts["pallets"]["count"], 4)
+        self.assertEqual(concepts["pallets"]["up"] in ("Farms", "Dispatch"), True)
+        self.assertNotIn("roses", concepts, "a word in a concept's title is already a concept")
+        self.assertNotIn("dusk", concepts, "only two nodes carry it: below the threshold")
+        self.assertEqual(ideas, brain.mine_ideas(brain.Vault(self.v), 4), "the same vault gives the same list")
+
+    def test_two_unlinked_nodes_that_share_rare_words_are_proposed_as_a_link(self):
+        self.garden()
+        self.ok("build")
+        links = [i for i in brain.mine_ideas(brain.Vault(self.v), 4) if i["kind"] == "link"]
+        pairs = {frozenset((i["a"], i["b"])) for i in links}
+        self.assertIn(frozenset(("Cold chain truck fails at dusk", "Dusk repairs of the cold chain truck")), pairs)
+        self.ok("link", "Cold chain truck fails at dusk", "Dusk repairs of the cold chain truck", "--type", "related",
+                "--reason", "the same truck")
+        links = [i for i in brain.mine_ideas(brain.Vault(self.v), 4) if i["kind"] == "link"]
+        self.assertNotIn(frozenset(("Cold chain truck fails at dusk", "Dusk repairs of the cold chain truck")),
+                         {frozenset((i["a"], i["b"])) for i in links}, "linked: nothing left to propose")
+
+    def test_nodes_used_together_are_proposed_as_a_link(self):
+        self.garden()
+        self.ok("build")
+        v = brain.Vault(self.v)
+        a, b = v.node("Pallets leave at dawn").key, v.node("Pallet labels print late").key
+        path = v.state_dir / "usage.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            for g in ("g1", "g2"):
+                for k in (a, b):
+                    f.write(json.dumps({"t": brain.now().isoformat(), "s": g, "e": "used", "k": k, "g": g}) + "\n")
+        links = [i for i in brain.mine_ideas(brain.Vault(self.v), 4) if i["kind"] == "link"]
+        hit = [i for i in links if {i["a"], i["b"]} == {"Pallets leave at dawn", "Pallet labels print late"}]
+        self.assertEqual(len(hit), 1)
+        self.assertGreaterEqual(hit[0]["co"], brain.IDEAS_CO_MIN)
+
+    def test_it_writes_notes_to_the_inbox_and_never_touches_the_graph(self):
+        self.garden()
+        self.ok("build")
+        before = sorted(brain.Vault(self.v).net)
+        files = {p.relative_to(self.v).as_posix(): p.read_bytes() for p in self.v.rglob("*.md") if "_inbox" not in p.parts}
+        out = self.ok("ideas")
+        self.assertIn("written to _inbox", out)
+        notes = sorted((self.v / "_inbox").glob("*.md"))
+        self.assertTrue(notes)
+        text = "\n".join(n.read_text(encoding="utf-8") for n in notes)
+        self.assertIn('idea: "concept:', text)
+        self.assertIn("ideas miner (deterministic, no model)", text)
+        self.assertEqual(sorted(brain.Vault(self.v).net), before, "the graph has the same nodes")
+        after = {p.relative_to(self.v).as_posix(): p.read_bytes() for p in self.v.rglob("*.md") if "_inbox" not in p.parts}
+        self.assertEqual(files, after, "no note outside _inbox changed")
+        self.assertEqual(self.code("lint"), 0)
+        self.assertTrue((self.v / "_log" / "ideas.jsonl").exists())
+
+    def test_an_idea_is_proposed_once_even_when_its_note_is_deleted(self):
+        self.garden()
+        self.ok("build")
+        self.assertIn("would be written", self.ok("ideas", "--dry-run"))
+        self.assertFalse(list((self.v / "_inbox").glob("*.md")), "a dry run writes nothing")
+        self.ok("ideas")
+        n = len(list((self.v / "_inbox").glob("*.md")))
+        self.assertIn("0 written", self.ok("ideas"))
+        for f in (self.v / "_inbox").glob("*.md"):
+            f.unlink()                       # the curator dismissed them all
+        self.assertIn("0 written", self.ok("ideas"))
+        self.assertEqual(len(list((self.v / "_inbox").glob("*.md"))), 0)
+        self.assertGreater(n, 0)
+
+    def test_limit_and_threshold(self):
+        self.garden()
+        self.ok("build")
+        self.assertIn("0 concepts", self.ok("ideas", "--dry-run", "--min-count", "5").splitlines()[0])
+        self.ok("ideas", "--limit", "1")
+        self.assertEqual(len(list((self.v / "_inbox").glob("*.md"))), 2, "one concept and one link")
+
+
 class HotMemoryTests(Base):
     def log(self, *events):
         v = brain.Vault(self.v)

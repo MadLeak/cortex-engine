@@ -24,7 +24,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.20.2"
+VERSION = "2.23.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -2611,6 +2611,175 @@ def cmd_questions(v: Vault, a) -> int:
     return 1 if problems and not added else 0
 
 
+# --------------------------------------------------------------------------- ideas miner
+IDEAS_LEDGER = Path("_log") / "ideas.jsonl"   # one line per idea ever proposed: a dismissed one is never proposed again
+IDEAS_CO_MIN = 1.0       # decayed co-activation from which an unlinked pair is worth a look (consolidate takes HEBB_THRESHOLD)
+IDEAS_SHARED = 3         # rare words two unlinked nodes must share to be proposed as a link
+IDEAS_RARE_MAX = 6       # a word in more nodes than this is not rare
+
+
+def idea_surface(n: Node) -> str:
+    return " ".join([n.title, " ".join(n.aliases), n.summary])
+
+
+def mine_ideas(v: Vault, min_count: int = 4) -> list[dict]:
+    """Candidate L2 concepts and links, by rule (no model, no randomness: the same vault gives the same list).
+    Concept: a word that recurs in `min_count` or more L2/L3 nodes under at least two different parents, in no concept
+    or domain title or alias, with the nodes that carry it. Link: two nodes with no link between them that were credited
+    together (co-activation between IDEAS_CO_MIN and the point where `consolidate` already proposes it), or that share
+    IDEAS_SHARED rare words. Titles and summaries only: a body mentions everything."""
+    nodes = [n for n in v.net.values() if n.layer in (1, 2, 3) and n.status != "obsolete"]
+    covered: set[str] = set()
+    stems: dict[str, set[str]] = {}               # node key -> its stems
+    surface: dict[str, dict[str, int]] = {}       # stem -> written forms
+    for n in sorted(nodes, key=lambda x: x.k):
+        if n.layer in (1, 2):
+            covered |= set(term_list(n.title + " " + " ".join(n.aliases)))
+        words = [w for w in re.findall(r"[a-z0-9]+", norm(idea_surface(n))) if w not in STOPWORDS and len(w) > 1]
+        mine = set()
+        for w in words:
+            t = word_stem(w)
+            mine.add(t)
+            surface.setdefault(t, {})
+            surface[t][w] = surface[t].get(w, 0) + 1
+        stems[n.key] = mine
+    df: dict[str, list[Node]] = {}
+    for n in sorted(nodes, key=lambda x: x.k):
+        if n.layer in (2, 3):
+            for t in stems[n.key]:
+                df.setdefault(t, []).append(n)
+    out: list[dict] = []
+    seen_sets: set[tuple] = set()
+    ceiling = max(min_count, len(nodes) // 4)
+    for t, members in sorted(df.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        if len(t) < 4 or t in covered or not min_count <= len(members) <= ceiling:
+            continue
+        if len({m.up and norm(m.up) for m in members}) < 2:
+            continue                                # all under one parent already: that parent is the concept
+        ids = tuple(sorted(m.key for m in members))
+        if ids in seen_sets:
+            continue                                # another form of the same word: the same nodes
+        seen_sets.add(ids)
+        word = max(surface[t].items(), key=lambda kv: (kv[1], kv[0]))[0]
+        roots: dict[str, int] = {}
+        for m in members:
+            top = v.chain(m)[-1] if v.chain(m) else None
+            if top is not None:
+                roots[top.title] = roots.get(top.title, 0) + 1
+        out.append({"kind": "concept", "key": f"concept:{t}", "word": word, "count": len(members),
+                    "members": [m.title for m in sorted(members, key=lambda x: x.k)],
+                    "up": max(roots.items(), key=lambda kv: (kv[1], kv[0]))[0] if roots else ""})
+    tel = Telemetry(v)
+    keys = v.by_key()
+    connected = set()
+    for n in v.net.values():
+        if n.up and norm(n.up) in v.net:
+            connected.add(pair(n.key, v.net[norm(n.up)].key))
+        for sy in n.synapses:
+            if norm(sy.target) in v.net:
+                connected.add(pair(n.key, v.net[norm(sy.target)].key))
+        for t in n.links:
+            if norm(t) in v.net:
+                connected.add(pair(n.key, v.net[norm(t)].key))
+    links: dict[tuple, dict] = {}
+    for (a, b), val in tel.coactivation().items():
+        if IDEAS_CO_MIN <= val < HEBB_THRESHOLD and (a, b) not in connected and a in keys and b in keys:
+            links[(a, b)] = {"co": round(val, 1), "shared": []}
+    freq: dict[str, list[str]] = {}
+    for k, mine in stems.items():
+        for t in mine:
+            freq.setdefault(t, []).append(k)
+    shared: dict[tuple, list[str]] = {}
+    for t, ks in freq.items():
+        if 2 <= len(ks) <= IDEAS_RARE_MAX and len(t) >= 4:
+            for i in range(len(ks)):
+                for j in range(i + 1, len(ks)):
+                    shared.setdefault(pair(ks[i], ks[j]), []).append(t)
+    for pr, ts in shared.items():
+        if len(ts) >= IDEAS_SHARED and pr not in connected:
+            links.setdefault(pr, {"co": 0.0, "shared": []})["shared"] = sorted(ts)
+    for (a, b), info in sorted(links.items(), key=lambda kv: (-kv[1]["co"], -len(kv[1]["shared"]), kv[0])):
+        out.append({"kind": "link", "key": f"link:{a}:{b}", "a": keys[a].title, "b": keys[b].title,
+                    "co": info["co"], "shared": [max(surface.get(t, {t: 1}).items(), key=lambda kv: (kv[1], kv[0]))[0]
+                                                 for t in info["shared"]]})
+    return out
+
+
+def idea_note(v: Vault, it: dict) -> tuple[str, str]:
+    """(file name, text) of one idea for the curator."""
+    if it["kind"] == "concept":
+        title = f'Idea: a concept for "{it["word"]}"'
+        why = [f'The word "{it["word"]}" recurs in {it["count"]} nodes under different parents, and no domain or concept is named for it.',
+               "", "## Nodes that carry it"] + [f"- [[{t}]]" for t in it["members"][:12]]
+        if it["count"] > 12:
+            why.append(f"- … and {it['count'] - 12} more")
+        why += ["", "## What the curator can do",
+                f'If the word is a real topic, create the L2 concept under {("[[" + it["up"] + "]]") if it["up"] else "the right domain"} '
+                "(`new --layer 2`) and `move --up` the nodes that belong to it; if not, delete this note."]
+    else:
+        title = f'Idea: link {it["a"]} and {it["b"]}'
+        why = [f'[[{it["a"]}]] and [[{it["b"]}]] have no link between them.', ""]
+        if it["co"]:
+            why.append(f'- credited together in recent sessions (decayed co-activation {it["co"]})')
+        if it["shared"]:
+            why.append(f'- they share rare words: {", ".join(it["shared"])}')
+        why += ["", "## What the curator can do",
+                "If they are really related, `link` them with a type and a written reason; if not, delete this note."]
+    title = re.sub(r'[:?/\\#^\[\]|*"<>]', "-", title)[:120]
+    text = "\n".join(["---", f"captured: {today()}", "source: ideas miner (deterministic, no model)", "learned_by: ideas-miner",
+                      f'idea: {json.dumps(it["key"])}', f'kind: {it["kind"]}', "---", "", f"# {title}", ""] + why + [""])
+    return f"{today()} {title}.md", text
+
+
+def proposed_ideas(v: Vault) -> set[str]:
+    """Idea keys already written to _inbox or the ledger."""
+    done: set[str] = set()
+    for rel in [IDEAS_LEDGER]:
+        path = v.root / rel
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    done.add(json.loads(line)["key"])
+                except (ValueError, KeyError):
+                    continue
+    inbox = v.root / "_inbox"
+    for f in inbox.glob("*.md") if inbox.is_dir() else []:
+        m = re.search(r'^idea: "([^"\n]+)"', f.read_text(encoding="utf-8", errors="replace"), re.M)
+        if m:
+            done.add(m.group(1))
+    return done
+
+
+def cmd_ideas(v: Vault, a) -> int:
+    """The ideas miner: candidate concepts and links, written to _inbox as notes for the curator and never into the graph.
+    Each idea is proposed once (the ledger in _log/ideas.jsonl remembers it, so deleting a note dismisses it)."""
+    found = mine_ideas(v, a.min_count)
+    done = proposed_ideas(v)
+    new = [it for it in found if it["key"] not in done]
+    pick = [it for it in new if it["kind"] == "concept"][: a.limit] + [it for it in new if it["kind"] == "link"][: a.limit]
+    print(f"ideas: {len(found)} candidates ({sum(1 for i in found if i['kind'] == 'concept')} concepts, "
+          f"{sum(1 for i in found if i['kind'] == 'link')} links) · {len(found) - len(new)} already proposed · "
+          f"{len(pick)} {'would be written' if a.dry_run else 'written'} to _inbox")
+    if not pick:
+        return 0
+    with v.lock():
+        for it in pick:
+            name, text = idea_note(v, it)
+            print(f"  {it['kind']}: {name[:-3]}")
+            if a.dry_run:
+                continue
+            dest = v.root / "_inbox" / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                continue
+            dest.write_text(text, encoding="utf-8")
+            ledger = v.root / IDEAS_LEDGER
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            with open(ledger, "a", encoding="utf-8", newline="\n") as f:
+                f.write(json.dumps({"key": it["key"], "date": today(), "kind": it["kind"]}, ensure_ascii=False) + "\n")
+    return 0
+
+
 def cmd_lint(v: Vault, a) -> int:
     if a.fix:
         fixed = 0
@@ -3798,6 +3967,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file", nargs="?", help="import: a JSON Lines file of {id, en, es}")
     p.add_argument("--limit", type=int, default=100, help="todo: nodes per batch")
     p.set_defaults(func=cmd_questions)
+
+    p = sub.add_parser("ideas", help="the ideas miner: candidate concepts and links, written to _inbox for the curator")
+    p.add_argument("--min-count", type=int, default=4, help="nodes a word must recur in to propose a concept (default 4)")
+    p.add_argument("--limit", type=int, default=5, help="most notes written per kind in one run (default 5)")
+    p.add_argument("--dry-run", action="store_true", help="list what would be written, write nothing")
+    p.set_defaults(func=cmd_ideas)
 
     p = sub.add_parser("lint", help="validates the vault (blocks commits with errors)")
     p.add_argument("--fix", action="store_true", help="fills in id, dates and empty fields")

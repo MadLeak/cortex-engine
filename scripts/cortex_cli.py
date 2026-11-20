@@ -14,6 +14,8 @@
     token <vault> [--rotate]          the vault's MCP token (a new one with --rotate: the old one stops working)
     commit <vault> -m MESSAGE         a commit of everything changed, as you (CORTEX_GIT_NAME / CORTEX_GIT_EMAIL)
     precommit <vault>                 the vault's pre-commit check (what its git hook runs)
+    ideas <vault> [--min-count N]     the ideas miner: candidate concepts and links as notes in the vault's _inbox for the
+                                      curator (no model, nothing enters the graph), committed as you; also in Settings
     memories                          Claude Code's memory folders (~/.claude/projects/*/memory) and their notes
     import <vault> <project>...       those memories into the vault's graph, by rule (no model), committed as you;
                                       new <folder> --memory <project>... does it as the vault is made
@@ -112,6 +114,9 @@ def main(argv=None) -> int:
     p.add_argument("-m", "--message", required=True)
     p = sub.add_parser("precommit")
     p.add_argument("vault")
+    p = sub.add_parser("ideas")
+    p.add_argument("vault")
+    p.add_argument("--min-count", type=int, default=None)
     sub.add_parser("memories")
     p = sub.add_parser("import")
     p.add_argument("vault")
@@ -190,6 +195,16 @@ def main(argv=None) -> int:
         return 0
     if a.cmd == "import":
         return import_into(vault(a.vault), a.projects)
+    if a.cmd == "ideas":
+        import hub_settings
+        v = vault(a.vault)
+        if a.min_count is not None:
+            print(hub_settings.save(v, {"ideas_min_count": a.min_count}))
+        try:
+            print(hub_settings.find_ideas(v))
+        except (ValueError, RuntimeError) as e:
+            sys.exit(str(e))
+        return 0
     return 2
 
 

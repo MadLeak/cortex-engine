@@ -1,4 +1,4 @@
-# Decisions log (2026-11, engine 2.16 to 2.20.1)
+# Decisions log (2026-11, engine 2.16 to 2.23)
 
 For the next model or developer: what was decided while Cortex moved to Docker-only, why, and how to apply it
 when you change the code. The owner is Adhonys Diaz. PR numbers are those of MadLeak/cortex-engine.
@@ -61,16 +61,26 @@ panel has its own *Settings* button that opens `/agents?settings=<cortex>`.
 (breadth-first, jitter), midpoint displacement, return stroke, gather particles on *read* nodes, afterglow, with
 `vector-effect: non-scaling-stroke`. Each recall groups its activated and read nodes (`playEvents`).
 
+**9. The ideas miner is plain code that writes to the inbox (2.23.0).** `brain.py ideas` proposes candidate L2 concepts (a
+word that recurs under different parents and names no concept) and links (nodes used together, or sharing rare words, with no
+link) from titles, summaries and the usage log: no model, no randomness. It writes notes to `_inbox` for the curator and
+never into the graph, and keeps `_log/ideas.jsonl` so an idea is proposed once, even when its note is deleted (deleting is
+how the curator says no). No new gitignore entry or schema, so no migration. The hub runs it from Settings (*Find ideas*) or
+`cortex ideas <vault>` and commits only as the owner (`CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL`), through the new
+`hub_settings.commit_paths`. *Apply:* anything the hub proposes on its own goes to `_inbox`, one note per item, and only the
+curator moves it into the graph.
+
 ## Environment lessons
 
 - Windows bind mounts show files as mode 0777: the engine detects the mount in `/proc/self/mounts` and sets
   `core.fileMode false`. The repo forces LF (`* text=auto eol=lf`).
 - `ECONNREFUSED` from the MCP on `cortex.localhost:8790` means Docker Desktop is off: start it, then
   `docker compose up -d hub`. No config change is needed.
-- Run the suites with `docker compose --profile tools run --rm test` (engine 62, hub 25, MCP 91, review 4).
+- Run the suites with `docker compose --profile tools run --rm test` (engine 68, hub 28, MCP 93, review 4). After a code
+  change build first (`docker compose --profile tools build test`): `run` reuses an image that already has the tag.
   In PowerShell use `.\cortex.ps1` from the engine folder, never `sh ./cortex.sh`.
 
 ## Still open
 
-Configurable layers, REM dreaming in the container, the ideas miner, in-memory state for recall, a real run of the
+Configurable layers, REM dreaming in the container, in-memory state for recall, a real run of the
 installers, the Codex/Gemini/OpenCode configs, and *Save to remote* against a real private repository.
