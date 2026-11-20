@@ -105,7 +105,7 @@ This writes one marked, idempotent block into the agent's global instruction fil
 | `installers/wire_agent.py` | Wires Claude Code, Codex, Gemini CLI, OpenCode, Hermes Agent or any agent to a vault |
 | `skills/` | Claude Code skills for the curator: capture, atomize, link, review, consolidate (copied into each new vault's `.claude/skills/`) |
 | `examples/` | Two fictional sibling vaults: `fern-cortex` (a gardening agent) and `kitchen-cortex` (a kitchen agent) |
-| `docs/` | [RUNBOOK.md](docs/RUNBOOK.md) (operations) and [PAPER.md](docs/PAPER.md) (design) |
+| `docs/` | [RUNBOOK.md](docs/RUNBOOK.md) (operations), [DECISIONS.md](docs/DECISIONS.md) (what was decided and how to apply it) and [PAPER.md](docs/PAPER.md) (design) |
 
 ## Tests
 

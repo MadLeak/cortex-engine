@@ -1,5 +1,7 @@
 # Cortex runbook
 
+> Decisions behind the Docker-only design, and the rules for changing it: [DECISIONS.md](DECISIONS.md).
+
 This is the operations manual for running Cortex vaults day to day. `B` below means `python3 _brain/scripts/brain.py`, run from the vault root. Use `python` or `py` where that is your interpreter. Every command has `-h`.
 
 Contents: 1 Install · 2 Create a vault · 3 Git and the hook · 4 Wire an agent · 5 The daily loop · 6 The curator's week · 7 Sibling vaults · 8 The panel · 9 Backups · 10 Upgrading the engine · 11 Troubleshooting · 12 Reference
