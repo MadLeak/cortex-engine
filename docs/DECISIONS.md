@@ -1,4 +1,4 @@
-# Decisions log (2026-11, engine 2.16 to 2.25)
+# Decisions log (2026-11, engine 2.16 to 2.26)
 
 For the next model or developer: what was decided while Cortex moved to Docker-only, why, and how to apply it
 when you change the code. The owner is Adhonys Diaz. PR numbers are those of MadLeak/cortex-engine.
@@ -120,13 +120,26 @@ whose count this engine does not build, and says nothing otherwise, so existing 
 schema number in `doctor`'s line (the golden digest changed in those five lines and nowhere else). *Apply:* read the count
 with `layer_count(cfg)`, never `cfg["layers"]` directly.
 
+**15. Three to five layers; the new ones refine a detail and are added only by command (2.26.0, step 3).** Levels 4 and 5 have
+the role `leaf`, the L3 types and word limit, and nest in a folder named for the parent, so adding one moves no note and
+every default vault is byte-identical (the golden digest did not change). `brain.py layers --to N` is the only way the count
+changes: upward only, 3 to 5, never silent (it writes the config, the templates, the vault's `AGENTS.md` Layers table and
+sentence, the Obsidian colour groups and views; it commits nothing). The engine's tables cover all five levels and a
+vault's own `layer_set` says which exist, because the resident engine serves vaults of different sizes in one process and
+nothing may depend on one vault's count. A note on a level its vault does not have is a lint error; `new` refuses it.
+`learn`, `import-memory` and the ideas miner stay on the first three roles; `promote` refuses a refinement or a detail
+with refinements; moving or renaming a detail moves its refinements' folder. The panel builds its layer table from the
+data (`layers`, present only when not 3). Inserting or removing a level is still not a migration or a command: it is the
+curator's task (decision 12). *Apply:* a rule about "details" is a rule about the `leaf` role, so it covers L4 and L5; a
+rule that needs the first detail level (parent is a concept) uses `layer_of(LEAF)`.
+
 ## Environment lessons
 
 - Windows bind mounts show files as mode 0777: the engine detects the mount in `/proc/self/mounts` and sets
   `core.fileMode false`. The repo forces LF (`* text=auto eol=lf`).
 - `ECONNREFUSED` from the MCP on `cortex.localhost:8790` means Docker Desktop is off: start it, then
   `docker compose up -d hub`. No config change is needed.
-- Run the suites with `docker compose --profile tools run --rm test` (engine 79, hub 28, MCP 95, REM 11, review 4). After a code
+- Run the suites with `docker compose --profile tools run --rm test` (engine 90, hub 28, MCP 95, REM 11, review 4). After a code
   change build first (`docker compose --profile tools build test`): `run` reuses an image that already has the tag.
   In PowerShell use `.\cortex.ps1` from the engine folder, never `sh ./cortex.sh`.
 

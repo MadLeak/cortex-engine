@@ -10,7 +10,7 @@
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --wash: rgba(11,11,11,0.04);
-  --l0: #0b0b0b; --l1: #2a78d6; --l2: #eb6834; --l3: #1baf7a; --tool: #8a4fd8;
+  --l0: #0b0b0b; --l1: #2a78d6; --l2: #eb6834; --l3: #1baf7a; --l4: #d1a21c; --l5: #d6527e; --tool: #8a4fd8;
   --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b; --dream: #6a5cf0;
   --shadow: 0 6px 24px rgba(11,11,11,0.12);
 }
@@ -19,7 +19,7 @@
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
-    --l0: #f0efec; --l1: #3987e5; --l2: #d95926; --l3: #199e70; --tool: #a57cf0; --dream: #8f86ff;
+    --l0: #f0efec; --l1: #3987e5; --l2: #d95926; --l3: #199e70; --l4: #e0b83a; --l5: #e86a92; --tool: #a57cf0; --dream: #8f86ff;
     --shadow: 0 6px 24px rgba(0,0,0,0.5);
   }
 }
@@ -27,7 +27,7 @@
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
-  --l0: #f0efec; --l1: #3987e5; --l2: #d95926; --l3: #199e70; --tool: #a57cf0; --dream: #8f86ff;
+  --l0: #f0efec; --l1: #3987e5; --l2: #d95926; --l3: #199e70; --l4: #e0b83a; --l5: #e86a92; --tool: #a57cf0; --dream: #8f86ff;
   --shadow: 0 6px 24px rgba(0,0,0,0.5);
 }
 * { box-sizing: border-box; }
@@ -44,7 +44,7 @@ button:hover, .chip:hover { background: var(--wash); }
 .chip[aria-pressed="false"] { color: var(--muted); background: transparent; }
 .chip[aria-pressed="false"] .key { opacity: .35; }
 .key { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
-.key.L1 { background: var(--l1); } .key.L2 { background: var(--l2); } .key.L3 { background: var(--l3); } .key.tool { background: var(--tool); }
+.key.L1 { background: var(--l1); } .key.L2 { background: var(--l2); } .key.L3 { background: var(--l3); } .key.L4 { background: var(--l4); } .key.L5 { background: var(--l5); } .key.tool { background: var(--tool); }
 .key.line { width: 14px; height: 2px; border-radius: 1px; background: var(--muted); vertical-align: middle; }
 .key.spoke { width: 14px; height: 1px; background: var(--axis); vertical-align: middle; }
 input[type=search] { font: inherit; font-size: 13px; border: 1px solid var(--border); background: var(--surface); color: var(--ink);
@@ -89,7 +89,7 @@ label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6
 .ring.cold { stroke: var(--axis); stroke-dasharray: 3 7; }
 .ring-label { fill: var(--muted); font-size: 11px; text-anchor: middle; }
 .band { fill: none; pointer-events: none; }
-.band.L1 { stroke: var(--l1); opacity: .09; } .band.L2 { stroke: var(--l2); opacity: .08; } .band.L3 { stroke: var(--l3); opacity: .08; }
+.band.L1 { stroke: var(--l1); opacity: .09; } .band.L2 { stroke: var(--l2); opacity: .08; } .band.L3 { stroke: var(--l3); opacity: .08; } .band.L4 { stroke: var(--l4); opacity: .08; } .band.L5 { stroke: var(--l5); opacity: .08; }
 .sector { fill: var(--ink); opacity: .06; pointer-events: none; }
 .sector.limb { fill: var(--tool); opacity: .13; }
 .sector.odd { opacity: 0; }
@@ -106,12 +106,12 @@ label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6
 .node { cursor: pointer; }
 .node .hit { fill: transparent; }
 .node .dot { stroke: var(--surface); stroke-width: 2; }
-.node.L1 .dot { fill: var(--l1); } .node.L2 .dot { fill: var(--l2); } .node.L3 .dot { fill: var(--l3); }
+.node.L1 .dot { fill: var(--l1); } .node.L2 .dot { fill: var(--l2); } .node.L3 .dot { fill: var(--l3); } .node.L4 .dot { fill: var(--l4); } .node.L5 .dot { fill: var(--l5); }
 .node.seed .dot { fill: var(--surface); stroke-width: 2.5; }
-.node.seed.L1 .dot { stroke: var(--l1); } .node.seed.L2 .dot { stroke: var(--l2); } .node.seed.L3 .dot { stroke: var(--l3); }
+.node.seed.L1 .dot { stroke: var(--l1); } .node.seed.L2 .dot { stroke: var(--l2); } .node.seed.L3 .dot { stroke: var(--l3); } .node.seed.L4 .dot { stroke: var(--l4); } .node.seed.L5 .dot { stroke: var(--l5); }
 .node.obsolete .dot { fill: var(--muted); stroke: var(--surface); opacity: .7; }
 .node.provisional .dot { fill: var(--surface); stroke-width: 2; stroke-dasharray: 2 1.5; }
-.node.provisional.L1 .dot { stroke: var(--l1); } .node.provisional.L2 .dot { stroke: var(--l2); } .node.provisional.L3 .dot { stroke: var(--l3); }
+.node.provisional.L1 .dot { stroke: var(--l1); } .node.provisional.L2 .dot { stroke: var(--l2); } .node.provisional.L3 .dot { stroke: var(--l3); } .node.provisional.L4 .dot { stroke: var(--l4); } .node.provisional.L5 .dot { stroke: var(--l5); }
 /* the Tools region: the agent's limbs, in their own colour; a tool nobody has used lately fades */
 .node.limb .dot { fill: var(--tool); } .node.limb.seed .dot, .node.limb.provisional .dot { fill: var(--surface); stroke: var(--tool); }
 .node.limb.cool .dot { opacity: .45; }
@@ -125,7 +125,7 @@ label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6
 /* planted: a node an agent just created, in the colour of the signal that planted it, hollow and pulsing until its status changes */
 .node .plant { display: none; fill: var(--ink); pointer-events: none; }
 .node.planted .plant { display: inline; transform-box: fill-box; transform-origin: center; animation: plant 1.6s ease-in-out infinite; }
-.node.planted.L1 .dot, .node.planted.L2 .dot, .node.planted.L3 .dot, .node.planted.limb .dot, .colreg .node.planted .dot {
+.node.planted.L1 .dot, .node.planted.L2 .dot, .node.planted.L3 .dot, .node.planted.L4 .dot, .node.planted.L5 .dot, .node.planted.limb .dot, .colreg .node.planted .dot {
   fill: var(--surface); stroke: var(--ink); stroke-width: 2.5; stroke-dasharray: none; }
 @keyframes plant { 0%, 100% { opacity: .1; transform: scale(1); } 50% { opacity: .38; transform: scale(1.4); } }
 @media (prefers-reduced-motion: reduce) { .node.planted .plant { animation: none; opacity: .25; } }
@@ -138,14 +138,14 @@ label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6
 .lbl.dim { opacity: .2; }
 .sig, .sig-glow, .ripple { pointer-events: none; }
 .sig-glow { opacity: .22; }
-.sig.L1, .sig-glow.L1 { fill: var(--l1); } .sig.L2, .sig-glow.L2 { fill: var(--l2); } .sig.L3, .sig-glow.L3 { fill: var(--l3); }
+.sig.L1, .sig-glow.L1 { fill: var(--l1); } .sig.L2, .sig-glow.L2 { fill: var(--l2); } .sig.L3, .sig-glow.L3 { fill: var(--l3); } .sig.L4, .sig-glow.L4 { fill: var(--l4); } .sig.L5, .sig-glow.L5 { fill: var(--l5); }
 .sig.contradicts, .sig-glow.contradicts { fill: var(--critical); }
 .sig.query, .sig-glow.query { fill: var(--ink); }
 .ripple { fill: none; stroke-width: 2; }
 .lt { fill: none; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; vector-effect: non-scaling-stroke; } .lt-core { stroke: var(--ink); }
 .lt-dot { fill: var(--ink); pointer-events: none; }
 .ripple.query { stroke: var(--ink); } .ripple.validated { stroke: var(--good); }
-.ripple.L1 { stroke: var(--l1); } .ripple.L2 { stroke: var(--l2); } .ripple.L3 { stroke: var(--l3); }
+.ripple.L1 { stroke: var(--l1); } .ripple.L2 { stroke: var(--l2); } .ripple.L3 { stroke: var(--l3); } .ripple.L4 { stroke: var(--l4); } .ripple.L5 { stroke: var(--l5); }
 /* the life cycle: violet while it dreams, gray while it rests or lets go, amber while it measures */
 .sig.dream, .sig-glow.dream { fill: var(--dream); } .ripple.dream { stroke: var(--dream); }
 .sig.rest, .sig-glow.rest, .sig.obsolete, .sig-glow.obsolete { fill: var(--muted); } .ripple.rest, .ripple.obsolete { stroke: var(--muted); }
@@ -155,7 +155,7 @@ label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6
 .syn.ghost { stroke: var(--ink2); pointer-events: none; }
 .node.morph .dot { transition: fill .9s ease, stroke .9s ease, opacity .9s ease; }
 .node .fillin { pointer-events: none; transition: r .9s ease; }
-.node.L1 .fillin { fill: var(--l1); } .node.L2 .fillin { fill: var(--l2); } .node.L3 .fillin { fill: var(--l3); }
+.node.L1 .fillin { fill: var(--l1); } .node.L2 .fillin { fill: var(--l2); } .node.L3 .fillin { fill: var(--l3); } .node.L4 .fillin { fill: var(--l4); } .node.L5 .fillin { fill: var(--l5); }
 .node.limb .fillin { fill: var(--tool); } .colreg .node .fillin { fill: var(--c); }
 .node.dimmed { opacity: .45; transition: opacity .8s ease; }
 .node.shake .dot { animation: shake .16s linear 5; }
@@ -192,7 +192,7 @@ label.toggle { font-size: 12px; color: var(--ink2); display: inline-flex; gap: 6
 .summary { margin: 0 0 10px; }
 .meter { height: 6px; background: var(--wash); border-radius: 3px; overflow: hidden; margin: 2px 0 10px; }
 .meter > i { display: block; height: 100%; border-radius: 3px; }
-.meter > i.L1 { background: var(--l1); } .meter > i.L2 { background: var(--l2); } .meter > i.L3 { background: var(--l3); }
+.meter > i.L1 { background: var(--l1); } .meter > i.L2 { background: var(--l2); } .meter > i.L3 { background: var(--l3); } .meter > i.L4 { background: var(--l4); } .meter > i.L5 { background: var(--l5); }
 .sect { font-size: 12px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .04em; }
 ul.plain { list-style: none; margin: 0; padding: 0; }
 ul.plain li { padding: 3px 0; border-top: 1px solid var(--border); font-size: 13px; }
@@ -211,10 +211,10 @@ svg.chart { width: 100%; height: auto; display: block; }
 .chart .gridline { stroke: var(--grid); stroke-width: 1; }
 .chart .baseline { stroke: var(--axis); stroke-width: 1; }
 .chart .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.chart .area.L1 { fill: var(--l1); } .chart .area.L2 { fill: var(--l2); } .chart .area.L3 { fill: var(--l3); }
+.chart .area.L1 { fill: var(--l1); } .chart .area.L2 { fill: var(--l2); } .chart .area.L3 { fill: var(--l3); } .chart .area.L4 { fill: var(--l4); } .chart .area.L5 { fill: var(--l5); }
 .chart .area { opacity: .22; }
 .chart .line { fill: none; stroke-width: 2; }
-.chart .line.L1 { stroke: var(--l1); } .chart .line.L2 { stroke: var(--l2); } .chart .line.L3 { stroke: var(--l3); }
+.chart .line.L1 { stroke: var(--l1); } .chart .line.L2 { stroke: var(--l2); } .chart .line.L3 { stroke: var(--l3); } .chart .line.L4 { stroke: var(--l4); } .chart .line.L5 { stroke: var(--l5); }
 .chart .dlabel { fill: var(--ink2); font-size: 12px; }
 .chart .cross { stroke: var(--ink2); stroke-width: 1; }
 .bars { display: grid; gap: 6px; }
@@ -222,7 +222,7 @@ svg.chart { width: 100%; height: auto; display: block; }
 .bar-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar-track { height: 10px; }
 .bar { height: 10px; border-radius: 0 4px 4px 0; min-width: 2px; }
-.bar.L1 { background: var(--l1); } .bar.L2 { background: var(--l2); } .bar.L3 { background: var(--l3); } .bar.tool { background: var(--tool); }
+.bar.L1 { background: var(--l1); } .bar.L2 { background: var(--l2); } .bar.L3 { background: var(--l3); } .bar.L4 { background: var(--l4); } .bar.L5 { background: var(--l5); } .bar.tool { background: var(--tool); }
 .tool-row { margin-bottom: 8px; } .tool-row .bar-row { margin-bottom: 2px; } .tool-row .m { font-size: 11px; color: var(--muted); padding-left: 2px; }
 .num { font-variant-numeric: tabular-nums; text-align: right; color: var(--ink2); }
 .status { display: inline-flex; width: 18px; height: 18px; border-radius: 50%; align-items: center; justify-content: center;
@@ -336,18 +336,6 @@ footer .credit a { color: inherit; }
   const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const fmt = v => (Math.round(v * 100) / 100).toFixed(2);
-  // The layers, innermost first. `n` is what a note's `layer` holds; what the panel does hangs on the role (a domain groups
-  // concepts, a concept holds one standing fact, a leaf holds the lesson under it), never on the number.
-  const LAYERS = [
-    { n: 1, role: 'domain', name: 'L1 Domain', about: 'synthesis of an area', band: [0.13, 0.43], rad: 0.28, tracks: 3, dot: [10, 9], shell: [150, 0], dot3: 7 },
-    { n: 2, role: 'concept', name: 'L2 Concept', about: 'one atomic idea', band: [0.47, 0.73], rad: 0.6, tracks: 3, dot: [6, 6], shell: [290, 16], dot3: 3.6 },
-    { n: 3, role: 'leaf', name: 'L3 Detail', about: 'fact, procedure, example, error, decision', band: [0.77, 1.0], rad: 0.885, tracks: 4, dot: [4, 4], shell: [420, 24], dot3: 2.2 },
-  ];
-  const LNUMS = LAYERS.map(d => d.n);
-  const LAYER = Object.fromEntries(LAYERS.map(d => [d.n, d.name]));
-  const NUM = Object.fromEntries(LAYERS.map(d => [d.role, d.n]));
-  const DOMAIN = NUM.domain, CONCEPT = NUM.concept, LEAF = NUM.leaf, OUTER = LNUMS[LNUMS.length - 1];
-
   let DATA = null;
   try {
     const raw = $('#brain-data').textContent.trim();
@@ -357,6 +345,33 @@ footer .credit a { color: inherit; }
     $('.wrap').replaceChildren(el('p', { class: 'empty' }, 'No data yet: run "python _brain/scripts/brain.py build" in the vault.'));
     return;
   }
+
+  // The layers, innermost first. `n` is what a note's `layer` holds; what the panel does hangs on the role (a domain groups
+  // concepts, a concept holds one standing fact, a leaf holds the lesson under it), never on the number. A vault has three
+  // to five: the levels beyond the third refine a detail and share the outer part of the orbit and the outer spheres.
+  const layerTable = count => {
+    const t = [
+      { n: 1, role: 'domain', name: 'L1 Domain', about: 'synthesis of an area', band: [0.13, 0.43], rad: 0.28, tracks: 3, dot: [10, 9], shell: [150, 0], dot3: 7 },
+      { n: 2, role: 'concept', name: 'L2 Concept', about: 'one atomic idea', band: [0.47, 0.73], rad: 0.6, tracks: 3, dot: [6, 6], shell: [290, 16], dot3: 3.6 },
+      { n: 3, role: 'leaf', name: 'L3 Detail', about: 'fact, procedure, example, error, decision', band: [0.77, 1.0], rad: 0.885, tracks: 4, dot: [4, 4], shell: [420, 24], dot3: 2.2 },
+    ];
+    const more = Math.max(0, Math.min(2, (count || 3) - 3));
+    if (!more) return t;
+    const gap = 0.01, w = (1.0 - 0.77 - gap * more) / (more + 1);   // the details' band shared with the refinements
+    t[2].band = [0.77, 0.77 + w]; t[2].rad = 0.77 + w / 2;
+    for (let k = 1; k <= more; k++) {
+      const lo = 0.77 + k * (w + gap);
+      t.push({ n: 3 + k, role: 'leaf', name: `L${3 + k} Refinement`, about: `a refinement of an L${2 + k} detail`, band: [lo, lo + w], rad: lo + w / 2,
+        tracks: 4, dot: [4 - 0.8 * k, 4 - 0.5 * k], shell: [420 + 50 * k, 24], dot3: 2.2 - 0.3 * k });
+    }
+    return t;
+  };
+  const LAYERS = layerTable(DATA.layers);
+  const LNUMS = LAYERS.map(d => d.n);
+  const LAYER = Object.fromEntries(LAYERS.map(d => [d.n, d.name]));
+  const NUM = Object.fromEntries(LAYERS.slice().reverse().map(d => [d.role, d.n]));
+  const DOMAIN = NUM.domain, CONCEPT = NUM.concept, LEAF = LAYERS.find(d => d.role === 'leaf').n, OUTER = LNUMS[LNUMS.length - 1];
+  const leafCount = () => LNUMS.filter(L => L >= LEAF).reduce((s, L) => s + (counts[L] || 0), 0);
 
   // ---------- per-viewer state (localStorage may be unavailable) ----------
   const KEY = 'brain-panel:' + DATA.vault + ':';
@@ -574,7 +589,7 @@ footer .credit a { color: inherit; }
     if (focus && focus.has(n) && (focus.size <= 60 || n.layer === DOMAIN || !regionNodes)) return true;
     if (query && matches.has(n)) return true;
     if (n.layer === CONCEPT) return counts[CONCEPT] <= 24 || zoom >= 1.8;
-    return counts[LEAF] <= 12 || zoom >= 3;
+    return leafCount() <= 12 || zoom >= 3;
   }
   function applyFocus() {
     const anchor = selected || hovered;
@@ -836,7 +851,7 @@ footer .credit a { color: inherit; }
     chain.forEach(p => { crumbs.append(' › '); nodeLink(p, crumbs); });
     el('h2', { class: 'title' }, n.title, box);
     const pills = el('div', { class: 'pills' }, null, box);
-    [LAYER[n.layer], n.layer === LEAF || n.limb ? n.type : null, n.status, n.unplaced ? 'misplaced' : null].filter(Boolean).forEach(t => el('span', { class: 'pill' }, t, pills));
+    [LAYER[n.layer], n.layer >= LEAF || n.limb ? n.type : null, n.status, n.unplaced ? 'misplaced' : null].filter(Boolean).forEach(t => el('span', { class: 'pill' }, t, pills));
     if (n.summary) el('p', { class: 'summary' }, n.summary, box);
     el('div', { class: 'sect' }, `Weight ${fmt(n.weight || 0)}`, box);
     el('div', { class: 'sect' }, `${n.tokens || 0} tokens`, box);
