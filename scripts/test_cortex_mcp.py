@@ -785,6 +785,23 @@ class TaskSessionTests(unittest.TestCase):
         self.assertIn("_brain/state/bookkeeping.txt", files, "the engine's bookkeeping goes with the task")
         self.assertIn('?? "Garden/Owner note.md"', self.git("status", "--porcelain").stdout, "the owner's edit stays")
 
+    def test_the_owner_signs_the_commit_when_the_hub_knows_who_that_is(self):
+        from unittest import mock
+        with mock.patch.dict("os.environ", {"CORTEX_GIT_NAME": "Owner Name", "CORTEX_GIT_EMAIL": "owner@example.com"}):
+            ok, got = cortex_mcp.run(self.st, {"action": "finish", "learnings": [self.learning("Ferns like shade")]})
+        self.assertTrue(ok, got)
+        self.assertRegex(got, r"committed \w+ as Owner Name <owner@example\.com> \(learned by claude-code\)")
+        log = self.git("log", "-1", "--format=%an <%ae>|%cn <%ce>|%b").stdout.strip()
+        self.assertTrue(log.startswith("Owner Name <owner@example.com>|Owner Name <owner@example.com>|by claude-code"), log)
+
+    def test_a_forbidden_title_fails_the_whole_finish_before_anything_is_written(self):
+        ok, got = cortex_mcp.run(self.st, {"action": "finish", "used": ["Water before 9 am"],
+                                           "learnings": [self.learning("Good title"), self.learning("Bad/title")]})
+        self.assertFalse(ok)
+        self.assertIn("learning 2", got)
+        self.assertIn("nothing was stored", got)
+        self.assertNotIn("Good title", self.git("status", "--porcelain").stdout)
+
     def test_a_learning_with_no_concept_is_kept_and_committed(self):
         ok, got = cortex_mcp.run(self.st, {"action": "finish", "learnings": [
             dict(self.learning("The owner prefers VS Code"), up="Preferences")]})
