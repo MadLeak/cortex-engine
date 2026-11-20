@@ -648,6 +648,12 @@ def brief(st, a: dict, vault: Path) -> tuple[bool, str]:
     """Start of a task in one call: the Hot nodes, the task's own session (engine 2.16+, with the agent's name: it
     closes the agent's previous one) and with a query the ask as well."""
     sid = None
+    synced = ""
+    try:   # a cortex coming back after a while pulls first (Settings > Sync); never an error for the agent
+        import hub_sync
+        synced = hub_sync.pull_if_stale(vault)
+    except Exception:   # noqa: BLE001
+        synced = ""
     if vault == st.vault and st.by and has_sessions(vault):
         ok, ses = run_engine(st.brain, vault, ["session", "new", "--by", st.by], st.timeout)
         sid = ses.splitlines()[0].strip() if ok and ses.strip() else None
@@ -657,6 +663,8 @@ def brief(st, a: dict, vault: Path) -> tuple[bool, str]:
         ok, ses = one(st, {"action": "session"}, vault)
     parts = [f"## hot (when a summary here answers, answer from it and credit it)\n{hot(vault)}",
              f"## session\n{ses if ok else 'unknown: ' + ses}"]
+    if synced:
+        parts.append(f"## {synced}")
     if a.get("query"):
         q = {k: v for k, v in a.items() if k in ("query", "all", "reads")}
         okq, got = ask(st, dict(q, session=sid) if sid else q, vault)

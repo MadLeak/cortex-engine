@@ -133,6 +133,20 @@ data (`layers`, present only when not 3). Inserting or removing a level is still
 curator's task (decision 12). *Apply:* a rule about "details" is a rule about the `leaf` role, so it covers L4 and L5; a
 rule that needs the first detail level (parent is a concept) uses `layer_of(LEAF)`.
 
+**16. A cortex can keep itself in step with its remote (hub, branch auto-sync).** `scripts/hub_sync.py`, opt-in per cortex
+(`sync_enabled`, `sync_interval_minutes`, `sync_idle_minutes` in Settings, off by default). A cycle commits what changed
+here as the owner through the vault's own pre-commit hook (an agent's `.claude` folder is never staged), fetches,
+fast-forwards or rebases onto a remote that moved, and pushes what is ahead. Nothing is forced: a rebase that conflicts is
+aborted, the cortex is left clean and Settings says `diverged`. It runs when the hub starts and every interval, retrying a
+failure after two minutes; `brief` pulls first (never pushes) when the last sync is older than `sync_idle_minutes`, so any
+MCP agent starts from the latest. https only; the token is the vault's own or one shared file,
+`<vaults>/.cortex-hub/push.token`, in one HTTP header and scrubbed from every message; the vault's pre-push hook still
+refuses a public repository. *Apply:* a new background job stays opt-in per cortex, commits only as the owner and reports its
+last result in Settings. *Known gaps:* never run against a real GitHub repository (the tests use a local bare one);
+two machines editing at once will conflict on files the engine rewrites by itself (`hot.jsonl`, `MAP.md`, `generated/`),
+which a `merge=union` attribute for `hot.jsonl` and a rebuild after a pull could settle; agents that do not use the MCP
+do not pull at their start.
+
 ## Environment lessons
 
 - Windows bind mounts show files as mode 0777: the engine detects the mount in `/proc/self/mounts` and sets
