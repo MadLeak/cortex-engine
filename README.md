@@ -119,7 +119,7 @@ The engine's suite has 62 tests, including a 1,000-node performance check, and r
 
 ## Status
 
-Engine version 2.20.2. Since 2.16 it runs in Docker only, with an MCP service per vault, vault migrations with no model, Claude Code memory import, per-cortex *Settings* (config, remote, push token, MCP token, delete) on the hub and from each panel, and a panel whose recalls are drawn as lightning. Known gaps are listed in the [runbook](docs/RUNBOOK.md#known-gaps-not-verified-or-not-built). Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.21.0. Since 2.16 it runs in Docker only, with the resident engine keeping the graph, index and usage sums in memory (recall on a 1,000-node vault: 842 ms to 96 ms on a slow Docker Desktop bind mount, 28 ms to 23 ms on tmpfs), with an MCP service per vault, vault migrations with no model, Claude Code memory import, per-cortex *Settings* (config, remote, push token, MCP token, delete) on the hub and from each panel, and a panel whose recalls are drawn as lightning. Known gaps are listed in the [runbook](docs/RUNBOOK.md#known-gaps-not-verified-or-not-built). Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 

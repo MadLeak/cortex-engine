@@ -707,6 +707,73 @@ class VisualizationTests(Base):
         self.assertLess(len(output), brain.MODES["normal"]["chars"] + 600)
 
 
+class WarmMemoryTests(Base):
+    """A process that makes many calls (the hub's resident engine) keeps the graph, the index, the glossary and the
+    usage sums in memory; none of it may outlive the files it was built from."""
+
+    def test_the_graph_and_the_index_follow_an_edited_note(self):
+        self.seed()
+        self.ok("build")
+        self.assertIn("carrier's shipping window sets", self.ok("recall", "cutoff", "--no-body"))
+        v = brain.Vault(self.v)
+        self.assertTrue(brain.warm(v.root).get("snapshot") and brain.warm(v.root).get("bm25"))
+        note = self.v / "Orders" / "The shipping window limits the cutoff.md"
+        note.write_text(note.read_text(encoding="utf-8").replace(
+            "The carrier's shipping window sets the latest possible cutoff.",
+            "Pallets leave the dock only on Fridays, an entirely different summary."), encoding="utf-8")
+        got = self.ok("recall", "pallets dock fridays", "--no-body")
+        self.assertIn("Pallets leave the dock", got)
+        self.assertNotIn("carrier's shipping window sets", got)
+
+    def test_the_memory_is_not_used_when_a_file_is_added_or_removed(self):
+        self.seed()
+        self.ok("build")
+        self.ok("recall", "cutoff", "--no-body")
+        self.ok("new", "--layer", "2", "--up", "Orders", "--title", "Pallets leave on Fridays",
+                "--summary", "The dock ships pallets only on Fridays.")
+        self.assertIn("Pallets leave on Fridays", self.ok("recall", "pallets fridays", "--no-body"))
+        (self.v / "Orders" / "Pallets leave on Fridays.md").unlink()
+        self.assertNotIn("Pallets leave on Fridays", self.ok("recall", "pallets fridays", "--no-body"))
+
+    def test_the_glossary_follows_its_file(self):
+        self.seed()
+        self.ok("build")
+        before = brain.translate_query(brain.Vault(self.v), "cuando es el corte de zxqv")
+        path = self.v / "_brain" / "glossary.json"
+        path.write_text(json.dumps({"es": {"zxqv": "pallets"}}), encoding="utf-8")
+        after = brain.translate_query(brain.Vault(self.v), "cuando es el corte de zxqv")
+        self.assertNotIn("pallets", before)
+        self.assertIn("pallets", after)
+        path.unlink()
+        self.assertNotIn("pallets", brain.translate_query(brain.Vault(self.v), "cuando es el corte de zxqv"))
+
+    def test_the_usage_sums_follow_the_log_and_survive_a_restart(self):
+        self.seed()
+        self.ok("build")
+        title = "The shipping window limits the cutoff"
+        key = brain.Vault(self.v).node(title).key
+        w0 = brain.Telemetry(brain.Vault(self.v)).weights()[key]
+        sid = self.ok("session", "new").splitlines()[0].strip()
+        self.ok("read", title, "--session", sid)
+        self.ok("credit", "--used", title, "--session", sid)
+        w1 = brain.Telemetry(brain.Vault(self.v)).weights()[key]
+        self.assertGreater(w1, w0)
+        # the sums kept in memory equal the sums rebuilt from the whole log
+        tel = brain.Telemetry(brain.Vault(self.v))
+        full = tel.weights_from_log()
+        for k, w in tel.weights().items():
+            self.assertAlmostEqual(w, full[k], places=6)
+        # a process with no memory (a new brain.py) reads the same sums from the log and the saved pickle
+        brain.WARM.clear()
+        w2 = brain.Telemetry(brain.Vault(self.v)).weights()[key]
+        self.assertAlmostEqual(w2, w1, places=6)
+
+    def test_only_a_few_vaults_are_kept(self):
+        for i in range(brain.WARM_VAULTS + 3):
+            brain.warm(f"/nowhere/{i}")["x"] = 1
+        self.assertLessEqual(len(brain.WARM), brain.WARM_VAULTS)
+
+
 class HotMemoryTests(Base):
     def log(self, *events):
         v = brain.Vault(self.v)

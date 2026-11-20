@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
-"""What one engine call costs: a new process per call (what cortex_mcp.py does today) against an engine imported once.
+"""What one engine call costs: a new process per call against the resident engine of cortex_mcp.py (the hub's own,
+with its file list and in-memory state), on a throwaway 1,000-node vault.
 
     python3 scripts/bench_calls.py --dir /tmp/bench            # inside the container: docker compose run --rm bench
     python3 scripts/bench_calls.py --dir /vaults/.bench -n 30   # on the bind-mounted vault folder
@@ -85,11 +86,15 @@ def main() -> int:
     make_vault(v)
     scripts = v / "_brain/scripts"
     sys.path.insert(0, str(scripts))
+    sys.path.insert(0, str(ROOT / "scripts"))
     import brain_core as brain  # the vault's own engine, as cortex_mcp.py runs it
+    import cortex_mcp
     fill(brain, v)
     t0 = time.perf_counter()
     code, _ = call(brain, ["--vault", str(v), "build", "--quiet"])
     print(f"vault {v} · 1000 nodes · first build {time.perf_counter() - t0:.2f}s (exit {code})")
+
+    resident = cortex_mcp.Resident(scripts, scan_seconds=5.0)   # what the hub runs
 
     def session() -> str:
         return call(brain, ["--vault", str(v), "session", "new"])[1].splitlines()[0].strip()
@@ -108,7 +113,7 @@ def main() -> int:
                 code = subprocess.run([sys.executable, str(scripts / "brain.py"), *argv],
                                       capture_output=True, cwd=str(v.parent)).returncode
             else:
-                code, _ = call(brain, argv)
+                code = resident.call(v, argv[2:], 60)[0]
             times[(mode, kind)].append((time.perf_counter() - t0) * 1000)
             if code:
                 print(f"! {mode} {kind} {rest} exited {code}")

@@ -10,6 +10,7 @@ Exit:   0 ok · 1 usage or validation error · 2 budget or limit exhausted.
 from __future__ import annotations
 
 import argparse
+import collections
 import datetime as dt
 import functools
 import json
@@ -24,7 +25,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.20.2"
+VERSION = "2.21.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -223,13 +224,47 @@ def decay(instant: dt.datetime, half_life: float, reference: dt.datetime | None 
     return 0.5 ** (days / half_life)
 
 
+# What a long-lived process (the hub's resident engine) keeps between calls, per vault root: the loaded graph, the
+# BM25 index, the glossary and the usage sums. Each entry carries the stamp it was built from and is used only while
+# that stamp still matches the files (names, mtimes and sizes for the graph and the index; the file's own mtime and
+# size for the glossary), so a changed vault is never served from memory. A process that makes one call (brain.py)
+# just fills it and exits.
+WARM: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
+WARM_VAULTS = 8        # vaults kept; the least recently used is dropped
+ACC_PERSIST = 30.0     # seconds between writes of state/telemetry.pickle by a process that keeps the sums in memory
+
+
+def warm(root) -> dict:
+    key = str(root)
+    mem = WARM.get(key)
+    if mem is None:
+        mem = WARM[key] = {}
+        while len(WARM) > WARM_VAULTS:
+            WARM.popitem(last=False)
+    else:
+        WARM.move_to_end(key)
+    return mem
+
+
+def stamp_of(path: Path) -> tuple | None:
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 def write_atomic(path: Path, text: str) -> None:
     """A name unique to this write, not one shared by every writer of the path: the lock-free state files (the
     automatic session pointer, telemetry, the cache) are written by any read call, so two agents reading the same
     vault at the same moment would otherwise truncate each other's tmp and the loser's os.replace raised."""
-    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.urandom(2).hex()}.tmp")
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+    try:
+        f = open(tmp, "w", encoding="utf-8", newline="\n")
+    except FileNotFoundError:   # the folder is made only when missing: a mkdir per write cost a call on a shared folder
+        path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(tmp, "w", encoding="utf-8", newline="\n")
+    with f:
         f.write(text)
     os.replace(tmp, path)
 
@@ -270,11 +305,12 @@ class Lock:
         self.path = path
 
     def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         for _ in range(100):
             try:
                 os.close(os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
                 return self
+            except FileNotFoundError:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
             except FileExistsError:
                 try:
                     if time.time() - self.path.stat().st_mtime > 30:
@@ -513,9 +549,13 @@ def load_state(path: Path) -> dict:
 
 def save_state(path: Path, items: dict) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.parent / f".{path.name}.{os.urandom(2).hex()}.tmp"
-        with open(tmp, "wb") as f:
+        try:
+            f = open(tmp, "wb")
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            f = open(tmp, "wb")
+        with f:
             pickle.dump({"key": state_key(), "items": items}, f, pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, path)
     except OSError:
@@ -547,8 +587,10 @@ class Vault:
             raise BrainError(f"vault does not exist: {self.root}")
         self.cfg_path = self.root / "_brain" / "config.json"
         self.cfg = {"vault": self.root.name, "siblings": {}, "warn_dependency_on": [], "half_life_days": 30}
-        if self.cfg_path.exists():
+        try:
             self.cfg.update(json.loads(self.cfg_path.read_text(encoding="utf-8")))
+        except FileNotFoundError:
+            pass
         self.name = self.cfg["vault"]
         self.state_dir = self.root / "_brain" / "state"
         self.gen_dir = self.root / "_brain" / "generated"
@@ -557,7 +599,15 @@ class Vault:
         self.titles: dict[str, list[Path]] = {}
         self.cold: dict[str, list[Path]] = {c: [] for c in COLD_FOLDERS}
         self.loose: list[Path] = []
+        self._brain_dir: bool | None = None
         self._load()
+
+    @property
+    def has_brain(self) -> bool:
+        """Whether the vault has a _brain folder (state is saved only then): asked once per call, not per save."""
+        if self._brain_dir is None:
+            self._brain_dir = (self.root / "_brain").is_dir()
+        return self._brain_dir
 
     # -- loading and indexes
     def _scan(self) -> list[tuple[str, int, int]]:
@@ -624,11 +674,17 @@ class Vault:
         self.struct_key = (len(scan), max((mt for _, mt, _ in scan), default=0))
         # the loaded vault persists between calls in state/snapshot.pickle: when no file changed (same names, mtimes
         # and sizes) one unpickle restores it whole; otherwise only the changed files are read and parsed again
-        snap = load_state(self.state_dir / "snapshot.pickle")
+        mem, key = warm(self.root), state_key()
+        held = mem.get("snapshot")
+        if held is not None and held[0] == key and held[1] == self._meta:
+            snap = {"meta": self._meta, "full": held[2]}   # the same files as the last call: no read from disk
+        else:
+            snap = load_state(self.state_dir / "snapshot.pickle")
         if snap.get("meta") == self._meta:
             try:
                 for name, value in zip(self.LOADED, pickle.loads(snap["full"])):
                     setattr(self, name, value)
+                mem["snapshot"] = (key, self._meta, snap["full"])
                 return
             except Exception:  # noqa: BLE001 — a damaged snapshot is rebuilt below
                 self.net, self.archive, self.titles, self.loose = {}, {}, {}, []
@@ -663,7 +719,7 @@ class Vault:
         current = set(self._meta)
         if self._text_cache is not None and (self._cache_dirty or set(self._cache) - current):
             self._text_cache = {k: x for k, x in self._cache.items() if k in current}
-            if (self.root / "_brain").is_dir():
+            if self.has_brain:
                 try:
                     write_atomic(self.state_dir / "cache.json", json.dumps(self._cache, ensure_ascii=False))
                 except OSError:
@@ -681,8 +737,9 @@ class Vault:
                     self.mentions.setdefault(norm(t), set()).add(k)
         for group in self.children.values():
             group.sort(key=lambda x: x.k)
-        if (self.root / "_brain").is_dir():
-            full = pickle.dumps(tuple(getattr(self, name) for name in self.LOADED), pickle.HIGHEST_PROTOCOL)
+        full = pickle.dumps(tuple(getattr(self, name) for name in self.LOADED), pickle.HIGHEST_PROTOCOL)
+        mem["snapshot"] = (key, self._meta, full)
+        if self.has_brain:
             save_state(self.state_dir / "snapshot.pickle", {"meta": self._meta, "full": full})
             save_state(self.state_dir / "nodes.pickle", fresh)  # per file, read only when something changed
 
@@ -764,8 +821,12 @@ class Telemetry:
             return
         with self.v.lock():
             if lines:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                with open(self.path, "a", encoding="utf-8", newline="\n") as f:
+                try:
+                    f = open(self.path, "a", encoding="utf-8", newline="\n")
+                except FileNotFoundError:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    f = open(self.path, "a", encoding="utf-8", newline="\n")
+                with f:
                     f.write("\n".join(lines) + "\n")
             log_activity(self.v, event, keys, session, query)
 
@@ -791,7 +852,9 @@ class Telemetry:
         if hasattr(self, "_acc"):
             return self._acc
         hl = float(self.v.cfg.get("half_life_days", 30)) * 86400
-        acc = load_state(self.v.state_dir / "telemetry.pickle")
+        mem = warm(self.v.root)
+        held = mem.get("acc")
+        acc = held["acc"] if held and held["key"] == state_key() else load_state(self.v.state_dir / "telemetry.pickle")
         try:
             size = self.path.stat().st_size
         except OSError:
@@ -824,8 +887,13 @@ class Telemetry:
                     for j in range(i + 1, len(ks)):
                         acc["co"][(ks[i], ks[j])] = acc["co"].get((ks[i], ks[j]), 0.0) + f2
             acc["off"] += cut
-            if cut and (self.v.root / "_brain").is_dir():
-                save_state(self.v.state_dir / "telemetry.pickle", acc)
+            persisted = held["saved"] if held and held["acc"] is acc else 0.0
+            if cut and self.v.has_brain and time.time() - persisted > ACC_PERSIST:
+                save_state(self.v.state_dir / "telemetry.pickle", acc)   # other processes catch up from "off"
+                persisted = time.time()
+            mem["acc"] = {"key": state_key(), "acc": acc, "saved": persisted}
+        elif not held or held["acc"] is not acc:
+            mem["acc"] = {"key": state_key(), "acc": acc, "saved": time.time()}
         self._acc = acc
         return acc
 
@@ -1021,9 +1089,12 @@ class Sessions:
 
     def load(self, sid: str) -> dict:
         path = self.dir / f"{sid}.json"
-        if not re.fullmatch(r"s[\w-]+", sid or "") or not path.exists():
-            raise BrainError(f'unknown session "{sid}": create one with `brain.py session new`')
-        return json.loads(path.read_text(encoding="utf-8"))
+        try:
+            if not re.fullmatch(r"s[\w-]+", sid or ""):
+                raise FileNotFoundError(sid)
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raise BrainError(f'unknown session "{sid}": create one with `brain.py session new`') from None
 
     def save(self, sid: str, data: dict) -> None:
         write_atomic(self.dir / f"{sid}.json", json.dumps(data, ensure_ascii=False))
@@ -1418,8 +1489,7 @@ def questions(v: Vault) -> dict:
 
 def questions_stamp(v: Vault) -> tuple:
     path = v.root / "_brain" / QUESTIONS_FILE
-    st = path.stat() if path.exists() else None
-    return (st.st_mtime_ns, st.st_size) if st else (0, 0)
+    return stamp_of(path) or (0, 0)
 
 
 def content_hash(n: Node) -> str:
@@ -1435,9 +1505,15 @@ def bm25_index(v: Vault) -> dict:
     weight or question set rebuilds them."""
     if getattr(v, "_bm25", None) is None:
         tag = (VERSION, tuple(BM25_FIELDS.items()), questions_stamp(v))
+        mem = warm(v.root)
+        held = mem.get("bm25")
+        if held is not None and held["meta"] == v._meta and held["n"] == len(v.net) and held["tag"] == tag:
+            v._bm25 = held["ix"]   # read-only: shared by every call while no file changed
+            return v._bm25
         whole = load_state(v.state_dir / "bm25-index.pickle")
         if whole.get("meta") == v._meta and whole.get("n") == len(v.net) and whole.get("tag") == tag:
             v._bm25 = whole["ix"]
+            mem["bm25"] = {"meta": v._meta, "n": len(v.net), "tag": tag, "ix": v._bm25}
             return v._bm25
         saved, kept, docs = load_state(v.state_dir / "bm25.pickle"), {"__tag__": tag}, {}
         if saved.get("__tag__") != tag:
@@ -1466,7 +1542,7 @@ def bm25_index(v: Vault) -> dict:
                     tf[t] = tf.get(t, 0.0) + boost
             docs[k] = kept[rel] = (meta[0] if meta else 0, meta[1] if meta else 0, tf, length)
         if kept.keys() != saved.keys() or any(kept[r] is not saved.get(r) for r in kept if r != "__tag__"):
-            if (v.root / "_brain").is_dir():
+            if v.has_brain:
                 save_state(v.state_dir / "bm25.pickle", kept)
         docs = {k: (d[2], d[3]) for k, d in docs.items()}
         df: dict[str, int] = {}
@@ -1480,7 +1556,8 @@ def bm25_index(v: Vault) -> dict:
                 for g in trigrams(t):
                     tri.setdefault(g, []).append(t)
         v._bm25 = {"docs": docs, "df": df, "avg": avg or 1.0, "n": len(docs), "tri": tri}
-        if (v.root / "_brain").is_dir():
+        mem["bm25"] = {"meta": v._meta, "n": len(v.net), "tag": tag, "ix": v._bm25}
+        if v.has_brain:
             save_state(v.state_dir / "bm25-index.pickle", {"meta": v._meta, "n": len(v.net), "ix": v._bm25, "tag": tag})
     return v._bm25
 
@@ -1506,6 +1583,12 @@ def glossary(v) -> dict:
     """The Spanish to English vocabulary: the engine's lexicon_es.tsv, then the vault's _brain/glossary.json
     ({"stop": "words", "es": {"spanish words": "english words"}}), which wins. Single words also match by stem."""
     if not hasattr(v, "_glossary"):
+        path = v.root / "_brain" / "glossary.json"
+        mem, stamp = warm(v.root), stamp_of(path)
+        held = mem.get("glossary")
+        if held is not None and held[0] == stamp:   # the vault's glossary is unchanged: the parsed lexicon is reused
+            v._glossary = held[1]
+            return v._glossary
         es: dict[tuple, str] = {}
         lex = Path(__file__).resolve().parent / "lexicon_es.tsv"
         if lex.exists():
@@ -1513,8 +1596,7 @@ def glossary(v) -> dict:
                 if line and not line.startswith("#") and "	" in line:
                     k, val = line.split("	", 1)
                     es[tuple(norm(k).split())] = val.strip()
-        path = v.root / "_brain" / "glossary.json"
-        g = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        g = json.loads(path.read_text(encoding="utf-8")) if stamp else {}
         es.update({tuple(norm(k).split()): val for k, val in g.get("es", {}).items()})
         stems = {}
         for k, val in es.items():
@@ -1522,6 +1604,7 @@ def glossary(v) -> dict:
                 stems.setdefault(es_stem(k[0]), val)
         v._glossary = {"stop": set(norm(g.get("stop", "")).split()) | SPANISH_STOP, "es": es, "stems": stems,
                        "longest": max((len(k) for k in es), default=1)}
+        mem["glossary"] = (stamp, v._glossary)
     return v._glossary
 
 
