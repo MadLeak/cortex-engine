@@ -354,7 +354,8 @@ change is a click of its own:
 - **Delete:** the whole folder, its history and its tokens, for good, only once its exact name is typed. The dialog
   warns first when it has uncommitted changes or was never saved to a remote.
 
-Not yet in Settings, and each a project of its own: the number of layers (L1 to L3 are built into the engine),
+Not yet in Settings, and each a project of its own: the number of layers (L1 to L3 are built into the engine; why it is not
+built and how it could be: [DESIGN-LAYERS.md](DESIGN-LAYERS.md)),
 REM dreaming (it runs in `lifecycle.py` under systemd on the host, not yet in the container) and an ideas miner.
 
 **The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
@@ -500,7 +501,8 @@ Then bump the engine version and set the template's `config.json` `schema` to th
 - `install.ps1` and `install.sh` were only syntax-checked; the manual path (`docker compose up -d hub`) is the tested one.
 - MCP configs for Codex, Gemini and OpenCode are generated but were not tried against those clients; Claude Code is.
 - *Save to remote* was tested only with a stubbed git; try it on a throwaway private repository first.
-- Not built: configurable number of layers, REM dreaming in the container, the ideas miner; the resident engine still
+- Not built: configurable number of layers (a design note says what blocks it: [DESIGN-LAYERS.md](DESIGN-LAYERS.md)), REM
+  dreaming in the container, the ideas miner; the resident engine still
   reads state from disk (keeping it in memory to go under 50 ms was deferred).
 
 ## 12. Reference

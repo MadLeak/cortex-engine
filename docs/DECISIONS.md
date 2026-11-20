@@ -61,6 +61,13 @@ panel has its own *Settings* button that opens `/agents?settings=<cortex>`.
 (breadth-first, jitter), midpoint displacement, return stroke, gather particles on *read* nodes, afterglow, with
 `vector-effect: non-scaling-stroke`. Each recall groups its activated and read nodes (`playEvents`).
 
+**9. The number of layers stays three, for now (design note, no code).** Making it configurable would change the disk
+layout, the roles recall and `consolidate` rely on, and the panel's drawing, and no deterministic migration can place
+existing notes in a different set of levels; "lint and recall unchanged for 3" cannot be shown without first turning the
+numbers 1, 2, 3 into roles, a large refactor of its own. [DESIGN-LAYERS.md](DESIGN-LAYERS.md) has what blocks it, a stepwise
+way (roles with golden output, a config key and migration 0003, leaf-end levels only) and the questions for the owner.
+*Apply:* do not add a layer-count option as a side effect of another change; if it is wanted, start at step 1 of the note.
+
 ## Environment lessons
 
 - Windows bind mounts show files as mode 0777: the engine detects the mount in `/proc/self/mounts` and sets
@@ -72,5 +79,5 @@ panel has its own *Settings* button that opens `/agents?settings=<cortex>`.
 
 ## Still open
 
-Configurable layers, REM dreaming in the container, the ideas miner, in-memory state for recall, a real run of the
+Configurable layers (see DESIGN-LAYERS.md), REM dreaming in the container, the ideas miner, in-memory state for recall, a real run of the
 installers, the Codex/Gemini/OpenCode configs, and *Save to remote* against a real private repository.
