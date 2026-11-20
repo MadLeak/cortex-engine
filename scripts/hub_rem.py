@@ -183,32 +183,34 @@ class Scheduler:
         except ValueError:
             return True
 
-    def run(self, v: Path, manual: bool = False) -> dict | None:
-        """Dreams one cortex now. None when it is already dreaming."""
+    def run(self, v: Path, manual: bool = False, reserved: bool = False) -> dict | None:
+        """Dreams one cortex now. None when it is already dreaming. `reserved`: the caller already marked it running."""
         with self.lock:
-            if v.name in self.running:
-                return None
-            self.running.add(v.name)
+            if not reserved:
+                if v.name in self.running:
+                    return None
+                self.running.add(v.name)
         try:
-            res = self.runner(v, float(settings(v)["rem_budget_minutes"]))
-        except Exception as e:   # noqa: BLE001 — a failed run is a line in the status, never the end of the scheduler
-            res = {"t": now(), "done": 0, "left": 0, "result": f"failed: {e}"}
+            try:
+                res = self.runner(v, float(settings(v)["rem_budget_minutes"]))
+            except Exception as e:   # noqa: BLE001 — a failed run is a line in the status, never the end of the scheduler
+                res = {"t": now(), "done": 0, "left": 0, "result": f"failed: {e}"}
+            res["manual"] = manual
+            st = read_state(self.root)
+            st[v.name] = res
+            write_state(self.root, st)   # the result is on disk before the cortex stops counting as running
+            return res
         finally:
             with self.lock:
                 self.running.discard(v.name)
-        res["manual"] = manual
-        st = read_state(self.root)
-        st[v.name] = res
-        write_state(self.root, st)
-        return res
 
     def start_now(self, v: Path) -> bool:
-        """On demand, in the background: False when this cortex is already dreaming."""
+        """On demand, in the background: False when this cortex is already dreaming. It counts as running at once."""
         with self.lock:
             if v.name in self.running:
                 return False
-        threading.Thread(target=self.run, args=(v, True), daemon=True, name=f"rem-{v.name}").start()
-        time.sleep(0.05)
+            self.running.add(v.name)
+        threading.Thread(target=self.run, args=(v, True, True), daemon=True, name=f"rem-{v.name}").start()
         return True
 
     def tick(self) -> None:

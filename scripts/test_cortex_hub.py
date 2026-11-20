@@ -519,6 +519,77 @@ class SettingsTest(unittest.TestCase):
             httpd.server_close()
 
 
+class IdeasHubTest(unittest.TestCase):
+    """Find ideas (Settings, `cortex ideas`): the miner's notes, committed as the owner and only as the owner."""
+
+    def setUp(self):
+        import os
+        import shutil
+        engine = Path(__file__).resolve().parents[1] / "template-vault"
+        self.tmp = tempfile.TemporaryDirectory()
+        self.v = Path(self.tmp.name) / "Demo Cortex"
+        shutil.copytree(engine / "_brain", self.v / "_brain", ignore=shutil.ignore_patterns("__pycache__", "state"))
+        shutil.copytree(engine / "_templates", self.v / "_templates")
+        shutil.copy(engine / ".gitignore", self.v / ".gitignore")
+        (self.v / "_inbox").mkdir(exist_ok=True)
+        brain = lambda *a: subprocess.run([sys.executable, str(self.v / "_brain/scripts/brain.py"), "--vault", str(self.v), *a],  # noqa: E731
+                                          capture_output=True, text=True, check=True, cwd=str(self.v.parent))
+        brain("new", "--layer", "1", "--title", "Farms", "--summary", "Where the flowers grow.")
+        for up in ("Roses farm", "Carnation farm"):
+            brain("new", "--layer", "2", "--up", "Farms", "--title", up, "--summary", f"{up} and its fields.")
+        for i, up in enumerate(("Roses farm", "Carnation farm") * 2):
+            brain("new", "--layer", "3", "--up", up, "--type", "fact", "--title", f"Pallet rule {i}",
+                  "--summary", f"Pallets are loaded in order {i}.")
+        self.env = {**os.environ, "GIT_AUTHOR_NAME": "Setup", "GIT_AUTHOR_EMAIL": "s@example.com",
+                    "GIT_COMMITTER_NAME": "Setup", "GIT_COMMITTER_EMAIL": "s@example.com"}
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "seed")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *a):
+        return subprocess.run(["git", "-C", str(self.v), *a], capture_output=True, text=True, env=self.env)
+
+    def test_the_notes_are_committed_as_the_owner(self):
+        from unittest import mock
+        hs = cortex_hub.hub_settings
+        with mock.patch.dict("os.environ", {"CORTEX_GIT_NAME": "Real Owner", "CORTEX_GIT_EMAIL": "owner@example.com"}):
+            self.assertEqual(hs.ideas_waiting(self.v), 0)
+            msg = hs.find_ideas(self.v)
+            self.assertIn("committed as the owner", msg)
+            self.assertGreaterEqual(hs.ideas_waiting(self.v), 1)
+            self.assertEqual(hs.read(self.v, "local")["ideas_waiting"], hs.ideas_waiting(self.v))
+            self.assertEqual(self.git("log", "-1", "--format=%an|%ae|%cn|%s").stdout.strip(),
+                             "Real Owner|owner@example.com|Real Owner|ideas: candidates for the curator")
+            self.assertEqual(self.git("status", "--porcelain").stdout.strip(), "")
+            for _ in range(3):   # at most 5 links per run: the rest follow, then there is nothing new
+                again = hs.find_ideas(self.v)
+                if "0 written" in again:
+                    break
+            self.assertIn("0 written", again)
+            commits = self.git("rev-list", "--count", "HEAD").stdout.strip()
+            self.assertIn("0 written", hs.find_ideas(self.v))
+            self.assertEqual(self.git("rev-list", "--count", "HEAD").stdout.strip(), commits, "nothing new, no commit")
+
+    def test_without_the_owners_identity_nothing_is_written(self):
+        from unittest import mock
+        with mock.patch.dict("os.environ", {"CORTEX_GIT_NAME": "", "CORTEX_GIT_EMAIL": ""}):
+            with self.assertRaises(ValueError):
+                cortex_hub.hub_settings.find_ideas(self.v)
+        self.assertEqual(len(list((self.v / "_inbox").glob("*.md"))), 0)
+
+    def test_the_threshold_is_a_setting(self):
+        from unittest import mock
+        hs = cortex_hub.hub_settings
+        with mock.patch.dict("os.environ", {"CORTEX_GIT_NAME": "Real Owner", "CORTEX_GIT_EMAIL": "owner@example.com"}):
+            hs.save(self.v, {"ideas_min_count": 9})
+            self.assertIn("0 concepts", hs.find_ideas(self.v))
+            with self.assertRaises(ValueError):
+                hs.save(self.v, {"ideas_min_count": 1})
+
+
 class UpgradeTest(unittest.TestCase):
     """On start the hub puts every older vault on its own engine and commits that as the Cortex hub."""
 

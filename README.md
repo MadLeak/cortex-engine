@@ -34,7 +34,7 @@ claude mcp add --transport http --scope user claude-cortex "http://cortex.localh
 A new cortex can start with the agent's Claude Code memory: tick its projects in the form, and the memories are imported
 into the graph by rule (no model). The agent starts each task with `action=brief` and ends it with `action=finish`, which commits what it learned, signed with
 your `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL` (the agent's name goes in the message; with none set, it signs as itself). The command line is `./cortex.sh` (Windows `.\cortex.ps1`): `list`, `new <folder> [--from
-kitchen-cortex]`, `brain <vault> recall "..."`, `doctor`, `upgrade`, `rem <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`.
+kitchen-cortex]`, `brain <vault> recall "..."`, `doctor`, `upgrade`, `rem <vault>`, `ideas <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`.
 Options: `--lan` / `-Lan` serves the cortexes you mark LAN to the local network over HTTPS; `--trusted` / `-Trusted`
 (administrator) gives `https://cortex.local` with no warning by trusting the hub's CA on this machine. See the
 [runbook](docs/RUNBOOK.md#1-install).
@@ -119,7 +119,7 @@ The engine's suite has 62 tests, including a 1,000-node performance check, and r
 
 ## Status
 
-Engine version 2.22.0. Since 2.16 it runs in Docker only, with the resident engine keeping the graph, index and usage sums in memory (recall on a 1,000-node vault: 842 ms to 96 ms on a slow Docker Desktop bind mount, 28 ms to 23 ms on tmpfs), with REM dreaming (the questions each note answers, from your local model server) scheduled from the hub's Settings, with an MCP service per vault, vault migrations with no model, Claude Code memory import, per-cortex *Settings* (config, remote, push token, MCP token, delete) on the hub and from each panel, and a panel whose recalls are drawn as lightning. Known gaps are listed in the [runbook](docs/RUNBOOK.md#known-gaps-not-verified-or-not-built). Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.23.0. Since 2.16 it runs in Docker only, with the resident engine keeping the graph, index and usage sums in memory (recall on a 1,000-node vault: 842 ms to 96 ms on a slow Docker Desktop bind mount, 28 ms to 23 ms on tmpfs), with REM dreaming (the questions each note answers, from your local model server) scheduled from the hub's Settings, with an ideas miner (a plain pass that proposes concepts and links to the curator through the inbox), with an MCP service per vault, vault migrations with no model, Claude Code memory import, per-cortex *Settings* (config, remote, push token, MCP token, delete) on the hub and from each panel, and a panel whose recalls are drawn as lightning. Known gaps are listed in the [runbook](docs/RUNBOOK.md#known-gaps-not-verified-or-not-built). Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 

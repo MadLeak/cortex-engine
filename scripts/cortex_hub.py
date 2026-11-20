@@ -682,6 +682,8 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                     learner = hub_settings.read_config(v).get("learner") or "agent"
                     out = {"message": "new MCP token: the old one no longer works",
                            "token": token, "url": f"{self.mcp_base()}/mcp/{quote(v.name)}?by={quote(learner)}"}
+                elif action == "ideas":
+                    out = {"message": hub_settings.find_ideas(v)}
                 elif action == "rem-run":
                     if not self.rem_scheduler().start_now(v):
                         raise ValueError("this cortex is already dreaming")
@@ -1047,6 +1049,11 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
       <label>Sessions to confirm a learning <input name="confirm_sessions" type="number" min="1" max="20"></label>
       <label>Days those sessions must span <input name="confirm_min_days" type="number" min="0" max="60"></label>
       <label>Provisional learnings allowed <input name="max_provisional" type="number" min="1" max="500"></label>
+      <h3>Ideas</h3>
+      <div class="sub">A plain pass, no model: it proposes concepts and links from words that recur and nodes used together, as notes in the inbox for the curator. Nothing enters the graph.</div>
+      <label>Nodes a word must recur in <input name="ideas_min_count" type="number" min="2" max="50"></label>
+      <div class="sub" id="s-ideas"></div>
+      <div class="row"><button type="button" id="s-find-ideas">Find ideas</button></div>
       <h3>REM dreaming</h3>
       <div class="sub">Writes the questions each note answers, with the local model server, on a schedule. What it finds is committed as you.</div>
       <label>Dreaming <select name="rem_enabled"><option value="false">Off</option><option value="true">On</option></select></label>
@@ -1359,6 +1366,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
         (sdata.last_commit ? `\nlast: ${sdata.last_commit}` : '')
       : `folder ${sdata.folder} · not a git repository`;
     $('#s-git').textContent = g; $('#s-git').style.whiteSpace = 'pre-line';
+    $('#s-ideas').textContent = `${sdata.ideas_waiting} ${sdata.ideas_waiting === 1 ? 'idea' : 'ideas'} waiting in the inbox`;
     const rem = sdata.rem || {};
     $('#s-rem').textContent = (rem.running ? 'Dreaming now…' : rem.last ? `Last run ${rem.last.replace('T', ' ').slice(0, 16)}: ${rem.result}` : 'Never run.') +
       (rem.model ? `
@@ -1403,6 +1411,7 @@ Model server: ${rem.model}` : '');
     for (const k of Object.keys(sdata.config)) if (sform[k] && String(sform[k].value) !== String(sdata.config[k])) config[k] = sform[k].value;
     run(sform.querySelector('button[type=submit]'), 'settings', { config, scope: sform.scope.value });
   });
+  $('#s-find-ideas').addEventListener('click', ev => run(ev.target, 'ideas', {}));
   $('#s-dream').addEventListener('click', ev => run(ev.target, 'rem-run', {}));
   $('#s-rotate').addEventListener('click', ev => {
     if (!confirm('Make a new MCP token? The agent stops reaching this cortex until its MCP client gets the new one.')) return;

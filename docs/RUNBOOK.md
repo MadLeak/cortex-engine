@@ -19,7 +19,7 @@ device accepts it once), `--trusted` / `-Trusted` (administrator: `https://corte
 `--remove` / `-Remove`.
 
 - **Command line:** `./cortex.sh <command>` (Windows `.\cortex.ps1`) runs `scripts/cortex_cli.py` in the container:
-  `list`, `new`, `brain <vault> <engine args>`, `doctor`, `upgrade`, `rem <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`
+  `list`, `new`, `brain <vault> <engine args>`, `doctor`, `upgrade`, `rem <vault>`, `ideas <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`
   (as `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL`), `precommit`.
 - **Engine versions:** on start the hub upgrades every vault with an older engine and commits it as
   `Cortex hub <hub@cortex.local>`.
@@ -42,7 +42,7 @@ Check the engine before you use it:
 cd template-vault/_brain/scripts && python3 -m unittest discover -s tests
 ```
 
-Expect `Ran 67 tests ... OK`, plus a timing line for the 1,000-node performance test.
+Expect `Ran 73 tests ... OK`, plus a timing line for the 1,000-node performance test.
 
 ## 2. Create a vault
 
@@ -270,6 +270,21 @@ One agent per vault is the curator. It works in a deep session (`B session new -
 3. `B lint`, then `git add -A && git commit -m "consolidation: week YYYY-Www"`.
 4. Tell the human what changed and what needs a decision, and point them to `git show --stat HEAD`.
 
+**The ideas miner (2.23.0).** `B ideas` is a plain pass over the graph, with no model and no randomness (the same vault
+gives the same list), that proposes what the curator may want to build, as notes in `_inbox` and never in the graph:
+- **A concept:** a word that recurs in `--min-count` or more L2/L3 titles and summaries (default 4, Settings *Nodes a word
+  must recur in*) under at least two different parents, in no domain or concept title or alias; the note lists the nodes
+  that carry it and the domain most of them sit under. Create the concept (`new --layer 2`) and `move --up` the nodes that
+  belong to it, or delete the note.
+- **A link:** two nodes with no link between them (no parent, synapse or `[[mention]]`) that were credited together
+  (decayed co-activation from 1.0 up to the point where `consolidate` already proposes it) or share three rare words
+  (in at most six nodes). `link` them with a type and a written reason, or delete the note.
+At most 5 notes of each kind per run (`--limit`); `--dry-run` writes nothing. Each idea is proposed once: `_log/ideas.jsonl`
+remembers every key, so deleting a note dismisses it for good, and a word that gets its concept stops being proposed. The
+notes carry `idea: "<key>"` and `learned_by: ideas-miner` and show up under *Inbox* in the next `consolidate`. Run it from
+the hub (`./cortex.sh ideas <vault>`, or *Find ideas* in Settings): it commits the notes as the owner
+(`ideas: candidates for the curator`), and refuses without `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL`.
+
 **Only the human** runs `B status "<title>" consolidated`. It records `reviewed:` and a `validated` usage event (weight 5).
 
 **Reviewing many seeds at no agent cost.** A local OpenAI-compatible model (Strata on Alastor) prepares the review and the
@@ -387,11 +402,13 @@ change is a click of its own:
 - **Delete:** the whole folder, its history and its tokens, for good, only once its exact name is typed. The dialog
   warns first when it has uncommitted changes or was never saved to a remote.
 
+- **Ideas:** the word-recurrence threshold and *Find ideas*, with the number of ideas waiting in the inbox (§6, *The ideas
+  miner*). Saved as `ideas_min_count`.
 - **REM dreaming:** on or off (off by default), minutes between runs, most minutes per run, and *Dream now*; the dialog shows
   the last run's result and the model server's address (§6, *REM in the container*). Saved in `_brain/config.json` as
   `rem_enabled`, `rem_interval_minutes` and `rem_budget_minutes`.
 
-Not yet in Settings, and each a project of its own: the number of layers (L1 to L3 are built into the engine) and an ideas miner.
+Not yet in Settings, and a project of its own: the number of layers (L1 to L3 are built into the engine).
 
 **The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
 
@@ -536,13 +553,13 @@ Then bump the engine version and set the template's `config.json` `schema` to th
 - `install.ps1` and `install.sh` were only syntax-checked; the manual path (`docker compose up -d hub`) is the tested one.
 - MCP configs for Codex, Gemini and OpenCode are generated but were not tried against those clients; Claude Code is.
 - *Save to remote* was tested only with a stubbed git; try it on a throwaway private repository first.
-- Not built: configurable number of layers, the ideas miner.
+- Not built: configurable number of layers.
 - REM in the container was tested against a stand-in model server, not a real Strata: try *Dream now* on a small throwaway
   cortex first.
 
 ## 12. Reference
 
-Commands, in the order the parser takes them: `session`, `stats`, `recall`, `read`, `credit`, `new`, `learn`, `link`, `unlink`, `move`, `promote`, `demote`, `rename`, `status`, `activity`, `questions`, `lint`, `build`, `precommit`, `prepush`, `consolidate`, `external`, `externals`, `import-memory`, `migrate`, `doctor`. Global flags: `--vault <path>` and `--version`. Over MCP (§4): one tool `cortex`, with `action` among `brief`, `recall`, `read`, `credit`, `stats`, `learn`, `finish`.
+Commands, in the order the parser takes them: `session`, `stats`, `recall`, `read`, `credit`, `new`, `learn`, `link`, `unlink`, `move`, `promote`, `demote`, `rename`, `status`, `activity`, `questions`, `lint`, `build`, `precommit`, `prepush`, `consolidate`, `external`, `externals`, `import-memory`, `ideas`, `migrate`, `doctor`. Global flags: `--vault <path>` and `--version`. Over MCP (§4): one tool `cortex`, with `action` among `brief`, `recall`, `read`, `credit`, `stats`, `learn`, `finish`.
 
 Exit codes: 0 ok · 1 usage or validation error · 2 budget or limit spent.
 
