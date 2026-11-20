@@ -19,7 +19,7 @@ device accepts it once), `--trusted` / `-Trusted` (administrator: `https://corte
 `--remove` / `-Remove`.
 
 - **Command line:** `./cortex.sh <command>` (Windows `.\cortex.ps1`) runs `scripts/cortex_cli.py` in the container:
-  `list`, `new`, `brain <vault> <engine args>`, `doctor`, `upgrade`, `ideas <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`
+  `list`, `new`, `brain <vault> <engine args>`, `doctor`, `upgrade`, `rem <vault>`, `ideas <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`
   (as `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL`), `precommit`.
 - **Engine versions:** on start the hub upgrades every vault with an older engine and commits it as
   `Cortex hub <hub@cortex.local>`.
@@ -42,7 +42,7 @@ Check the engine before you use it:
 cd template-vault/_brain/scripts && python3 -m unittest discover -s tests
 ```
 
-Expect `Ran 68 tests ... OK`, plus a timing line for the 1,000-node performance test.
+Expect `Ran 73 tests ... OK`, plus a timing line for the 1,000-node performance test.
 
 ## 2. Create a vault
 
@@ -173,7 +173,7 @@ Two tools. `cortex` is the funnel — `recall`, `read`, `credit`, `stats`, `lear
 
 `argparse` exits 2 too and never prints the `✖`, so a call it cannot parse comes back as wrong arguments rather than as a spent budget. A call the engine does not answer in time is stopped and reported the same way.
 
-Nothing here keeps an engine alive between calls: one costs about 0.04 seconds and 17 MB (timed twice on Alastor, 2026-11-03, engine 2.13.0). One call runs at a time per vault, because every read writes the automatic session and the telemetry and the vault lock covers neither. Agents behind the HTTP service share that gate; agents on separate stdio processes do not, and still share the session of §5.
+Run on its own (`cortex_mcp.py --http` or `--vault`), nothing here keeps an engine alive between calls: one costs about 0.04 seconds and 17 MB (timed twice on Alastor, 2026-11-03, engine 2.13.0). The hub's resident engine is different, see *Resident engine* in §8. One call runs at a time per vault, because every read writes the automatic session and the telemetry and the vault lock covers neither. Agents behind the HTTP service share that gate; agents on separate stdio processes do not, and still share the session of §5.
 
 A client that reads Claude Desktop's `mcpServers` block — as Strata's does — takes it verbatim:
 
@@ -307,6 +307,20 @@ routes by intent (history, still_true, drift, policy, needs_experiment). `system
 system: recall prints the host (`CORTEX_SYSTEM`, config `system`, or detected), marks a foreign note `WINDOWS ONLY`
 and ranks it lower only when the host has its twin (a host-system note linked to it); renewal leaves it alone.
 
+**REM in the container (2.22.0).** The hub dreams too, so a host with only Docker needs no systemd: turn *REM dreaming* on
+in a cortex's Settings (§8), or run `./cortex.sh rem <vault>` (Windows `.\cortex.ps1 rem <vault>`) or *Dream now*. It is the
+`cortex-rem` job below, with the differences that matter: it runs from the hub every `rem_interval_minutes` (default
+1440), for at most `rem_budget_minutes` (default 30), per cortex; the model server is `CORTEX_STRATA` (default
+`http://host.docker.internal:8080`, the host's own; its API key, if it asks for one, goes in
+`<vaults>/.cortex-hub/strata.key`); and, because the container has no private store, the answers go through the vault's own
+`B questions import` (which checks ids and drops credential-like text) into `_brain/questions.jsonl`, committed as
+`rem: questions for N notes` by the owner (`CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL`). Without that identity nothing runs, not
+even the model call; when something else is staged the questions are written but left uncommitted; when the model server
+does not answer the run is skipped and tried at the next interval (it is never started here). Each batch tells the panel
+(`brain.py activity dreamed`: the violet twinkles), and the last run's result shows in Settings and in
+`<vaults>/.cortex-hub/rem-state.json`. The nightly systemd job stays for hosts that run Python directly; do not run both on
+one vault.
+
 **The mechanical phases run on their own** (Linux, systemd user timers): `python3 scripts/lifecycle.py install` sets up
 - `cortex-nap`, hourly: mirrors each vault's gitignored `usage.jsonl` into `~/.local/share/cortex-life/usage/` (a fresh clone starts the log empty, so the history lives outside the vault), then rebuilds and lints any vault whose notes or usage changed;
 - `cortex-night`, 03:00: `B consolidate`, the vault's bench on a throwaway copy with an alarm when hit@1 or MRR falls, a layer report (fan-out, empty concepts, traffic per domain) in `~/.local/share/cortex-life/reports/`, and a desktop notification when anything needs a look. The only change it makes on its own is pruning: at most 10 synapses per night, only once the usage history spans 90 days (the prune rule reads "no joint use in 90 days") and only with a clean index, committed `consolidation: nightly prune`;
@@ -355,6 +369,25 @@ hub (`/agents?settings=<cortex>`). Opened from the disk, or from another machine
 `http://<agent>.cortex.localhost:8790`, MCP at `/mcp/<vault>`, HTTPS only on the LAN listener. `compose.trusted.yaml`
 brings back the host-trusted setup below (`https://cortex.local`, its DNS and CA).
 
+**Resident engine (2.21.0).** The hub imports the engine once and calls it in its own process. Between calls it keeps,
+per vault (at most 8, least recently used dropped): the vault's file list (refreshed every `CORTEX_SCAN_SECONDS`, 5 by
+default, and at once after any call that may write notes), the parsed graph, the BM25 index, the parsed glossary and
+the decayed usage sums. Every piece carries the stamp it was built from (names, mtimes and sizes of the notes; the
+glossary's and questions file's own mtime and size) and is dropped the moment the stamp stops matching, so an edit
+made outside (Obsidian) shows up within `CORTEX_SCAN_SECONDS` and one made through the engine at once; session files,
+`config.json` and the usage log are still read on every call. `state/telemetry.pickle` is saved at most every 30 s by
+a process that keeps the sums in memory; any other process catches up from the log. The MCP token is a separate cache
+keyed by `mcp.token`'s mtime and size, so a rotated token works at once. Measure: `docker compose --profile tools run
+--rm bench` (add `-v <host folder>:/b` and `--dir /b` to time a bind mount). Engine 2.21.0, 1,000 nodes:
+
+| where | recall before | recall now | read before | read now |
+|---|---|---|---|---|
+| tmpfs in the container | 27.9 ms | 23.1 ms | 18.9 ms | 14.7 ms |
+| Docker Desktop bind mount (Windows, slow: ~10 ms per call on the share) | 842 ms | 96 ms | 757 ms | 61 ms |
+
+A new process per call costs 150 to 175 ms on tmpfs and over a second on that bind mount. What is left on the bind mount
+is the writes a recall must make (session, usage log, activity feed) and the stats of the lock and the log.
+
 **Settings of a cortex.** Each card on the hub has *Settings* (this machine only, behind the page's token). Every
 change is a click of its own:
 - **General and Memory:** name, the agent that learns there (`learner`), domain scope, session idle minutes, weight
@@ -371,9 +404,11 @@ change is a click of its own:
 
 - **Ideas:** the word-recurrence threshold and *Find ideas*, with the number of ideas waiting in the inbox (§6, *The ideas
   miner*). Saved as `ideas_min_count`.
+- **REM dreaming:** on or off (off by default), minutes between runs, most minutes per run, and *Dream now*; the dialog shows
+  the last run's result and the model server's address (§6, *REM in the container*). Saved in `_brain/config.json` as
+  `rem_enabled`, `rem_interval_minutes` and `rem_budget_minutes`.
 
-Not yet in Settings, and each a project of its own: the number of layers (L1 to L3 are built into the engine) and REM
-dreaming (it runs in `lifecycle.py` under systemd on the host, not yet in the container).
+Not yet in Settings, and a project of its own: the number of layers (L1 to L3 are built into the engine).
 
 **The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
 
@@ -424,7 +459,7 @@ The machine's name in the LAN host tells several hubs apart and shows whether th
 
 One command, one password prompt, then nothing else on this machine: it writes `.env` from what it finds (your ids and git identity; this machine's name and private address for the LAN listener, unless `--no-lan`), creates the vault folder, starts the container and runs `installers/setup_host.sh` (DNS route and CA trust). Run it again at any time; it keeps `.env` and the CA. From then on a new agent is the hub's form alone: its host (`<agent>.cortex.local` or `<agent>.<machine>.cortex.home`) resolves and has a valid certificate the moment its cortex exists, and the person only pastes the prompt. The CA's name constraint names the hub's domains and private address ranges, not this machine, so a new address or machine name renews only the server certificate and every machine keeps trusting the CA. `install.ps1` and the macOS branch are written but not yet tried on those systems.
 
-The container mounts `~/Vaults` (`%USERPROFILE%\Vaults` on Windows; `CORTEX_VAULTS` moves it) at `/vaults` and keeps its own data beside the vaults in `.cortex-hub/` (`tls/ca.crt`, `access.key`). It publishes 443 (HTTPS), 80 (redirect only) and the DNS on `CORTEX_ADDRESS` and `CORTEX_DNS_ADDRESS` alone, so no port shows in the address bar; the LAN listener is published only when `COMPOSE_FILE` adds `compose.lan.yaml`, on `CORTEX_LAN_ADDRESS` alone. It runs as `CORTEX_UID:CORTEX_GID` with a read-only root, no capabilities and no new privileges. The engine runs with each agent, on its machine: the agents still need Python 3.10+ and git there. The life cycle (nap, REM, night) stays a host service for now.
+The container mounts `~/Vaults` (`%USERPROFILE%\Vaults` on Windows; `CORTEX_VAULTS` moves it) at `/vaults` and keeps its own data beside the vaults in `.cortex-hub/` (`tls/ca.crt`, `access.key`). It publishes 443 (HTTPS), 80 (redirect only) and the DNS on `CORTEX_ADDRESS` and `CORTEX_DNS_ADDRESS` alone, so no port shows in the address bar; the LAN listener is published only when `COMPOSE_FILE` adds `compose.lan.yaml`, on `CORTEX_LAN_ADDRESS` alone. It runs as `CORTEX_UID:CORTEX_GID` with a read-only root, no capabilities and no new privileges. The engine runs with each agent, on its machine: the agents still need Python 3.10+ and git there. REM runs from the container (§6); the rest of the life cycle (nap, night) stays a host service for now.
 
 Trust the CA by hand, where `setup_host.sh` does not reach (download it from the hub's footer, or take `~/Vaults/.cortex-hub/tls/ca.crt`):
 
@@ -518,8 +553,9 @@ Then bump the engine version and set the template's `config.json` `schema` to th
 - `install.ps1` and `install.sh` were only syntax-checked; the manual path (`docker compose up -d hub`) is the tested one.
 - MCP configs for Codex, Gemini and OpenCode are generated but were not tried against those clients; Claude Code is.
 - *Save to remote* was tested only with a stubbed git; try it on a throwaway private repository first.
-- Not built: configurable number of layers, REM dreaming in the container; the resident engine still
-  reads state from disk (keeping it in memory to go under 50 ms was deferred).
+- Not built: configurable number of layers.
+- REM in the container was tested against a stand-in model server, not a real Strata: try *Dream now* on a small throwaway
+  cortex first.
 
 ## 12. Reference
 

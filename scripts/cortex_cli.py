@@ -16,6 +16,8 @@
     precommit <vault>                 the vault's pre-commit check (what its git hook runs)
     ideas <vault> [--min-count N]     the ideas miner: candidate concepts and links as notes in the vault's _inbox for the
                                       curator (no model, nothing enters the graph), committed as you; also in Settings
+    rem <vault> [--minutes N]         REM dreaming now: the questions each note answers, written by the local model
+                                      server (CORTEX_STRATA) and committed as you; also on a schedule from Settings
     memories                          Claude Code's memory folders (~/.claude/projects/*/memory) and their notes
     import <vault> <project>...       those memories into the vault's graph, by rule (no model), committed as you;
                                       new <folder> --memory <project>... does it as the vault is made
@@ -117,6 +119,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("ideas")
     p.add_argument("vault")
     p.add_argument("--min-count", type=int, default=None)
+    p = sub.add_parser("rem")
+    p.add_argument("vault")
+    p.add_argument("--minutes", type=float, default=None)
     sub.add_parser("memories")
     p = sub.add_parser("import")
     p.add_argument("vault")
@@ -205,6 +210,12 @@ def main(argv=None) -> int:
         except (ValueError, RuntimeError) as e:
             sys.exit(str(e))
         return 0
+    if a.cmd == "rem":
+        import hub_rem
+        v = vault(a.vault)
+        res = hub_rem.dream(v, a.minutes if a.minutes is not None else float(hub_rem.settings(v)["rem_budget_minutes"]))
+        print(f"rem {v.name}: {res['result']}")
+        return 0 if res.get("done") or res["result"].startswith("dreamed") else 1
     return 2
 
 
