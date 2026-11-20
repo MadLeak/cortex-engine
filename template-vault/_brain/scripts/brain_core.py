@@ -10,6 +10,7 @@ Exit:   0 ok · 1 usage or validation error · 2 budget or limit exhausted.
 from __future__ import annotations
 
 import argparse
+import collections
 import datetime as dt
 import functools
 import json
@@ -24,7 +25,7 @@ import unicodedata
 # a recall needs none of them, and each import costs a call several milliseconds on Windows
 from pathlib import Path
 
-VERSION = "2.20.2"
+VERSION = "2.23.0"
 
 # --------------------------------------------------------------------------- rules
 SYSTEM_FOLDERS = {"_brain", "_inbox", "_sources", "_log", "_archive", "_templates", "_attachments"}
@@ -223,13 +224,47 @@ def decay(instant: dt.datetime, half_life: float, reference: dt.datetime | None 
     return 0.5 ** (days / half_life)
 
 
+# What a long-lived process (the hub's resident engine) keeps between calls, per vault root: the loaded graph, the
+# BM25 index, the glossary and the usage sums. Each entry carries the stamp it was built from and is used only while
+# that stamp still matches the files (names, mtimes and sizes for the graph and the index; the file's own mtime and
+# size for the glossary), so a changed vault is never served from memory. A process that makes one call (brain.py)
+# just fills it and exits.
+WARM: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
+WARM_VAULTS = 8        # vaults kept; the least recently used is dropped
+ACC_PERSIST = 30.0     # seconds between writes of state/telemetry.pickle by a process that keeps the sums in memory
+
+
+def warm(root) -> dict:
+    key = str(root)
+    mem = WARM.get(key)
+    if mem is None:
+        mem = WARM[key] = {}
+        while len(WARM) > WARM_VAULTS:
+            WARM.popitem(last=False)
+    else:
+        WARM.move_to_end(key)
+    return mem
+
+
+def stamp_of(path: Path) -> tuple | None:
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 def write_atomic(path: Path, text: str) -> None:
     """A name unique to this write, not one shared by every writer of the path: the lock-free state files (the
     automatic session pointer, telemetry, the cache) are written by any read call, so two agents reading the same
     vault at the same moment would otherwise truncate each other's tmp and the loser's os.replace raised."""
-    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.urandom(2).hex()}.tmp")
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+    try:
+        f = open(tmp, "w", encoding="utf-8", newline="\n")
+    except FileNotFoundError:   # the folder is made only when missing: a mkdir per write cost a call on a shared folder
+        path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(tmp, "w", encoding="utf-8", newline="\n")
+    with f:
         f.write(text)
     os.replace(tmp, path)
 
@@ -270,11 +305,12 @@ class Lock:
         self.path = path
 
     def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         for _ in range(100):
             try:
                 os.close(os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
                 return self
+            except FileNotFoundError:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
             except FileExistsError:
                 try:
                     if time.time() - self.path.stat().st_mtime > 30:
@@ -513,9 +549,13 @@ def load_state(path: Path) -> dict:
 
 def save_state(path: Path, items: dict) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.parent / f".{path.name}.{os.urandom(2).hex()}.tmp"
-        with open(tmp, "wb") as f:
+        try:
+            f = open(tmp, "wb")
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            f = open(tmp, "wb")
+        with f:
             pickle.dump({"key": state_key(), "items": items}, f, pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, path)
     except OSError:
@@ -547,8 +587,10 @@ class Vault:
             raise BrainError(f"vault does not exist: {self.root}")
         self.cfg_path = self.root / "_brain" / "config.json"
         self.cfg = {"vault": self.root.name, "siblings": {}, "warn_dependency_on": [], "half_life_days": 30}
-        if self.cfg_path.exists():
+        try:
             self.cfg.update(json.loads(self.cfg_path.read_text(encoding="utf-8")))
+        except FileNotFoundError:
+            pass
         self.name = self.cfg["vault"]
         self.state_dir = self.root / "_brain" / "state"
         self.gen_dir = self.root / "_brain" / "generated"
@@ -557,7 +599,15 @@ class Vault:
         self.titles: dict[str, list[Path]] = {}
         self.cold: dict[str, list[Path]] = {c: [] for c in COLD_FOLDERS}
         self.loose: list[Path] = []
+        self._brain_dir: bool | None = None
         self._load()
+
+    @property
+    def has_brain(self) -> bool:
+        """Whether the vault has a _brain folder (state is saved only then): asked once per call, not per save."""
+        if self._brain_dir is None:
+            self._brain_dir = (self.root / "_brain").is_dir()
+        return self._brain_dir
 
     # -- loading and indexes
     def _scan(self) -> list[tuple[str, int, int]]:
@@ -624,11 +674,17 @@ class Vault:
         self.struct_key = (len(scan), max((mt for _, mt, _ in scan), default=0))
         # the loaded vault persists between calls in state/snapshot.pickle: when no file changed (same names, mtimes
         # and sizes) one unpickle restores it whole; otherwise only the changed files are read and parsed again
-        snap = load_state(self.state_dir / "snapshot.pickle")
+        mem, key = warm(self.root), state_key()
+        held = mem.get("snapshot")
+        if held is not None and held[0] == key and held[1] == self._meta:
+            snap = {"meta": self._meta, "full": held[2]}   # the same files as the last call: no read from disk
+        else:
+            snap = load_state(self.state_dir / "snapshot.pickle")
         if snap.get("meta") == self._meta:
             try:
                 for name, value in zip(self.LOADED, pickle.loads(snap["full"])):
                     setattr(self, name, value)
+                mem["snapshot"] = (key, self._meta, snap["full"])
                 return
             except Exception:  # noqa: BLE001 — a damaged snapshot is rebuilt below
                 self.net, self.archive, self.titles, self.loose = {}, {}, {}, []
@@ -663,7 +719,7 @@ class Vault:
         current = set(self._meta)
         if self._text_cache is not None and (self._cache_dirty or set(self._cache) - current):
             self._text_cache = {k: x for k, x in self._cache.items() if k in current}
-            if (self.root / "_brain").is_dir():
+            if self.has_brain:
                 try:
                     write_atomic(self.state_dir / "cache.json", json.dumps(self._cache, ensure_ascii=False))
                 except OSError:
@@ -681,8 +737,9 @@ class Vault:
                     self.mentions.setdefault(norm(t), set()).add(k)
         for group in self.children.values():
             group.sort(key=lambda x: x.k)
-        if (self.root / "_brain").is_dir():
-            full = pickle.dumps(tuple(getattr(self, name) for name in self.LOADED), pickle.HIGHEST_PROTOCOL)
+        full = pickle.dumps(tuple(getattr(self, name) for name in self.LOADED), pickle.HIGHEST_PROTOCOL)
+        mem["snapshot"] = (key, self._meta, full)
+        if self.has_brain:
             save_state(self.state_dir / "snapshot.pickle", {"meta": self._meta, "full": full})
             save_state(self.state_dir / "nodes.pickle", fresh)  # per file, read only when something changed
 
@@ -764,8 +821,12 @@ class Telemetry:
             return
         with self.v.lock():
             if lines:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                with open(self.path, "a", encoding="utf-8", newline="\n") as f:
+                try:
+                    f = open(self.path, "a", encoding="utf-8", newline="\n")
+                except FileNotFoundError:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    f = open(self.path, "a", encoding="utf-8", newline="\n")
+                with f:
                     f.write("\n".join(lines) + "\n")
             log_activity(self.v, event, keys, session, query)
 
@@ -791,7 +852,9 @@ class Telemetry:
         if hasattr(self, "_acc"):
             return self._acc
         hl = float(self.v.cfg.get("half_life_days", 30)) * 86400
-        acc = load_state(self.v.state_dir / "telemetry.pickle")
+        mem = warm(self.v.root)
+        held = mem.get("acc")
+        acc = held["acc"] if held and held["key"] == state_key() else load_state(self.v.state_dir / "telemetry.pickle")
         try:
             size = self.path.stat().st_size
         except OSError:
@@ -824,8 +887,13 @@ class Telemetry:
                     for j in range(i + 1, len(ks)):
                         acc["co"][(ks[i], ks[j])] = acc["co"].get((ks[i], ks[j]), 0.0) + f2
             acc["off"] += cut
-            if cut and (self.v.root / "_brain").is_dir():
-                save_state(self.v.state_dir / "telemetry.pickle", acc)
+            persisted = held["saved"] if held and held["acc"] is acc else 0.0
+            if cut and self.v.has_brain and time.time() - persisted > ACC_PERSIST:
+                save_state(self.v.state_dir / "telemetry.pickle", acc)   # other processes catch up from "off"
+                persisted = time.time()
+            mem["acc"] = {"key": state_key(), "acc": acc, "saved": persisted}
+        elif not held or held["acc"] is not acc:
+            mem["acc"] = {"key": state_key(), "acc": acc, "saved": time.time()}
         self._acc = acc
         return acc
 
@@ -1021,9 +1089,12 @@ class Sessions:
 
     def load(self, sid: str) -> dict:
         path = self.dir / f"{sid}.json"
-        if not re.fullmatch(r"s[\w-]+", sid or "") or not path.exists():
-            raise BrainError(f'unknown session "{sid}": create one with `brain.py session new`')
-        return json.loads(path.read_text(encoding="utf-8"))
+        try:
+            if not re.fullmatch(r"s[\w-]+", sid or ""):
+                raise FileNotFoundError(sid)
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raise BrainError(f'unknown session "{sid}": create one with `brain.py session new`') from None
 
     def save(self, sid: str, data: dict) -> None:
         write_atomic(self.dir / f"{sid}.json", json.dumps(data, ensure_ascii=False))
@@ -1418,8 +1489,7 @@ def questions(v: Vault) -> dict:
 
 def questions_stamp(v: Vault) -> tuple:
     path = v.root / "_brain" / QUESTIONS_FILE
-    st = path.stat() if path.exists() else None
-    return (st.st_mtime_ns, st.st_size) if st else (0, 0)
+    return stamp_of(path) or (0, 0)
 
 
 def content_hash(n: Node) -> str:
@@ -1435,9 +1505,15 @@ def bm25_index(v: Vault) -> dict:
     weight or question set rebuilds them."""
     if getattr(v, "_bm25", None) is None:
         tag = (VERSION, tuple(BM25_FIELDS.items()), questions_stamp(v))
+        mem = warm(v.root)
+        held = mem.get("bm25")
+        if held is not None and held["meta"] == v._meta and held["n"] == len(v.net) and held["tag"] == tag:
+            v._bm25 = held["ix"]   # read-only: shared by every call while no file changed
+            return v._bm25
         whole = load_state(v.state_dir / "bm25-index.pickle")
         if whole.get("meta") == v._meta and whole.get("n") == len(v.net) and whole.get("tag") == tag:
             v._bm25 = whole["ix"]
+            mem["bm25"] = {"meta": v._meta, "n": len(v.net), "tag": tag, "ix": v._bm25}
             return v._bm25
         saved, kept, docs = load_state(v.state_dir / "bm25.pickle"), {"__tag__": tag}, {}
         if saved.get("__tag__") != tag:
@@ -1466,7 +1542,7 @@ def bm25_index(v: Vault) -> dict:
                     tf[t] = tf.get(t, 0.0) + boost
             docs[k] = kept[rel] = (meta[0] if meta else 0, meta[1] if meta else 0, tf, length)
         if kept.keys() != saved.keys() or any(kept[r] is not saved.get(r) for r in kept if r != "__tag__"):
-            if (v.root / "_brain").is_dir():
+            if v.has_brain:
                 save_state(v.state_dir / "bm25.pickle", kept)
         docs = {k: (d[2], d[3]) for k, d in docs.items()}
         df: dict[str, int] = {}
@@ -1480,7 +1556,8 @@ def bm25_index(v: Vault) -> dict:
                 for g in trigrams(t):
                     tri.setdefault(g, []).append(t)
         v._bm25 = {"docs": docs, "df": df, "avg": avg or 1.0, "n": len(docs), "tri": tri}
-        if (v.root / "_brain").is_dir():
+        mem["bm25"] = {"meta": v._meta, "n": len(v.net), "tag": tag, "ix": v._bm25}
+        if v.has_brain:
             save_state(v.state_dir / "bm25-index.pickle", {"meta": v._meta, "n": len(v.net), "ix": v._bm25, "tag": tag})
     return v._bm25
 
@@ -1506,6 +1583,12 @@ def glossary(v) -> dict:
     """The Spanish to English vocabulary: the engine's lexicon_es.tsv, then the vault's _brain/glossary.json
     ({"stop": "words", "es": {"spanish words": "english words"}}), which wins. Single words also match by stem."""
     if not hasattr(v, "_glossary"):
+        path = v.root / "_brain" / "glossary.json"
+        mem, stamp = warm(v.root), stamp_of(path)
+        held = mem.get("glossary")
+        if held is not None and held[0] == stamp:   # the vault's glossary is unchanged: the parsed lexicon is reused
+            v._glossary = held[1]
+            return v._glossary
         es: dict[tuple, str] = {}
         lex = Path(__file__).resolve().parent / "lexicon_es.tsv"
         if lex.exists():
@@ -1513,8 +1596,7 @@ def glossary(v) -> dict:
                 if line and not line.startswith("#") and "	" in line:
                     k, val = line.split("	", 1)
                     es[tuple(norm(k).split())] = val.strip()
-        path = v.root / "_brain" / "glossary.json"
-        g = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        g = json.loads(path.read_text(encoding="utf-8")) if stamp else {}
         es.update({tuple(norm(k).split()): val for k, val in g.get("es", {}).items()})
         stems = {}
         for k, val in es.items():
@@ -1522,6 +1604,7 @@ def glossary(v) -> dict:
                 stems.setdefault(es_stem(k[0]), val)
         v._glossary = {"stop": set(norm(g.get("stop", "")).split()) | SPANISH_STOP, "es": es, "stems": stems,
                        "longest": max((len(k) for k in es), default=1)}
+        mem["glossary"] = (stamp, v._glossary)
     return v._glossary
 
 
@@ -2609,6 +2692,175 @@ def cmd_questions(v: Vault, a) -> int:
         print(f"✖ {p}")
     print(f"questions: {added} nodes imported · {len(lines)} stored in _brain/{QUESTIONS_FILE}")
     return 1 if problems and not added else 0
+
+
+# --------------------------------------------------------------------------- ideas miner
+IDEAS_LEDGER = Path("_log") / "ideas.jsonl"   # one line per idea ever proposed: a dismissed one is never proposed again
+IDEAS_CO_MIN = 1.0       # decayed co-activation from which an unlinked pair is worth a look (consolidate takes HEBB_THRESHOLD)
+IDEAS_SHARED = 3         # rare words two unlinked nodes must share to be proposed as a link
+IDEAS_RARE_MAX = 6       # a word in more nodes than this is not rare
+
+
+def idea_surface(n: Node) -> str:
+    return " ".join([n.title, " ".join(n.aliases), n.summary])
+
+
+def mine_ideas(v: Vault, min_count: int = 4) -> list[dict]:
+    """Candidate L2 concepts and links, by rule (no model, no randomness: the same vault gives the same list).
+    Concept: a word that recurs in `min_count` or more L2/L3 nodes under at least two different parents, in no concept
+    or domain title or alias, with the nodes that carry it. Link: two nodes with no link between them that were credited
+    together (co-activation between IDEAS_CO_MIN and the point where `consolidate` already proposes it), or that share
+    IDEAS_SHARED rare words. Titles and summaries only: a body mentions everything."""
+    nodes = [n for n in v.net.values() if n.layer in (1, 2, 3) and n.status != "obsolete"]
+    covered: set[str] = set()
+    stems: dict[str, set[str]] = {}               # node key -> its stems
+    surface: dict[str, dict[str, int]] = {}       # stem -> written forms
+    for n in sorted(nodes, key=lambda x: x.k):
+        if n.layer in (1, 2):
+            covered |= set(term_list(n.title + " " + " ".join(n.aliases)))
+        words = [w for w in re.findall(r"[a-z0-9]+", norm(idea_surface(n))) if w not in STOPWORDS and len(w) > 1]
+        mine = set()
+        for w in words:
+            t = word_stem(w)
+            mine.add(t)
+            surface.setdefault(t, {})
+            surface[t][w] = surface[t].get(w, 0) + 1
+        stems[n.key] = mine
+    df: dict[str, list[Node]] = {}
+    for n in sorted(nodes, key=lambda x: x.k):
+        if n.layer in (2, 3):
+            for t in stems[n.key]:
+                df.setdefault(t, []).append(n)
+    out: list[dict] = []
+    seen_sets: set[tuple] = set()
+    ceiling = max(min_count, len(nodes) // 4)
+    for t, members in sorted(df.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        if len(t) < 4 or t in covered or not min_count <= len(members) <= ceiling:
+            continue
+        if len({m.up and norm(m.up) for m in members}) < 2:
+            continue                                # all under one parent already: that parent is the concept
+        ids = tuple(sorted(m.key for m in members))
+        if ids in seen_sets:
+            continue                                # another form of the same word: the same nodes
+        seen_sets.add(ids)
+        word = max(surface[t].items(), key=lambda kv: (kv[1], kv[0]))[0]
+        roots: dict[str, int] = {}
+        for m in members:
+            top = v.chain(m)[-1] if v.chain(m) else None
+            if top is not None:
+                roots[top.title] = roots.get(top.title, 0) + 1
+        out.append({"kind": "concept", "key": f"concept:{t}", "word": word, "count": len(members),
+                    "members": [m.title for m in sorted(members, key=lambda x: x.k)],
+                    "up": max(roots.items(), key=lambda kv: (kv[1], kv[0]))[0] if roots else ""})
+    tel = Telemetry(v)
+    keys = v.by_key()
+    connected = set()
+    for n in v.net.values():
+        if n.up and norm(n.up) in v.net:
+            connected.add(pair(n.key, v.net[norm(n.up)].key))
+        for sy in n.synapses:
+            if norm(sy.target) in v.net:
+                connected.add(pair(n.key, v.net[norm(sy.target)].key))
+        for t in n.links:
+            if norm(t) in v.net:
+                connected.add(pair(n.key, v.net[norm(t)].key))
+    links: dict[tuple, dict] = {}
+    for (a, b), val in tel.coactivation().items():
+        if IDEAS_CO_MIN <= val < HEBB_THRESHOLD and (a, b) not in connected and a in keys and b in keys:
+            links[(a, b)] = {"co": round(val, 1), "shared": []}
+    freq: dict[str, list[str]] = {}
+    for k, mine in stems.items():
+        for t in mine:
+            freq.setdefault(t, []).append(k)
+    shared: dict[tuple, list[str]] = {}
+    for t, ks in freq.items():
+        if 2 <= len(ks) <= IDEAS_RARE_MAX and len(t) >= 4:
+            for i in range(len(ks)):
+                for j in range(i + 1, len(ks)):
+                    shared.setdefault(pair(ks[i], ks[j]), []).append(t)
+    for pr, ts in shared.items():
+        if len(ts) >= IDEAS_SHARED and pr not in connected:
+            links.setdefault(pr, {"co": 0.0, "shared": []})["shared"] = sorted(ts)
+    for (a, b), info in sorted(links.items(), key=lambda kv: (-kv[1]["co"], -len(kv[1]["shared"]), kv[0])):
+        out.append({"kind": "link", "key": f"link:{a}:{b}", "a": keys[a].title, "b": keys[b].title,
+                    "co": info["co"], "shared": [max(surface.get(t, {t: 1}).items(), key=lambda kv: (kv[1], kv[0]))[0]
+                                                 for t in info["shared"]]})
+    return out
+
+
+def idea_note(v: Vault, it: dict) -> tuple[str, str]:
+    """(file name, text) of one idea for the curator."""
+    if it["kind"] == "concept":
+        title = f'Idea: a concept for "{it["word"]}"'
+        why = [f'The word "{it["word"]}" recurs in {it["count"]} nodes under different parents, and no domain or concept is named for it.',
+               "", "## Nodes that carry it"] + [f"- [[{t}]]" for t in it["members"][:12]]
+        if it["count"] > 12:
+            why.append(f"- … and {it['count'] - 12} more")
+        why += ["", "## What the curator can do",
+                f'If the word is a real topic, create the L2 concept under {("[[" + it["up"] + "]]") if it["up"] else "the right domain"} '
+                "(`new --layer 2`) and `move --up` the nodes that belong to it; if not, delete this note."]
+    else:
+        title = f'Idea: link {it["a"]} and {it["b"]}'
+        why = [f'[[{it["a"]}]] and [[{it["b"]}]] have no link between them.', ""]
+        if it["co"]:
+            why.append(f'- credited together in recent sessions (decayed co-activation {it["co"]})')
+        if it["shared"]:
+            why.append(f'- they share rare words: {", ".join(it["shared"])}')
+        why += ["", "## What the curator can do",
+                "If they are really related, `link` them with a type and a written reason; if not, delete this note."]
+    title = re.sub(r'[:?/\\#^\[\]|*"<>]', "-", title)[:120]
+    text = "\n".join(["---", f"captured: {today()}", "source: ideas miner (deterministic, no model)", "learned_by: ideas-miner",
+                      f'idea: {json.dumps(it["key"])}', f'kind: {it["kind"]}', "---", "", f"# {title}", ""] + why + [""])
+    return f"{today()} {title}.md", text
+
+
+def proposed_ideas(v: Vault) -> set[str]:
+    """Idea keys already written to _inbox or the ledger."""
+    done: set[str] = set()
+    for rel in [IDEAS_LEDGER]:
+        path = v.root / rel
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    done.add(json.loads(line)["key"])
+                except (ValueError, KeyError):
+                    continue
+    inbox = v.root / "_inbox"
+    for f in inbox.glob("*.md") if inbox.is_dir() else []:
+        m = re.search(r'^idea: "([^"\n]+)"', f.read_text(encoding="utf-8", errors="replace"), re.M)
+        if m:
+            done.add(m.group(1))
+    return done
+
+
+def cmd_ideas(v: Vault, a) -> int:
+    """The ideas miner: candidate concepts and links, written to _inbox as notes for the curator and never into the graph.
+    Each idea is proposed once (the ledger in _log/ideas.jsonl remembers it, so deleting a note dismisses it)."""
+    found = mine_ideas(v, a.min_count)
+    done = proposed_ideas(v)
+    new = [it for it in found if it["key"] not in done]
+    pick = [it for it in new if it["kind"] == "concept"][: a.limit] + [it for it in new if it["kind"] == "link"][: a.limit]
+    print(f"ideas: {len(found)} candidates ({sum(1 for i in found if i['kind'] == 'concept')} concepts, "
+          f"{sum(1 for i in found if i['kind'] == 'link')} links) · {len(found) - len(new)} already proposed · "
+          f"{len(pick)} {'would be written' if a.dry_run else 'written'} to _inbox")
+    if not pick:
+        return 0
+    with v.lock():
+        for it in pick:
+            name, text = idea_note(v, it)
+            print(f"  {it['kind']}: {name[:-3]}")
+            if a.dry_run:
+                continue
+            dest = v.root / "_inbox" / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                continue
+            dest.write_text(text, encoding="utf-8")
+            ledger = v.root / IDEAS_LEDGER
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            with open(ledger, "a", encoding="utf-8", newline="\n") as f:
+                f.write(json.dumps({"key": it["key"], "date": today(), "kind": it["kind"]}, ensure_ascii=False) + "\n")
+    return 0
 
 
 def cmd_lint(v: Vault, a) -> int:
@@ -3798,6 +4050,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file", nargs="?", help="import: a JSON Lines file of {id, en, es}")
     p.add_argument("--limit", type=int, default=100, help="todo: nodes per batch")
     p.set_defaults(func=cmd_questions)
+
+    p = sub.add_parser("ideas", help="the ideas miner: candidate concepts and links, written to _inbox for the curator")
+    p.add_argument("--min-count", type=int, default=4, help="nodes a word must recur in to propose a concept (default 4)")
+    p.add_argument("--limit", type=int, default=5, help="most notes written per kind in one run (default 5)")
+    p.add_argument("--dry-run", action="store_true", help="list what would be written, write nothing")
+    p.set_defaults(func=cmd_ideas)
 
     p = sub.add_parser("lint", help="validates the vault (blocks commits with errors)")
     p.add_argument("--fix", action="store_true", help="fills in id, dates and empty fields")

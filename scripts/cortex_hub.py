@@ -51,6 +51,7 @@ except ImportError:   # a hub copied out of the repository: views only, no conne
     wire_agent = None
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cortex_mcp  # noqa: E402  (the MCP service rides the hub's own port: /mcp/<vault>)
+import hub_rem  # noqa: E402  (REM dreaming inside the container)
 import hub_settings  # noqa: E402  (each cortex's Settings dialog)
 
 ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
@@ -468,6 +469,13 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
     sessions: dict[str, float] = {}
     creating = threading.Lock()
     server_version = "CortexHub/1"
+    _rem: tuple | None = None       # (root, REM scheduler)
+
+    @classmethod
+    def rem_scheduler(cls) -> hub_rem.Scheduler:
+        if cls._rem is None or cls._rem[0] != cls.root:
+            Hub._rem = (cls.root, hub_rem.Scheduler(cls.root, lambda: vaults(Hub.root)))
+        return Hub._rem[1]
 
     def log_message(self, fmt, *args):   # quiet: the panels poll every few seconds
         pass
@@ -674,6 +682,12 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                     learner = hub_settings.read_config(v).get("learner") or "agent"
                     out = {"message": "new MCP token: the old one no longer works",
                            "token": token, "url": f"{self.mcp_base()}/mcp/{quote(v.name)}?by={quote(learner)}"}
+                elif action == "ideas":
+                    out = {"message": hub_settings.find_ideas(v)}
+                elif action == "rem-run":
+                    if not self.rem_scheduler().start_now(v):
+                        raise ValueError("this cortex is already dreaming")
+                    out = {"message": "dreaming started: the result shows here when it ends"}
                 elif action == "delete":
                     out = {"message": hub_settings.delete(v, str(body.get("confirm") or ""))}
                     if self.data:
@@ -737,6 +751,7 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                 return self.send(404, b"no such cortex", TEXT)
             out = hub_settings.read(v, load_scopes(self.data).get(v.name, "local"))
             out["lan"] = bool(self.lan_domain)
+            out["rem"] = self.rem_scheduler().status(v)
             return self.send(200, json.dumps(out, ensure_ascii=False).encode(), "application/json")
         if path == "/api/memories":   # the owner's Claude Code memory folders, for Connect an agent
             if self.scope != "localhost":
@@ -1034,7 +1049,18 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
       <label>Sessions to confirm a learning <input name="confirm_sessions" type="number" min="1" max="20"></label>
       <label>Days those sessions must span <input name="confirm_min_days" type="number" min="0" max="60"></label>
       <label>Provisional learnings allowed <input name="max_provisional" type="number" min="1" max="500"></label>
-      <div class="row"><button type="submit" class="primary">Save settings</button></div>
+      <h3>Ideas</h3>
+      <div class="sub">A plain pass, no model: it proposes concepts and links from words that recur and nodes used together, as notes in the inbox for the curator. Nothing enters the graph.</div>
+      <label>Nodes a word must recur in <input name="ideas_min_count" type="number" min="2" max="50"></label>
+      <div class="sub" id="s-ideas"></div>
+      <div class="row"><button type="button" id="s-find-ideas">Find ideas</button></div>
+      <h3>REM dreaming</h3>
+      <div class="sub">Writes the questions each note answers, with the local model server, on a schedule. What it finds is committed as you.</div>
+      <label>Dreaming <select name="rem_enabled"><option value="false">Off</option><option value="true">On</option></select></label>
+      <label>Minutes between runs <input name="rem_interval_minutes" type="number" min="15" max="10080"></label>
+      <label>Most minutes one run may take <input name="rem_budget_minutes" type="number" min="1" max="240"></label>
+      <div class="sub" id="s-rem"></div>
+      <div class="row"><button type="submit" class="primary">Save settings</button><button type="button" id="s-dream">Dream now</button></div>
     </form>
     <section class="form">
       <h3>MCP token</h3>
@@ -1340,6 +1366,12 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
         (sdata.last_commit ? `\nlast: ${sdata.last_commit}` : '')
       : `folder ${sdata.folder} · not a git repository`;
     $('#s-git').textContent = g; $('#s-git').style.whiteSpace = 'pre-line';
+    $('#s-ideas').textContent = `${sdata.ideas_waiting} ${sdata.ideas_waiting === 1 ? 'idea' : 'ideas'} waiting in the inbox`;
+    const rem = sdata.rem || {};
+    $('#s-rem').textContent = (rem.running ? 'Dreaming now…' : rem.last ? `Last run ${rem.last.replace('T', ' ').slice(0, 16)}: ${rem.result}` : 'Never run.') +
+      (rem.model ? `
+Model server: ${rem.model}` : '');
+    $('#s-rem').style.whiteSpace = 'pre-line'; $('#s-dream').disabled = !!rem.running;
     rform.url.value = sdata.remote || ''; rform.token.value = '';
     rform.token.placeholder = sdata.push_token ? 'a token is saved (hidden): paste a new one to replace it' : 'kept in this vault, out of git: paste or let your password manager fill it';
     $('#s-push').disabled = !(sdata.remote && sdata.remote.startsWith('https://') && sdata.push_token);
@@ -1379,6 +1411,8 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     for (const k of Object.keys(sdata.config)) if (sform[k] && String(sform[k].value) !== String(sdata.config[k])) config[k] = sform[k].value;
     run(sform.querySelector('button[type=submit]'), 'settings', { config, scope: sform.scope.value });
   });
+  $('#s-find-ideas').addEventListener('click', ev => run(ev.target, 'ideas', {}));
+  $('#s-dream').addEventListener('click', ev => run(ev.target, 'rem-run', {}));
   $('#s-rotate').addEventListener('click', ev => {
     if (!confirm('Make a new MCP token? The agent stops reaching this cortex until its MCP client gets the new one.')) return;
     run(ev.target, 'rotate-token', {}, out => { const t = $('#s-token'); t.hidden = false;
@@ -1665,6 +1699,7 @@ def main() -> None:
     httpd = listen(main_hub, a.host, a.port, main_ctx, a.redirect_port)
     print(f"cortex hub, {scope} scope, {scheme} for {', '.join(dns + ips)} · listening on {a.host}:{a.port} · "
           f"{len(vaults(Hub.root))} vaults under {Hub.root}", flush=True)
+    Hub.rem_scheduler().start()   # REM dreaming for the cortexes that turned it on (Settings)
     if a.mcp:
         Hub.mcp_hub, Hub.mcp_require_token = cortex_mcp.Hub(Hub.root, 60.0, commit=True), True
         cortex_mcp.RESIDENT = cortex_mcp.Resident(ENGINE / "template-vault" / "_brain" / "scripts",

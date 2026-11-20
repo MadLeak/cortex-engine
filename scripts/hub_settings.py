@@ -19,6 +19,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 PUSH_TOKEN = ("_brain", "state", "remote.token")
@@ -31,9 +32,14 @@ CONFIG = {
     "confirm_sessions": ("int", 1, 20, "sessions in which a provisional learning must help before it becomes a seed"),
     "confirm_min_days": ("int", 0, 60, "days those sessions must span at least"),
     "max_provisional": ("int", 1, 500, "provisional learnings allowed to wait; past it, learnings go to _inbox"),
+    "ideas_min_count": ("int", 2, 50, "nodes a word must recur in before the ideas miner proposes a concept for it"),
+    "rem_enabled": ("bool", 0, 1, "dream the questions each note answers on a schedule (needs the local model server)"),
+    "rem_interval_minutes": ("int", 15, 10080, "minutes between two dreaming runs"),
+    "rem_budget_minutes": ("int", 1, 240, "most minutes one dreaming run may take"),
 }
 DEFAULTS = {"auto_idle_minutes": 30, "half_life_days": 30, "confirm_sessions": 3, "confirm_min_days": 2,
-            "max_provisional": 25}
+            "max_provisional": 25, "ideas_min_count": 4, "rem_enabled": False, "rem_interval_minutes": 1440,
+            "rem_budget_minutes": 30}
 REMOTE = re.compile(r"^(https://[A-Za-z0-9.-]+(:\d+)?/[\w.~/-]+?(\.git)?|git@[A-Za-z0-9.-]+:[\w.~/-]+?(\.git)?)$")
 
 
@@ -69,7 +75,7 @@ def read(v: Path, scope: str) -> dict:
     in_git = git(v, "rev-parse", "--is-inside-work-tree").stdout.strip() == "true"
     remote = git(v, "remote", "get-url", "origin").stdout.strip() if in_git else ""
     out = {"folder": v.name, "config": config, "help": {k: d[3] for k, d in CONFIG.items()}, "scope": scope,
-           "schema": cfg.get("schema", 0), "git": in_git, "remote": remote,
+           "schema": cfg.get("schema", 0), "ideas_waiting": ideas_waiting(v), "git": in_git, "remote": remote,
            "push_token": push_token_path(v).is_file() and bool(push_token_path(v).read_text(encoding="utf-8").strip())}
     if in_git:
         out["branch"] = git(v, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
@@ -90,7 +96,11 @@ def save(v: Path, changes: dict) -> str:
         if k not in CONFIG:
             raise ValueError(f"unknown setting {k}")
         kind, low, high, _ = CONFIG[k]
-        if kind == "int":
+        if kind == "bool":
+            if val not in (True, False, "true", "false", "on", "off"):
+                raise ValueError(f"{k}: on or off")
+            val = val in (True, "true", "on")
+        elif kind == "int":
             try:
                 val = int(val)
             except (TypeError, ValueError):
@@ -122,6 +132,55 @@ def save(v: Path, changes: dict) -> str:
     git(v, "add", "--", "_brain/config.json")
     r = git(v, "commit", "-q", "-m", f"config: {what}", env=env, timeout=300)
     return f"saved {what}" + ("" if r.returncode == 0 else f" (not committed: {(r.stderr or r.stdout).strip()[-200:]})")
+
+
+def commit_paths(v: Path, paths: list[str], message: str) -> str:
+    """Commits these paths as the owner, and only as the owner (CORTEX_GIT_NAME / CORTEX_GIT_EMAIL), and only when
+    nothing else is staged: what the hub writes on its own initiative never carries another name."""
+    env = owner_env()
+    if env is None:
+        return "not committed: set CORTEX_GIT_NAME and CORTEX_GIT_EMAIL"
+    if git(v, "rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
+        return "not committed: not a git repository"
+    if git(v, "diff", "--cached", "--name-only").stdout.strip():
+        return "not committed: something else is staged"
+    here = [p for p in paths if (v / p).exists()]
+    if not here:
+        return "nothing to commit"
+    git(v, "add", "--", *here)
+    r = git(v, "commit", "-q", "-m", message, env=env, timeout=300)
+    return "committed as the owner" if r.returncode == 0 else f"not committed: {(r.stderr or r.stdout).strip()[-200:]}"
+
+
+def ideas_waiting(v: Path) -> int:
+    """Ideas from the miner still waiting in _inbox for the curator."""
+    n = 0
+    inbox = v / "_inbox"
+    for f in inbox.glob("*.md") if inbox.is_dir() else []:
+        try:
+            if '\nidea: "' in f.read_text(encoding="utf-8", errors="replace")[:600]:
+                n += 1
+        except OSError:
+            continue
+    return n
+
+
+def find_ideas(v: Path) -> str:
+    """The ideas miner (`brain.py ideas`): notes in _inbox for the curator, never in the graph; committed as the owner.
+    Deterministic: no model. Refuses without the owner's identity, like every commit the hub makes for you."""
+    if owner_env() is None:
+        raise ValueError("set CORTEX_GIT_NAME and CORTEX_GIT_EMAIL: what the miner writes is committed as you")
+    cfg = read_config(v)
+    r = subprocess.run([sys.executable, str(v / "_brain/scripts/brain.py"), "--vault", str(v), "ideas", "--min-count",
+                        str(cfg.get("ideas_min_count", DEFAULTS["ideas_min_count"]))], cwd=str(v.parent),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    text = (r.stdout + r.stderr).strip()
+    if r.returncode:
+        raise RuntimeError(f"the ideas miner failed (needs engine 2.23.0 or newer):\n{text[-600:]}")
+    first = text.splitlines()[0] if text else "ideas: nothing"
+    if " 0 written" in first:
+        return first
+    return f"{first}; {commit_paths(v, ['_inbox', '_log/ideas.jsonl'], 'ideas: candidates for the curator')}"
 
 
 def set_remote(v: Path, url: str) -> str:
