@@ -42,7 +42,7 @@ import brain_core as bc
 v = bc.Vault(sys.argv[1]); w = bc.Telemetry(v).weights(); qs = bc.questions(v)
 out = []
 for n in v.net.values():
-    if n.layer not in (1, 2, 3) or n.status == "obsolete":
+    if n.layer not in getattr(bc, "LAYER_ROLE", (1, 2, 3)) or n.status == "obsolete":
         continue
     if n.key in qs and qs[n.key].get("hash") == bc.content_hash(n):
         continue

@@ -1,6 +1,11 @@
-# A configurable number of layers: why it is not built (2026-11, engine 2.20.2)
+# A configurable number of layers: the plan and its progress (2026-11)
 
-Status: **not built, on purpose.** The runbook asked for it only if it could be done safely, with a numbered migration
+Status (2026-11-20): **wanted; being built in four steps.** The owner decided it is wanted.
+**Step 1 is done (engine 2.24.0)**: roles replace the literal numbers, with golden proof. Steps 2 and 3 follow, one PR each.
+The rest of this note is the original analysis (written at 2.20.2, when it was not built), kept because it still says why
+the steps are ordered as they are.
+
+Original status: **not built, on purpose.** The runbook asked for it only if it could be done safely, with a numbered migration
 (RUNBOOK section 10) and with lint and recall unchanged for the default of 3. It cannot be shown safe in one change; this
 note says what blocks it and how it could be done in steps, for the owner to decide whether it is worth doing at all.
 
@@ -42,11 +47,11 @@ It is not one setting. It is a disk layout, a set of roles and a drawing, all ke
 
 ## A way to do it in steps, if it is wanted
 
-1. **Roles first (no new behaviour).** Replace the literal 1, 2, 3 by three roles (`domain`, `concept`, `leaf`) and by
+1. **Roles first (no new behaviour). DONE in 2.24.0 (decision 13).** Replace the literal 1, 2, 3 by three roles (`domain`, `concept`, `leaf`) and by
    the config's `layers` list, with the default exactly today's. Prove it with golden output: `lint`, `build`, `recall`
    and `consolidate` byte-identical on the example vaults, the bench vault and a copy of each real vault, and the 240-query
    bench equal to the point. Ship this alone.
-2. **Config and migration 0003.** Write `layers: 3` into `_brain/config.json` for every vault (a no-op for content;
+2. **Config and migration 0003.** (next) Write `layers: 3` into `_brain/config.json` for every vault (a no-op for content;
    schema 3), so a vault states what it is. Tested on fossils like the earlier migrations.
 3. **Leaf-end levels only.** Allow `layers` of 3 to 5, where levels beyond L3 are further refinements of a detail
    (nested folders named for the parent, the L3 types and limits), so no existing note ever moves. Panel rings, colours,

@@ -269,9 +269,7 @@ footer .credit a { color: inherit; }
     <div class="card orbit-card">
       <div class="orbit-tools" role="toolbar" aria-label="View controls">
         <span class="seg" role="group" aria-label="View"><button type="button" class="chip" id="v-orbit" aria-pressed="true">2D orbit</button><button type="button" class="chip" id="v-sphere" aria-pressed="false">3D sphere</button></span>
-        <button type="button" class="chip" data-layer="1" aria-pressed="true"><span class="key L1"></span>L1</button>
-        <button type="button" class="chip" data-layer="2" aria-pressed="true"><span class="key L2"></span>L2</button>
-        <button type="button" class="chip" data-layer="3" aria-pressed="true"><span class="key L3"></span>L3</button>
+        <span id="layer-chips"></span>
         <button type="button" class="chip" id="t-syn" aria-pressed="true"><span class="key line"></span>Synapses</button>
         <button type="button" class="chip" id="t-spoke" aria-pressed="true"><span class="key spoke"></span>Hierarchy</button>
         <button type="button" class="chip" id="t-sig" aria-pressed="true">Signals</button>
@@ -338,7 +336,17 @@ footer .credit a { color: inherit; }
   const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const fmt = v => (Math.round(v * 100) / 100).toFixed(2);
-  const LAYER = { 1: 'L1 Domain', 2: 'L2 Concept', 3: 'L3 Detail' };
+  // The layers, innermost first. `n` is what a note's `layer` holds; what the panel does hangs on the role (a domain groups
+  // concepts, a concept holds one standing fact, a leaf holds the lesson under it), never on the number.
+  const LAYERS = [
+    { n: 1, role: 'domain', name: 'L1 Domain', about: 'synthesis of an area', band: [0.13, 0.43], rad: 0.28, tracks: 3, dot: [10, 9], shell: [150, 0], dot3: 7 },
+    { n: 2, role: 'concept', name: 'L2 Concept', about: 'one atomic idea', band: [0.47, 0.73], rad: 0.6, tracks: 3, dot: [6, 6], shell: [290, 16], dot3: 3.6 },
+    { n: 3, role: 'leaf', name: 'L3 Detail', about: 'fact, procedure, example, error, decision', band: [0.77, 1.0], rad: 0.885, tracks: 4, dot: [4, 4], shell: [420, 24], dot3: 2.2 },
+  ];
+  const LNUMS = LAYERS.map(d => d.n);
+  const LAYER = Object.fromEntries(LAYERS.map(d => [d.n, d.name]));
+  const NUM = Object.fromEntries(LAYERS.map(d => [d.role, d.n]));
+  const DOMAIN = NUM.domain, CONCEPT = NUM.concept, LEAF = NUM.leaf, OUTER = LNUMS[LNUMS.length - 1];
 
   let DATA = null;
   try {
@@ -376,7 +384,7 @@ footer .credit a { color: inherit; }
     const up = norm(n.up);
     const p = up === 'map' ? ROOT : byTitle.get(up);
     // a domain may nest inside another domain (a subdomain under its domain): it shares the L1 ring, inside its parent's sector
-    const fits = p && (p.layer === n.layer - 1 || (n.layer === 1 && p.layer === 1));
+    const fits = p && (p.layer === n.layer - 1 || (n.layer === DOMAIN && p.layer === DOMAIN));
     if (!fits) { unplaced.push(n); continue; }
     n.parent = p; p.children.push(n);
   }
@@ -393,8 +401,8 @@ footer .credit a { color: inherit; }
   let colorBy = store.get('color-by', 'region');
   // a tool's lessons: the details under it and the details linked to it by a synapse; its heat is its hottest lesson,
   // since an agent credits the lesson it used, not the tool
-  const lessonsOf = n => { const s = new Set(n.children); n.syn.forEach(o => { const m = o.a === n ? o.b : o.a; if (m.layer === 3) s.add(m); }); return [...s]; };
-  const heat = n => (n.limb && n.layer === 2 ? Math.max(n.weight || 0, ...lessonsOf(n).map(m => m.weight || 0)) : n.weight || 0);
+  const lessonsOf = n => { const s = new Set(n.children); n.syn.forEach(o => { const m = o.a === n ? o.b : o.a; if (m.layer === LEAF) s.add(m); }); return [...s]; };
+  const heat = n => (n.limb && n.layer === CONCEPT ? Math.max(n.weight || 0, ...lessonsOf(n).map(m => m.weight || 0)) : n.weight || 0);
   const cooling = n => n.limb && n.status !== 'provisional' && heat(n) < 0.05;
   let limbFocus = false;
   const syns = [];
@@ -404,14 +412,14 @@ footer .credit a { color: inherit; }
     const o = { a, b, type: s.type, reason: s.reason || '' };
     syns.push(o); a.syn.push(o); b.syn.push(o);
   }
-  const counts = { 1: 0, 2: 0, 3: 0 };
+  const counts = Object.fromEntries(LNUMS.map(L => [L, 0]));
   nodes.forEach(n => { counts[n.layer] = (counts[n.layer] || 0) + 1; });
 
   // ---------- orbital layout: each subtree owns an angular sector proportional to its leaves ----------
   const C = 500, R = 430;
   // each layer is a band, not a line: nodes spread across its width so the connections between them can be read
-  const BAND = { 1: [0.13 * R, 0.43 * R], 2: [0.47 * R, 0.73 * R], 3: [0.77 * R, 1.0 * R] };
-  const RAD = { 1: 0.28 * R, 2: 0.6 * R, 3: 0.885 * R };
+  const BAND = Object.fromEntries(LAYERS.map(d => [d.n, [d.band[0] * R, d.band[1] * R]]));
+  const RAD = Object.fromEntries(LAYERS.map(d => [d.n, d.rad * R]));
   const COLD = R * 1.06;
   const byName = (a, b) => a.title.localeCompare(b.title);
   const span = n => (n._span = n.children.length ? n.children.sort(byName).reduce((s, c) => s + span(c), 0) : 1);
@@ -430,16 +438,16 @@ footer .credit a { color: inherit; }
   // radial place inside the band: a domain sits deeper the more it is nested; concepts and details alternate
   // between tracks in angular order, so neighbours do not overlap and their links fan out across the band
   const depth = n => { let d = 0, p = n.parent; while (p && p !== ROOT && p.layer === n.layer) { d++; p = p.parent; } return d; };
-  const TRACKS = { 1: 3, 2: 3, 3: 4 };
-  for (const L of [1, 2, 3]) {
+  const TRACKS = Object.fromEntries(LAYERS.map(d => [d.n, d.tracks]));
+  for (const L of LNUMS) {
     const [lo, hi] = BAND[L], T = TRACKS[L];
     const ring = nodes.filter(n => n.layer === L).sort((a, b) => a.angle - b.angle);
     ring.forEach((n, i) => {
-      const t = L === 1 ? Math.min(depth(n), T - 1) : i % T;
+      const t = L === DOMAIN ? Math.min(depth(n), T - 1) : i % T;
       n.rad = lo + (hi - lo) * (t + 0.5) / T;
     });
   }
-  const radius = n => ({ 1: 10 + 9 * (n.weight || 0), 2: 6 + 6 * (n.weight || 0), 3: 4 + 4 * (n.weight || 0) })[n.layer] || 5;
+  const radius = n => { const d = LAYERS.find(x => x.n === n.layer); return d ? d.dot[0] + d.dot[1] * (n.weight || 0) : 5; };
 
   // ---------- orbit rendering ----------
   const f1 = v => v.toFixed(1);
@@ -464,7 +472,7 @@ footer .credit a { color: inherit; }
       t.textContent = s.title;
     }
   });
-  for (const L of [1, 2, 3]) {
+  for (const L of LNUMS) {
     const [lo, hi] = BAND[L];
     svgEl('circle', { class: `band L${L}`, cx: C, cy: C, r: (lo + hi) / 2, 'stroke-width': hi - lo }, gRings);
     svgEl('circle', { class: 'ring', cx: C, cy: C, r: lo }, gRings);
@@ -515,7 +523,7 @@ footer .credit a { color: inherit; }
   function place() {
     gSectors.setAttribute('transform', `rotate(${f1(rot * 180 / Math.PI)} ${C} ${C})`);
     for (const n of nodes) {
-      const a = n.angle + rot, r = n.rad || RAD[n.layer] || RAD[3];
+      const a = n.angle + rot, r = n.rad || RAD[n.layer] || RAD[OUTER];
       n.x = C + r * Math.cos(a); n.y = C + r * Math.sin(a); n.cos = Math.cos(a); n.sin = Math.sin(a); n.pa = a; n.pr = r;
     }
     for (const n of nodes) {
@@ -561,12 +569,12 @@ footer .credit a { color: inherit; }
     return s;
   };
   function labelVisible(n, focus) {
-    if (n.layer === 1 || n.flash > performance.now()) return true;
+    if (n.layer === DOMAIN || n.flash > performance.now()) return true;
     // a large focus (a whole region) labels its members only as far as zoom allows, or the labels bury the orbit
-    if (focus && focus.has(n) && (focus.size <= 60 || n.layer === 1 || !regionNodes)) return true;
+    if (focus && focus.has(n) && (focus.size <= 60 || n.layer === DOMAIN || !regionNodes)) return true;
     if (query && matches.has(n)) return true;
-    if (n.layer === 2) return counts[2] <= 24 || zoom >= 1.8;
-    return counts[3] <= 12 || zoom >= 3;
+    if (n.layer === CONCEPT) return counts[CONCEPT] <= 24 || zoom >= 1.8;
+    return counts[LEAF] <= 12 || zoom >= 3;
   }
   function applyFocus() {
     const anchor = selected || hovered;
@@ -594,6 +602,15 @@ footer .credit a { color: inherit; }
       s.el.classList.toggle('dim', anchor ? !on : !!focus && !(focus.has(s.a) || focus.has(s.b)));
     }
     if (sphere) sphere.refresh();
+  }
+  {   // one filter chip per layer, where the marker sits
+    const anchor = $('#layer-chips');
+    LNUMS.forEach(L => {
+      const b = el('button', { type: 'button', class: 'chip', 'data-layer': String(L), 'aria-pressed': 'true' });
+      el('span', { class: `key L${L}` }, null, b); b.append('L' + L);
+      anchor.before(b);
+    });
+    anchor.remove();
   }
   document.querySelectorAll('.chip[data-layer]').forEach(b => {
     const L = +b.dataset.layer;
@@ -788,11 +805,9 @@ footer .credit a { color: inherit; }
       el('p', { class: 'muted', style: 'margin-top:0' }, 'MAP sits at the center; each ring is a layer, from general (inside) to specific (outside). Size is weight: recent use, validations and incoming synapses. Hover for the summary, click to focus a node and its neighbors.', box);
       const lg = el('div', { class: 'legend' }, null, box);
       const row = (svgNode, text) => { const d = el('div', {}, null, lg); d.appendChild(svgNode); d.append(text); };
-      row(dotSvg('l1'), 'L1 Domain — synthesis of an area');
-      row(dotSvg('l2'), 'L2 Concept — one atomic idea');
-      row(dotSvg('l3'), 'L3 Detail — fact, procedure, example, error, decision');
-      row(dotSvg('l2', true), 'Hollow: seed, awaiting validation');
-      row(dotSvg('l3', true), 'Hollow detail: provisional, learned by an agent, not yet confirmed by use');
+      LAYERS.forEach(d => row(dotSvg('l' + d.n), `${d.name} — ${d.about}`));
+      row(dotSvg('l' + CONCEPT, true), 'Hollow: seed, awaiting validation');
+      row(dotSvg('l' + LEAF, true), 'Hollow detail: provisional, learned by an agent, not yet confirmed by use');
       row(dotSvg('obsolete'), 'Gray: obsolete');
       el('p', { class: 'muted', style: 'margin:2px 0' }, 'Region colours (default): each region of the brain — a top domain — has its own colour, shown on its nodes, its sector and its key in the dropdowns; Layer colours switches back to the L1/L2/L3 colours below. Regions shows or hides whole regions; Focus lights up the regions chosen, like Tools, and dims the rest.', lg);
       row(dotSvg('tool'), 'Tools region — the agent\'s limbs: one concept per tool, its lessons below it or linked to it; faded = cooling or not used yet');
@@ -821,14 +836,14 @@ footer .credit a { color: inherit; }
     chain.forEach(p => { crumbs.append(' › '); nodeLink(p, crumbs); });
     el('h2', { class: 'title' }, n.title, box);
     const pills = el('div', { class: 'pills' }, null, box);
-    [LAYER[n.layer], n.layer === 3 || n.limb ? n.type : null, n.status, n.unplaced ? 'misplaced' : null].filter(Boolean).forEach(t => el('span', { class: 'pill' }, t, pills));
+    [LAYER[n.layer], n.layer === LEAF || n.limb ? n.type : null, n.status, n.unplaced ? 'misplaced' : null].filter(Boolean).forEach(t => el('span', { class: 'pill' }, t, pills));
     if (n.summary) el('p', { class: 'summary' }, n.summary, box);
     el('div', { class: 'sect' }, `Weight ${fmt(n.weight || 0)}`, box);
     el('div', { class: 'sect' }, `${n.tokens || 0} tokens`, box);
     const m = el('div', { class: 'meter' }, null, box);
     el('i', { class: `L${n.layer}`, style: `width:${Math.round((n.weight || 0) * 100)}%` }, null, m);
     if (n.children.length) {
-      el('div', { class: 'sect' }, n.layer === 1 ? 'Branches' : 'Details', box);
+      el('div', { class: 'sect' }, n.layer === DOMAIN ? 'Branches' : 'Details', box);
       const ul = el('ul', { class: 'plain' }, null, box);
       n.children.forEach(c => nodeLink(c, el('li', {}, null, ul)));
     }
@@ -1124,7 +1139,7 @@ footer .credit a { color: inherit; }
       }
       for (const l of lines) {
         const d = svgPath(l.pts);
-        html += `<path class="lt" d="${d}" style="stroke:var(--l${l.layer || 1})" stroke-width="${f1(l.halo)}" stroke-opacity="${(l.a * 0.22).toFixed(3)}"/>`
+        html += `<path class="lt" d="${d}" style="stroke:var(--l${l.layer || DOMAIN})" stroke-width="${f1(l.halo)}" stroke-opacity="${(l.a * 0.22).toFixed(3)}"/>`
           + `<path class="lt lt-core" d="${d}" stroke-width="${f1(l.core)}" stroke-opacity="${Math.min(1, l.a).toFixed(3)}"/>`;
       }
       for (const q of dots) html += `<circle class="lt-dot" cx="${f1(q.x)}" cy="${f1(q.y)}" r="${(q.r * px).toFixed(2)}" fill-opacity="${q.a.toFixed(2)}"/>`;
@@ -1294,7 +1309,7 @@ footer .credit a { color: inherit; }
         ripple(n, 'dream', { delay: Math.random() * 3000, grow: 12, dur: 1100 });
     },
     rested() {   // a nap: the rings breathe once, slow and gray
-      [1, 2, 3].forEach((L, i) => ripple(ROOT, 'rest', { delay: i * 450, grow: BAND[L][1] - 24, dur: 2600 }));
+      LNUMS.forEach((L, i) => ripple(ROOT, 'rest', { delay: i * 450, grow: BAND[L][1] - 24, dur: 2600 }));
     },
     measured({ alarm }) {   // the night's bench: an amber radar sweep, and MAP pulses red when recall fell
       const el = svgEl('line', { class: 'sweep', x1: C, y1: C, x2: C, y2: C - BAND[3][1] }, gSig);
@@ -1416,8 +1431,8 @@ footer .credit a { color: inherit; }
   // the spheres sized by its leaves, so a domain reads as a region and its concepts and details radiate outward from
   // it. Drawn on a 2D canvas (no library, works offline); filters, selection, search and signals are the 2D view's.
   sphere = (() => {
-    const RS = { 1: 150, 2: 290, 3: 420 };
-    const SHELL = { 1: 0, 2: 16, 3: 24 };   // a sphere is a shell with thickness, like the 2D bands
+    const RS = Object.fromEntries(LAYERS.map(d => [d.n, d.shell[0]]));
+    const SHELL = Object.fromEntries(LAYERS.map(d => [d.n, d.shell[1]]));   // a sphere is a shell with thickness, like the 2D bands
     const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
     const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
     const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -1451,12 +1466,12 @@ footer .credit a { color: inherit; }
     }
     // children spread inside their parent's cone on a sunflower spiral, largest subtree at the center
     const place = (n, d, cone, i, nest) => {
-      n.p3 = mul(d, RS[n.layer] + (n.layer === 1 ? 26 * nest : SHELL[n.layer] * ((i % 3) - 1)));
+      n.p3 = mul(d, RS[n.layer] + (n.layer === DOMAIN ? 26 * nest : SHELL[n.layer] * ((i % 3) - 1)));
       const kids = [...n.children].sort((a, b) => b._span - a._span || byName(a, b)), k = kids.length;
       kids.forEach((c, j) => {
         const theta = k === 1 ? 0 : cone * 0.82 * Math.sqrt((j + 0.5) / k);
         const sub = Math.max(0.012, cone * Math.min(0.6, Math.sqrt(c._span / n._span)) * 0.85);
-        place(c, inCone(d, theta, j * GOLD), sub, j, c.layer === 1 ? nest + 1 : nest);
+        place(c, inCone(d, theta, j * GOLD), sub, j, c.layer === DOMAIN ? nest + 1 : nest);
       });
     };
     tops.forEach((t, i) => place(t, t.d3, t.cap, i, 0));
@@ -1473,7 +1488,7 @@ footer .credit a { color: inherit; }
     let COL = {};
     const readColors = () => {
       const cs = getComputedStyle(document.documentElement);
-      for (const k of ['page', 'ink', 'ink2', 'muted', 'axis', 'l1', 'l2', 'l3', 'tool', 'critical', 'good', 'dream', 'warning']) COL[k] = cs.getPropertyValue('--' + k).trim();
+      for (const k of ['page', 'ink', 'ink2', 'muted', 'axis', ...LNUMS.map(L => 'l' + L), 'tool', 'critical', 'good', 'dream', 'warning']) COL[k] = cs.getPropertyValue('--' + k).trim();
       dirty = true;
     };
     new MutationObserver(readColors).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -1490,7 +1505,7 @@ footer .credit a { color: inherit; }
       const y2 = p[1] * cp - z1 * sp, z2 = p[1] * sp + z1 * cp, s = F / (cam.dist - z2);
       return [W / 2 + x1 * s, H / 2 - y2 * s, z2, s];
     };
-    const fog = z => 0.22 + 0.78 * Math.max(0, Math.min(1, (z + RS[3]) / (2 * RS[3])));
+    const fog = z => 0.22 + 0.78 * Math.max(0, Math.min(1, (z + RS[OUTER]) / (2 * RS[OUTER])));
     const lc = l => COL['l' + l];
     const nc = n => (n.limb ? COL.tool : colorBy === 'region' ? n.region.color : lc(n.layer));
     const visible = n => n.ghost || (shown(n) && n.p3 && !(n.unborn > performance.now()));
@@ -1519,7 +1534,7 @@ footer .credit a { color: inherit; }
       }
     };
     const drawShells = () => {
-      for (const l of [3, 2, 1]) {
+      for (const l of [...LNUMS].reverse()) {
         if (hidden.has(l)) continue;
         const r = RS[l], c = proj([0, 0, 0]), rad = r * c[3];
         const g = ctx.createRadialGradient(c[0] - rad * 0.3, c[1] - rad * 0.3, rad * 0.1, c[0], c[1], rad);
@@ -1543,7 +1558,7 @@ footer .credit a { color: inherit; }
         const k = focus && !focus.has(t) ? 0.4 : 1, lit = t.limb ? limbFocus || focusRegions.has(t.title) : focusRegions.has(t.title);
         ctx.strokeStyle = t.limb ? COL.tool : colorBy === 'region' || lit ? t.color : COL.muted;
         ctx.lineWidth = lit ? 3 : t.limb || colorBy === 'region' ? 2 : 1;
-        ring(p => mul(inCone(t.d3, t.cap, p), RS[3] + SHELL[3] + 14), z => (z > 0 ? (t.limb ? 0.9 : 0.55) : 0.12) * k);
+        ring(p => mul(inCone(t.d3, t.cap, p), RS[OUTER] + SHELL[OUTER] + 14), z => (z > 0 ? (t.limb ? 0.9 : 0.55) : 0.12) * k);
       }
       ctx.setLineDash([]);
     };
@@ -1551,8 +1566,8 @@ footer .credit a { color: inherit; }
       ctx.font = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineWidth = 3; ctx.strokeStyle = COL.page; ctx.lineJoin = 'round';
       for (const t of tops) {
-        const q = proj(mul(t.d3, RS[3] + SHELL[3] + 46));
-        if (q[2] < -RS[3] * 0.35 || hiddenRegions.has(t.title)) continue;
+        const q = proj(mul(t.d3, RS[OUTER] + SHELL[OUTER] + 46));
+        if (q[2] < -RS[OUTER] * 0.35 || hiddenRegions.has(t.title)) continue;
         ctx.globalAlpha = fog(q[2]) * (focus && !focus.has(t) ? 0.4 : 1);
         ctx.fillStyle = t.limb ? COL.tool : colorBy === 'region' ? t.color : COL.ink2;
         ctx.strokeText(t.title.toUpperCase(), q[0], q[1]); ctx.fillText(t.title.toUpperCase(), q[0], q[1]);
@@ -1587,14 +1602,14 @@ footer .credit a { color: inherit; }
       drawn = [];
       for (const n of nodes) {
         if (!visible(n)) continue;
-        const q = proj(n.p3), base = n.layer === 1 ? 7 : n.layer === 2 ? 3.6 : 2.2;
+        const q = proj(n.p3), base = (LAYERS.find(d => d.n === n.layer) || LAYERS[LAYERS.length - 1]).dot3;
         if (n.shakeUntil > now) q[0] += 2 * Math.sin(now / 20);
         drawn.push({ n, x: q[0], y: q[1], z: q[2], r: Math.max(1.2, (base + Math.min(3, (n.weight || 0) * 3)) * q[3] * cam.dist / F * 1.6) });
       }
       drawn.sort((a, b) => a.z - b.z);
       for (const d of drawn) {
         const n = d.n, on = n === selected || n === hovered || n.flash > now;
-        const st = n.shown || n.status, hollow = (st === 'seed' && n.layer < 3) || st === 'provisional', gray = st === 'obsolete';
+        const st = n.shown || n.status, hollow = (st === 'seed' && n.layer < LEAF) || st === 'provisional', gray = st === 'obsolete';
         ctx.globalAlpha = on ? 1 : fog(d.z) * (dimmed(n, focus) ? 0.18 : 1) * (cooling(n) ? 0.45 : 1) * (n.dimUntil > now ? 0.45 : 1);
         if (n.planted) {   // hollow, in the colour of the signal that planted it, pulsing until its status changes
           const k = reduced ? 0.5 : 0.5 + 0.5 * Math.sin(now / 255), a = ctx.globalAlpha;
@@ -1606,7 +1621,7 @@ footer .credit a { color: inherit; }
         }
         ctx.beginPath(); ctx.arc(d.x, d.y, on ? d.r + 2 : d.r, 0, 2 * Math.PI);
         ctx.fillStyle = gray ? COL.muted : hollow ? COL.page : nc(n); ctx.fill();
-        if (n.layer < 3 || on || hollow) {
+        if (n.layer < LEAF || on || hollow) {
           ctx.strokeStyle = on ? COL.ink : hollow ? nc(n) : COL.page; ctx.lineWidth = on ? 2 : hollow ? 1.8 : 1; ctx.stroke();
         }
         if (now - n.fillT0 < 900) {   // consolidating: the hollow seed fills from its centre
@@ -1616,10 +1631,10 @@ footer .credit a { color: inherit; }
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.lineWidth = 3; ctx.strokeStyle = COL.page; ctx.lineJoin = 'round';
       for (const d of drawn) {
         const n = d.n, top = !n.parent || n.parent === ROOT;
-        const want = n === selected || n === hovered || n.flash > now || (focus && focus.has(n) && n.layer < 3 && (focus.size <= 60 || n.layer === 1 || !regionNodes)) || (query && matches.has(n) && matches.size <= 30)
-          || (!focus && n.layer === 1 && (top || cam.dist < 1000) && d.z > -RS[1] * 0.2) || (!focus && n.layer === 2 && cam.dist < 900 && d.z > RS[2] * 0.5);
+        const want = n === selected || n === hovered || n.flash > now || (focus && focus.has(n) && n.layer < LEAF && (focus.size <= 60 || n.layer === DOMAIN || !regionNodes)) || (query && matches.has(n) && matches.size <= 30)
+          || (!focus && n.layer === DOMAIN && (top || cam.dist < 1000) && d.z > -RS[DOMAIN] * 0.2) || (!focus && n.layer === CONCEPT && cam.dist < 900 && d.z > RS[CONCEPT] * 0.5);
         if (!want) continue;
-        ctx.font = (n.layer === 1 ? '600 12px' : '11px') + ' system-ui, -apple-system, "Segoe UI", sans-serif';
+        ctx.font = (n.layer === DOMAIN ? '600 12px' : '11px') + ' system-ui, -apple-system, "Segoe UI", sans-serif';
         ctx.globalAlpha = n === selected || n === hovered ? 1 : 0.85 * fog(d.z);
         ctx.strokeText(n.title, d.x + d.r + 4, d.y); ctx.fillStyle = COL.ink; ctx.fillText(n.title, d.x + d.r + 4, d.y);
       }
@@ -1697,7 +1712,7 @@ footer .credit a { color: inherit; }
         }
         for (const l of lines) {
           ctx.beginPath(); l.pts.forEach((q, k) => (k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])));
-          ctx.strokeStyle = lc(l.layer || 1); ctx.globalAlpha = l.a * 0.22; ctx.lineWidth = l.halo; ctx.stroke();
+          ctx.strokeStyle = lc(l.layer || DOMAIN); ctx.globalAlpha = l.a * 0.22; ctx.lineWidth = l.halo; ctx.stroke();
           ctx.strokeStyle = COL.ink; ctx.globalAlpha = Math.min(1, l.a); ctx.lineWidth = l.core; ctx.stroke();
         }
         ctx.fillStyle = COL.ink;
@@ -1837,7 +1852,7 @@ footer .credit a { color: inherit; }
         dirty = true;
       },
       life(kind, args) {   // the orbit's life-cycle animations, on 3D routes
-        const now = performance.now(), out = d => mul(d, RS[3] + SHELL[3] + 14), rnd = () => unit([Math.random() - .5, Math.random() - .5, Math.random() - .5]);
+        const now = performance.now(), out = d => mul(d, RS[OUTER] + SHELL[OUTER] + 14), rnd = () => unit([Math.random() - .5, Math.random() - .5, Math.random() - .5]);
         const ghost = p3 => ({ ghost: true, p3 });
         const keep = ms => { flashUntil = Math.max(flashUntil, performance.now() + ms); };
         const link = (s, cls = 'query') => {
@@ -1846,11 +1861,11 @@ footer .credit a { color: inherit; }
         };
         if (kind === 'capture') {
           const d = rnd(), end = ghost(out(d));
-          launch3(p => lerp3(mul(d, RS[3] * 1.6), end.p3, p), 'query', { r: 4, dur: 900, onArrive: () => { ripple3(end, 'query', { grow: 14 }); ripple3(end, 'query', { delay: 500, grow: 8, dur: 600 }); } });
+          launch3(p => lerp3(mul(d, RS[OUTER] * 1.6), end.p3, p), 'query', { r: 4, dur: 900, onArrive: () => { ripple3(end, 'query', { grow: 14 }); ripple3(end, 'query', { delay: 500, grow: 8, dur: 600 }); } });
         } else if (kind === 'atomize') {
           const src = ghost(out(rnd())), aims = (args.to || []).filter(m => m.p3).slice(0, 6);
           ripple3(src, 'query', { grow: 18 });
-          for (const m of aims.length ? aims : [ghost(mul(rnd(), RS[3])), ghost(mul(rnd(), RS[2]))])
+          for (const m of aims.length ? aims : [ghost(mul(rnd(), RS[OUTER])), ghost(mul(rnd(), RS[CONCEPT]))])
             launch3(p => lerp3(src.p3, m.p3, p), 'query', { r: 2.5, dur: 1100, delay: 250, onArrive: () => ripple3(m, 'query', { grow: 8, dur: 500 }) });
         } else if (kind === 'plant') this.plant(args.n);
         else if (kind === 'link') link(args.s);
@@ -1871,7 +1886,7 @@ footer .credit a { color: inherit; }
           const p3 = args.g.p3;
           if (!p3) return;
           ripple3(ghost(p3), 'obsolete', { grow: 12, dur: 600 });
-          launch3(p => lerp3(p3, mul(unit(p3), RS[3] + SHELL[3] + 60), p), 'obsolete', { r: 5, dur: 1600, fade: true });
+          launch3(p => lerp3(p3, mul(unit(p3), RS[OUTER] + SHELL[OUTER] + 60), p), 'obsolete', { r: 5, dur: 1600, fade: true });
         } else if (kind === 'status') {
           const { n } = args;
           n.shown = null;
@@ -1938,7 +1953,7 @@ footer .credit a { color: inherit; }
   const seeds = nodes.filter(n => n.status === 'seed').length;
   const contra = syns.filter(s => s.type === 'contradicts').length;
   const errs = H.errors || 0, warns = H.warnings || 0;
-  tile('Nodes', nodes.length, `L1 ${counts[1]} · L2 ${counts[2]} · L3 ${counts[3]}`);
+  tile('Nodes', nodes.length, LNUMS.map(L => `L${L} ${counts[L]}`).join(' · '));
   tile('Synapses', syns.length, contra ? `${contra} contradicts` : 'no contradictions');
   tile('Seeds to validate', seeds, 'awaiting the supervisor');
   tile('Health', errs ? `${errs} errors` : warns ? `${warns} warnings` : 'Clean', `lint: ${errs} errors · ${warns} warnings`,
@@ -1964,7 +1979,7 @@ footer .credit a { color: inherit; }
   (function growth() {
     const box = $('#growth'), Hs = DATA.history || [];
     if (Hs.length < 2) {
-      el('p', { class: 'empty' }, `The growth curve appears from the second day of activity. Today: L1 ${counts[1]} · L2 ${counts[2]} · L3 ${counts[3]}.`, box);
+      el('p', { class: 'empty' }, `The growth curve appears from the second day of activity. Today: ${LNUMS.map(L => `L${L} ${counts[L]}`).join(' · ')}.`, box);
       return;
     }
     const W = 640, Ht = 230, m = { l: 34, r: 70, t: 10, b: 26 };
@@ -2038,7 +2053,7 @@ footer .credit a { color: inherit; }
   // ---------- tools: how much the agent leans on each limb and what it has learned using it ----------
   (function tools() {
     const box = $('#tools');
-    const list = nodes.filter(n => n.limb && n.layer === 2).sort((a, b) => heat(b) - heat(a) || byName(a, b));
+    const list = nodes.filter(n => n.limb && n.layer === CONCEPT).sort((a, b) => heat(b) - heat(a) || byName(a, b));
     if (!list.length) {
       el('p', { class: 'empty' }, 'No Tools region yet: an L1 with --type tools, one L2 per tool with --type tool, and the lessons of using each tool as its L3 details.', box);
       return;

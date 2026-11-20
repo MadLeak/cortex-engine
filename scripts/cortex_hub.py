@@ -58,6 +58,8 @@ ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
 # the only files of a vault the hub serves, relative to its _brain folder
 SERVED = {"Panel.html": "text/html; charset=utf-8", "state/activity.js": "text/javascript; charset=utf-8",
           "generated/orbit.svg": "image/svg+xml"}
+# the layers a card counts, by number; the vault's own table is not read yet (the engine's default is three levels)
+DEFAULT_LAYER_NUMBERS = (1, 2, 3)
 LIVE_MINUTES = 10   # a vault with activity this recent shows as live
 TEXT = "text/plain; charset=utf-8"
 VIEWS = ("/", "/agents", "/wall", "/review", "/connect")
@@ -167,7 +169,7 @@ def summary(name: str, v: Path) -> dict:
     """The figures of one vault's card: size by layer and status, and its latest activity."""
     g = read_json(v / "_brain/generated/graph.json", {})
     nodes = g.get("nodes", [])
-    layers = {str(L): sum(n.get("layer") == L for n in nodes) for L in (1, 2, 3)}
+    layers = {str(L): sum(n.get("layer") == L for n in nodes) for L in DEFAULT_LAYER_NUMBERS}
     status = {s: sum(n.get("status") == s for n in nodes) for s in ("provisional", "seed", "consolidated", "obsolete")}
     events = activity(v)
     now = datetime.now()
@@ -1152,7 +1154,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     const s = c.querySelector('.stats'); s.replaceChildren();
     const stat = (label, val, color) => { const d = el('span', {}, null, s); if (color) el('span', { class: 'key', style: `background:var(${color})` }, null, d); el('b', {}, String(val), d); d.append(' ' + label); };
     stat('nodes', v.nodes);
-    stat('L1', v.layers['1'], '--l1'); stat('L2', v.layers['2'], '--l2'); stat('L3', v.layers['3'], '--l3');
+    Object.keys(v.layers).sort().forEach(k => stat('L' + k, v.layers[k], '--l' + k));
     stat('seeds', v.status.seed + v.status.provisional);
     if (v.inbox) stat('in inbox', v.inbox);
     stat('recalls today', v.today.recalls);

@@ -1,4 +1,4 @@
-# Decisions log (2026-11, engine 2.16 to 2.23)
+# Decisions log (2026-11, engine 2.16 to 2.24)
 
 For the next model or developer: what was decided while Cortex moved to Docker-only, why, and how to apply it
 when you change the code. The owner is Adhonys Diaz. PR numbers are those of MadLeak/cortex-engine.
@@ -98,13 +98,27 @@ numbers 1, 2, 3 into roles, a large refactor of its own. [DESIGN-LAYERS.md](DESI
 way (roles with golden output, a config key and migration 0003, leaf-end levels only) and the questions for the owner.
 *Apply:* do not add a layer-count option as a side effect of another change; if it is wanted, start at step 1 of the note.
 
+**13. The layers are roles in one table, proved byte for byte (2.24.0, step 1 of DESIGN-LAYERS.md).** The owner decided
+that configurable layers are wanted (decision 12 asked). The engine, the panel, the hub and the helper scripts no longer
+test `layer == 2`: they test a role (`domain`, `concept`, `leaf`), and a vault's levels come from one table
+(`DEFAULT_LAYERS` in `brain_core.py`: number, role, types, default type, word limit, template, child section, label,
+colour, dot size; the panel has its own copy of the geometry). The default is exactly the old three. Neutrality is
+shown with golden output on every vault in the repository (`tests/golden_layers.py`, RUNBOOK section 10): `lint`, `build`
+and its files, 16 recall queries (normal and deep), `consolidate`, `ideas`, `stats` and `doctor` are byte-identical to
+2.23.0's, on Windows and in the container, and the panel renders the same orbit in a browser. The 240-query bench is
+not in the repository (it lives in the owner's vaults); the hit@1 figures were not re-measured, and recall's ranking code
+changed only in how it names a role. Literal layer numbers that remain by design: messages that say "L1/L2/L3" (text for
+the default set), `graph.json`'s `layer` and `history.csv`'s `l1/l2/l3` columns (on-disk formats), and the host scripts
+`lifecycle.py` and `renewal.py`, which read a vault's graph without importing its engine. *Apply:* a new rule keys on a
+role (`n.role == CONCEPT`), never on a number; a number is only what a note's `layer:` holds.
+
 ## Environment lessons
 
 - Windows bind mounts show files as mode 0777: the engine detects the mount in `/proc/self/mounts` and sets
   `core.fileMode false`. The repo forces LF (`* text=auto eol=lf`).
 - `ECONNREFUSED` from the MCP on `cortex.localhost:8790` means Docker Desktop is off: start it, then
   `docker compose up -d hub`. No config change is needed.
-- Run the suites with `docker compose --profile tools run --rm test` (engine 73, hub 28, MCP 95, REM 11, review 4). After a code
+- Run the suites with `docker compose --profile tools run --rm test` (engine 76, hub 28, MCP 95, REM 11, review 4). After a code
   change build first (`docker compose --profile tools build test`): `run` reuses an image that already has the tag.
   In PowerShell use `.\cortex.ps1` from the engine folder, never `sh ./cortex.sh`.
 

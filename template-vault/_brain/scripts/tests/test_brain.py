@@ -707,6 +707,25 @@ class VisualizationTests(Base):
         self.assertLess(len(output), brain.MODES["normal"]["chars"] + 600)
 
 
+class LayerRoleTests(Base):
+    """The levels are one table of roles; the default is the paper's three (golden output proves nothing else moved)."""
+
+    def test_the_default_table_is_the_three_levels(self):
+        self.assertEqual([(d["n"], d["role"]) for d in brain.LAYERS], [(1, "domain"), (2, "concept"), (3, "leaf")])
+        self.assertEqual(brain.LAYER_ROLE, {1: brain.DOMAIN, 2: brain.CONCEPT, 3: brain.LEAF})
+        self.assertEqual([brain.layer_of(r) for r in (brain.DOMAIN, brain.CONCEPT, brain.LEAF)], [1, 2, 3])
+        self.assertEqual(brain.MAX_WORDS, {1: 250, 2: 300, 3: 300})
+        self.assertEqual(brain.CHILD_SECTION, {1: "Branches", 2: "Details"})
+        self.assertEqual(brain.number_list(brain.LAYER_ROLE), "1, 2 or 3")
+
+    def test_a_node_knows_its_role(self):
+        self.seed()
+        v = brain.Vault(self.v)
+        self.assertEqual([v.node(t).role for t in ("Orders", "Order cutoff is at 2pm EST", "Late orders went to the wrong wave")],
+                         [brain.DOMAIN, brain.CONCEPT, brain.LEAF])
+        self.assertIsNone(brain.Node(Path("Odd.md"), "Odd one", {"layer": 9}, "", []).role)
+
+
 class IdeasTests(Base):
     """The ideas miner: deterministic candidates, written to _inbox for the curator, never into the graph."""
 

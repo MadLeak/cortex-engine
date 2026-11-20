@@ -408,8 +408,9 @@ change is a click of its own:
   the last run's result and the model server's address (§6, *REM in the container*). Saved in `_brain/config.json` as
   `rem_enabled`, `rem_interval_minutes` and `rem_budget_minutes`.
 
-Not yet in Settings, and a project of its own: the number of layers (L1 to L3 are built into the engine; why it is not
-built and how it could be: [DESIGN-LAYERS.md](DESIGN-LAYERS.md)).
+Not yet in Settings: the number of layers. The engine now expresses its levels as roles (domain, concept, leaf) in one
+table (`DEFAULT_LAYERS` in `brain_core.py`), with three levels as the only set; the config key, migration 0003 and levels 4
+and 5 follow, step by step: [DESIGN-LAYERS.md](DESIGN-LAYERS.md).
 
 **The hub: every agent's panel on one page.** `scripts/cortex_hub.py` serves each vault under a root (default `~/Vaults`, or `CORTEX_VAULTS`) with no dependencies:
 
@@ -522,6 +523,16 @@ nothing to do) and `up(root)` (writes only those paths). Rules:
 
 Then bump the engine version and set the template's `config.json` `schema` to the new number.
 
+**Proving a refactor changes nothing (golden output).** `tests/golden_layers.py` runs `lint`, `build` (and the files it
+writes), `recall` (a fixed set of queries, normal and deep), `read`-free `stats`, `ideas --dry-run`, `consolidate` and
+`doctor` on every vault inside the repository (both example vaults, the empty template vault, a *rich* vault it builds
+with every layer, every consolidate rule, lint errors and a usage history, and the 1,000-node performance vault), with
+time, dates and ids fixed. `tests/golden_layers.json` holds one SHA-256 per output and `tests/test_golden.py` fails when
+any differs (the panel page is compared by its data block; its script is checked in a browser before and after a change).
+To look at a difference: `python tests/golden_layers.py capture <dir>` before and after, then `diff -r`. When a change is
+*meant* to alter output, regenerate with `python tests/golden_layers.py digest > tests/golden_layers.json`; that diff is
+the review. The digest is the same on Windows and in the container.
+
 ## 11. Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -556,7 +567,8 @@ Each one is parked on purpose, with what to do later and how to know it worked, 
 - `install.ps1` and `install.sh` were only syntax-checked; the manual path (`docker compose up -d hub`) is the tested one.
 - MCP configs for Codex, Gemini and OpenCode are generated but were not tried against those clients; Claude Code is.
 - *Save to remote* was tested only with a stubbed git; try it on a throwaway private repository first.
-- Not built: configurable number of layers (a design note says what blocks it: [DESIGN-LAYERS.md](DESIGN-LAYERS.md)).
+- In progress: configurable number of layers. Step 1 (2.24.0, roles instead of the numbers 1, 2, 3) is done; the config key and
+  levels 4 and 5 are not built yet ([DESIGN-LAYERS.md](DESIGN-LAYERS.md)).
 - REM in the container was tested against a stand-in model server, not a real Strata: try *Dream now* on a small throwaway
   cortex first.
 
