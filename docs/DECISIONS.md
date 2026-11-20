@@ -110,5 +110,7 @@ way (roles with golden output, a config key and migration 0003, leaf-end levels 
 
 ## Still open
 
+Parked on purpose, one entry each with what to do later: [PENDING.md](PENDING.md).
+
 Configurable layers (see DESIGN-LAYERS.md), REM against a real Strata, a real run of the
 installers, the Codex/Gemini/OpenCode configs, and *Save to remote* against a real private repository.
