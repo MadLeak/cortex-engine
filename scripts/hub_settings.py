@@ -71,12 +71,21 @@ def push_token_path(v: Path) -> Path:
     return v.joinpath(*PUSH_TOKEN)
 
 
+SECRET_PUSH_TOKEN = "/run/secrets/push.token"   # a file mounted read-only from outside the vaults folder (compose.yaml)
+
+
 def shared_token(v: Path) -> str:
-    """One token for every cortex, in <vaults>/.cortex-hub/push.token: used when the cortex has none of its own."""
-    try:
-        return v.parent.joinpath(".cortex-hub", "push.token").read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+    """One token for every cortex: the file CORTEX_PUSH_TOKEN_FILE names (default /run/secrets/push.token, mounted from
+    outside the vaults folder so an agent that can read the vaults cannot read it), else <vaults>/.cortex-hub/push.token.
+    Used when the cortex has none of its own."""
+    for p in (Path(os.environ.get("CORTEX_PUSH_TOKEN_FILE") or SECRET_PUSH_TOKEN), v.parent.joinpath(".cortex-hub", "push.token")):
+        try:
+            t = p.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if t:
+            return t
+    return ""
 
 
 def read(v: Path, scope: str) -> dict:
