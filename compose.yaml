@@ -76,6 +76,7 @@ services:
     volumes:
       - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
       - ${CORTEX_CLAUDE_PROJECTS:-${HOME:-${USERPROFILE}}/.claude/projects}:/claude-projects:ro   # memory to import
+      - ${CORTEX_PUSH_TOKEN_HOST:-${HOME:-${USERPROFILE}}/.cortex-secrets/push.token}:/run/secrets/push.token:ro   # the sync's GitHub token, kept outside the vaults folder so agents that read the vaults cannot read it
     # Nothing to set up on the host: one high port on 127.0.0.1, plain HTTP, and names under .localhost, which
     # browsers resolve to this machine by themselves: http://cortex.localhost:8790 and http://<agent>.cortex.localhost:8790.
     # compose.lan.yaml adds the local network (HTTPS); compose.trusted.yaml brings back https://cortex.local

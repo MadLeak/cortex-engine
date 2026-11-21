@@ -68,15 +68,12 @@ def busy(v: Path) -> bool:
 
 
 def token(v: Path) -> str:
-    """The vault's own push token, else the shared one beside the hub's data; '' when there is none."""
-    for p in (hub_settings.push_token_path(v), v.parent.joinpath(*GLOBAL_TOKEN)):
-        try:
-            t = p.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        if t:
-            return t
-    return ""
+    """The vault's own push token, else the shared one (hub_settings.shared_token); '' when there is none."""
+    try:
+        t = hub_settings.push_token_path(v).read_text(encoding="utf-8").strip()
+    except OSError:
+        t = ""
+    return t or hub_settings.shared_token(v)
 
 
 def run(v: Path, args: list[str], secret: str = "", timeout: int = 120, env: dict | None = None) -> tuple[int, str]:
