@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Security problem
+    url: https://github.com/MadLeak/cortex-engine/security/advisories/new
+    about: Report a vulnerability privately. Please do not open a public issue for it.
+  - name: 📖 Documentation and troubleshooting
+    url: https://github.com/MadLeak/cortex-engine/blob/main/docs/RUNBOOK.md#11-troubleshooting
+    about: Many problems already have an answer in the runbook.
