@@ -18,6 +18,22 @@ themselves. Options: `--lan` / `-Lan` (the cortexes marked LAN on the local netw
 device accepts it once), `--trusted` / `-Trusted` (administrator: `https://cortex.local` with no warning, §8),
 `--remove` / `-Remove`.
 
+- **Where the vaults live:** `CORTEX_VAULTS` in `.env`. Unset, the host folder `~/Vaults` (`%USERPROFILE%\Vaults`) is
+  mapped at `/vaults`; a path maps that folder instead; the bare name `cortex-vaults` maps no host folder and keeps the
+  vaults in the Docker volume `cortex_cortex-vaults` (no Obsidian or host git on them, and `--trusted` is refused because
+  it installs the CA from the folder).
+- **The `vaults` service** (`scripts/vaults_init.sh`) runs before the hub on every `up` and exits: it gives the vaults
+  place to `CORTEX_UID:CORTEX_GID` (a new volume or a folder Docker made starts out as root's), and when that place holds
+  no vault yet (at most `.cortex-hub`) while `CORTEX_VAULTS_FROM` has something, it copies everything over with `cp -a`.
+  So switching is: new place in `CORTEX_VAULTS`, old place in `CORTEX_VAULTS_FROM` (unset means the `cortex-vaults`
+  volume), `docker compose up -d`. A non-empty new place is never written to, and the old place is never deleted.
+  It runs as root with only `CHOWN`, `DAC_OVERRIDE` and `FOWNER`, no network and a read-only root.
+- **Careful:** `docker compose down -v` deletes the `cortex-vaults` volume and every vault in it; `down` keeps it.
+- **No `.env` needed:** every setting has its default in `compose.yaml`, so `docker compose up -d --build` alone runs
+  the hub. Set `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL` anyway (without them nothing learned is committed), and on Linux
+  `CORTEX_UID` / `CORTEX_GID` when your ids are not 1000. A missing `~/.cortex-secrets/push.token` or
+  `~/.claude/projects` is made by Docker as an empty folder; the hub then has no shared push token or memories to import.
+
 - **Command line:** `./cortex.sh <command>` (Windows `.\cortex.ps1`) runs `scripts/cortex_cli.py` in the container:
   `list`, `new`, `brain <vault> <engine args>`, `doctor`, `upgrade`, `rem <vault>`, `ideas <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`
   (as `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL`), `precommit`.
@@ -495,6 +511,23 @@ A vault is a git repository with no remote by default. Choose one:
 Restore by cloning or copying, then follow §3 (hooksPath, `chmod +x`, identity) and run `B doctor`. The vault contains no secrets by construction: the hook blocks them.
 
 ## 10. Upgrading the engine
+
+**With the container, it is automatic** (`scripts/hub_update.py`). Each time an agent starts a task (`brief`):
+1. its vault is put on the hub's engine when it runs an older one (one commit `engine: v<version>` by the Cortex hub)
+   and its data on the current schema when it is behind (`migrate --commit`). The hub also does this for every vault
+   when it starts; `brief` catches what came in since (a vault copied in, pulled from another machine, made by an
+   older tool). A vault on a newer engine is left alone.
+2. at most once every `CORTEX_UPDATE_HOURS` (24), in the background, the hub reads the engine version on the default
+   branch of `CORTEX_UPDATE_REPO` (the first 4 KB of `brain_core.py` from raw.githubusercontent.com; the repository is
+   public, no token). When it is newer, `brief` adds `## update` with the two commands to run in the engine folder:
+   `git pull`, then `docker compose up -d --build`. The hub restarts on the new image and brings every vault up to it.
+   The container never rebuilds itself: it has no access to Docker, on purpose. The last answer is kept in
+   `<vaults>/.cortex-hub/update-state.json`; offline, nothing is said and the next interval tries again.
+   `CORTEX_UPDATE_CHECK=0` in `.env` turns the check off.
+
+No image registry is involved: the image is built from this folder, so `git pull` is how a new version arrives.
+
+**With Python on the host**, by hand:
 
 Upgrade all siblings together:
 

@@ -654,6 +654,13 @@ def brief(st, a: dict, vault: Path) -> tuple[bool, str]:
         synced = hub_sync.pull_if_stale(vault)
     except Exception:   # noqa: BLE001
         synced = ""
+    updated = ""
+    if vault == st.vault:   # this agent's own vault on the latest engine and schema, and a newer Cortex said (hub_update)
+        try:
+            import hub_update
+            updated = hub_update.on_brief(vault)
+        except Exception:   # noqa: BLE001
+            updated = ""
     if vault == st.vault and st.by and has_sessions(vault):
         ok, ses = run_engine(st.brain, vault, ["session", "new", "--by", st.by], st.timeout)
         sid = ses.splitlines()[0].strip() if ok and ses.strip() else None
@@ -665,6 +672,8 @@ def brief(st, a: dict, vault: Path) -> tuple[bool, str]:
              f"## session\n{ses if ok else 'unknown: ' + ses}"]
     if synced:
         parts.append(f"## {synced}")
+    if updated:
+        parts.append(f"## update\n{updated}")
     if a.get("query"):
         q = {k: v for k, v in a.items() if k in ("query", "all", "reads")}
         okq, got = ask(st, dict(q, session=sid) if sid else q, vault)

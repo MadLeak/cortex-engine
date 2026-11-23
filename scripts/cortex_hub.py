@@ -54,6 +54,7 @@ import cortex_mcp  # noqa: E402  (the MCP service rides the hub's own port: /mcp
 import hub_rem  # noqa: E402  (REM dreaming inside the container)
 import hub_sync  # noqa: E402  (a cortex kept in step with its remote)
 import hub_settings  # noqa: E402  (each cortex's Settings dialog)
+import hub_update  # noqa: E402  (every cortex on the latest engine; a newer Cortex said on brief)
 
 ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
 # the only files of a vault the hub serves, relative to its _brain folder
@@ -96,48 +97,14 @@ def upgrade_engines(root: Path, want: str) -> list[str]:
     """Every vault on the hub's own engine: an older one gets this engine (scripts/upgrade_engine.py) and, when the
     vault has commits and nothing else staged, one commit `engine: v<version>` by the hub. A newer one is left alone,
     and the resident engine does not serve it (it runs its own brain.py)."""
-    out = []
-    for name, v in vaults(root).items():
-        try:
-            m = cortex_mcp.VERSION_LINE.search((v / "_brain/scripts/brain_core.py").read_text(encoding="utf-8"))
-        except OSError:
-            continue
-        have = m.group(1) if m else "?"
-        if version_tuple(have) >= version_tuple(want):
-            if version_tuple(have) > version_tuple(want):
-                out.append(f"{name}: engine v{have} is newer than the hub's v{want}: left alone")
-            continue
-        r = subprocess.run([sys.executable, str(ENGINE / "scripts/upgrade_engine.py"), str(v)],
-                           capture_output=True, text=True, timeout=300)
-        if "update" not in r.stdout:
-            out.append(f"{name}: upgrade from v{have} failed: {(r.stderr or r.stdout).strip()[-300:]}")
-            continue
-        g = lambda *a: cortex_mcp.git(v, *a, env={**os.environ, **HUB_IDENTITY})   # noqa: E731
-        if g("rev-parse", "-q", "--verify", "HEAD").returncode != 0:
-            out.append(f"{name}: engine v{have} -> v{want} (no first commit yet: left for its owner to commit)")
-            continue
-        if g("diff", "--cached", "--name-only").stdout.strip():
-            out.append(f"{name}: engine v{have} -> v{want} (something else is staged: left uncommitted)")
-            continue
-        g("add", "--", "_brain/scripts", ".githooks")
-        c = g("commit", "-q", "-m", f"engine: v{want}", "-m", "upgraded by the Cortex hub on start")
-        out.append(f"{name}: engine v{have} -> v{want}" + ("" if c.returncode == 0 else
-                                                         f" (the commit was refused: {(c.stderr or c.stdout).strip()[-200:]})"))
-    return out
+    return [line for v in vaults(root).values() if (line := hub_update.upgrade_one(v, want))]
 
 
 def migrate_vaults(root: Path) -> list[str]:
     """Every vault's data up to its engine's schema (engine 2.17+): `brain.py migrate --commit`, one commit per
-    migration by the Cortex hub. Deterministic code, no model; a migration that cannot run waits and says why."""
-    out = []
-    for name, v in vaults(root).items():
-        if not cortex_mcp.engine_at_least(v, (2, 17, 0)):
-            continue
-        r = subprocess.run([sys.executable, str(v / "_brain/scripts/brain.py"), "--vault", str(v), "migrate", "--commit"],
-                           capture_output=True, text=True, timeout=600, env={**os.environ, **HUB_IDENTITY})
-        lines = [x for x in (r.stdout + r.stderr).splitlines() if x.strip() and not x.startswith("schema ")]
-        out += [f"{name}: {x.strip()}" for x in lines]
-    return out
+    migration by the Cortex hub. Deterministic code, no model; a migration that cannot run waits and says why.
+    `brief` does the same for the agent's own vault (hub_update)."""
+    return [line for v in vaults(root).values() for line in hub_update.migrate_one(v)]
 
 
 def forget(v: Path) -> None:
@@ -1739,6 +1706,7 @@ def main() -> None:
             print(line, flush=True)
         for v in vaults(Hub.root).values():
             cortex_mcp.ensure_token(v)
+        hub_update.UPSTREAM.poke(Hub.root)   # is a newer Cortex published? asked in the background, said on brief
         port = "" if (scheme, Hub.public_port) in (("https", 443), ("http", 80)) else f":{Hub.public_port}"
         print(f"MCP at {scheme}://{dns[0]}{port}/mcp/<vault>, each vault behind the token in "
               f"<vault>/{cortex_mcp.TOKEN_IGNORE} · resident engine v{cortex_mcp.RESIDENT.version}, "

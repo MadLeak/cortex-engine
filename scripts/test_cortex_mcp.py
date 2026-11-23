@@ -12,8 +12,12 @@ import sys
 import tempfile
 import threading
 import time
+import os
 import unittest
 from pathlib import Path
+from unittest import mock
+
+os.environ["CORTEX_UPDATE_CHECK"] = "0"   # brief never asks GitHub for a newer Cortex during the tests
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -624,6 +628,17 @@ class BriefTests(Base):
 
     def test_brief_without_a_map_says_so(self):
         self.assertIn("no MAP.md yet", self.ran(call("brief")))
+
+    def test_brief_says_what_it_brought_up_to_date_and_a_newer_cortex(self):
+        import hub_update
+        with mock.patch.object(hub_update, "on_brief", return_value="My Cortex: engine v2.0.0 -> v9.9.9") as on:
+            out = self.ran(call("brief"))
+        on.assert_called_once_with(self.v)
+        self.assertIn("## update\nMy Cortex: engine v2.0.0 -> v9.9.9", out)
+        with mock.patch.object(hub_update, "on_brief", return_value=""):
+            self.assertNotIn("## update", self.ran(call("brief")))
+        with mock.patch.object(hub_update, "on_brief", side_effect=RuntimeError("boom")):
+            self.assertIn("## hot", self.ran(call("brief")), "an update failure never fails the brief")
 
 
 TEMPLATE = HERE.parent / "template-vault"
