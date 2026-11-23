@@ -28,6 +28,7 @@ in your own client's configuration.
 | The git identity for vault commits (`CORTEX_GIT_NAME`, `CORTEX_GIT_EMAIL`), when `git config --global` has none | Commits are signed as the owner |
 | `--lan` or `--trusted` modes | They expose the hub on the network or change the machine's DNS and trust store (administrator) |
 | Importing Claude Code memories into the vault | It copies the owner's notes into a new store |
+| Where the vaults folder lives, if not the default `~/Vaults` | It is their folder of notes; the default is fine when they do not say |
 | Any remote or push token for a vault | A vault holds personal data and must stay private |
 | Anything in §8 *Never do* | — |
 
@@ -93,7 +94,7 @@ only edit it when §1 asked for a different port or the human gave an identity:
 | `CORTEX_UID`, `CORTEX_GID` | Linux: the output of `id -u` and `id -g` (the installer fills them). Windows/macOS: leave as is |
 | `CORTEX_OWNER` | the human's name, as they want it in `AGENTS.md` |
 | `CORTEX_GIT_NAME`, `CORTEX_GIT_EMAIL` | the identity vault commits are signed with. **Empty means `finish` cannot commit**: fill them |
-| `CORTEX_VAULTS` | leave commented: the vaults live in `~/Vaults` (`%USERPROFILE%\Vaults`) |
+| `CORTEX_VAULTS` | the host folder mapped into the container for the vaults. Leave it commented for the default `~/Vaults` (`%USERPROFILE%\Vaults`); set it only when the human chose another folder |
 
 Never commit `.env` (it is gitignored) and never print its values back in chat beyond the names.
 
