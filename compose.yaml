@@ -71,6 +71,13 @@ services:
       CORTEX_OWNER: ${CORTEX_OWNER:-the owner}
       CORTEX_GIT_NAME: ${CORTEX_GIT_NAME:-}
       CORTEX_GIT_EMAIL: ${CORTEX_GIT_EMAIL:-}
+      # the owner's identity as git config too (HOME is an empty tmpfs: no ~/.gitconfig), so doctor sees it and any
+      # commit made in here has an author; the hub's own commits still set GIT_AUTHOR_* (Cortex hub), which wins
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: user.name
+      GIT_CONFIG_VALUE_0: ${CORTEX_GIT_NAME:-}
+      GIT_CONFIG_KEY_1: user.email
+      GIT_CONFIG_VALUE_1: ${CORTEX_GIT_EMAIL:-}
       CORTEX_STRATA: ${CORTEX_STRATA:-http://host.docker.internal:8080}   # the local model server REM dreaming asks (Settings)
       CORTEX_STRATA_KEY: ${CORTEX_STRATA_KEY:-/vaults/.cortex-hub/strata.key}   # its API key, if it wants one: put it in that file
     volumes:
@@ -94,6 +101,13 @@ services:
       CORTEX_OWNER: ${CORTEX_OWNER:-the owner}
       CORTEX_GIT_NAME: ${CORTEX_GIT_NAME:-}
       CORTEX_GIT_EMAIL: ${CORTEX_GIT_EMAIL:-}
+      # the owner's identity as git config too (HOME is an empty tmpfs: no ~/.gitconfig), so doctor sees it and any
+      # commit made in here has an author; the hub's own commits still set GIT_AUTHOR_* (Cortex hub), which wins
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: user.name
+      GIT_CONFIG_VALUE_0: ${CORTEX_GIT_NAME:-}
+      GIT_CONFIG_KEY_1: user.email
+      GIT_CONFIG_VALUE_1: ${CORTEX_GIT_EMAIL:-}
       CORTEX_STRATA: ${CORTEX_STRATA:-http://host.docker.internal:8080}   # the local model server REM dreaming asks (Settings)
       CORTEX_STRATA_KEY: ${CORTEX_STRATA_KEY:-/vaults/.cortex-hub/strata.key}   # its API key, if it wants one: put it in that file
       CORTEX_LAN_ADDRESS: ${CORTEX_LAN_ADDRESS:-}   # the LAN listener; compose.lan.yaml publishes it
