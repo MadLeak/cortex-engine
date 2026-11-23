@@ -21,14 +21,18 @@ device accepts it once), `--trusted` / `-Trusted` (administrator: `https://corte
 - **Where the vaults live:** `CORTEX_VAULTS` in `.env`. Unset, the host folder `~/Vaults` (`%USERPROFILE%\Vaults`) is
   mapped at `/vaults`; a path maps that folder instead; the bare name `cortex-vaults` maps no host folder and keeps the
   vaults in the Docker volume `cortex_cortex-vaults` (no Obsidian or host git on them, and `--trusted` is refused because
-  it installs the CA from the folder). To switch later, set the new place in `.env` and run `./install.sh
-  --move-from=<old place>` (Windows `install.ps1 -MoveFrom <old place>`), where the old place is a folder path or
-  `cortex-vaults`. It checks that the new place is empty (otherwise it stops with nothing changed), stops the hub, copies
-  everything with `cp -a` as root in a throwaway container of the hub image, gives it to `CORTEX_UID:CORTEX_GID`, and
-  starts the hub on the new place. The old copy is never deleted. The image makes `/vaults` belong to uid 1000, so a new
-  volume is writable even under a plain `docker compose up`; the installers also give a volume's top folder to
-  `CORTEX_UID:CORTEX_GID` on every run. `docker compose down -v` does not remove that volume: `docker volume rm
-  cortex_cortex-vaults` does, for good.
+  it installs the CA from the folder).
+- **The `vaults` service** (`scripts/vaults_init.sh`) runs before the hub on every `up` and exits: it gives the vaults
+  place to `CORTEX_UID:CORTEX_GID` (a new volume or a folder Docker made starts out as root's), and when that place holds
+  no vault yet (at most `.cortex-hub`) while `CORTEX_VAULTS_FROM` has something, it copies everything over with `cp -a`.
+  So switching is: new place in `CORTEX_VAULTS`, old place in `CORTEX_VAULTS_FROM` (unset means the `cortex-vaults`
+  volume), `docker compose up -d`. A non-empty new place is never written to, and the old place is never deleted.
+  It runs as root with only `CHOWN`, `DAC_OVERRIDE` and `FOWNER`, no network and a read-only root.
+- **Careful:** `docker compose down -v` deletes the `cortex-vaults` volume and every vault in it; `down` keeps it.
+- **No `.env` needed:** every setting has its default in `compose.yaml`, so `docker compose up -d --build` alone runs
+  the hub. Set `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL` anyway (without them nothing learned is committed), and on Linux
+  `CORTEX_UID` / `CORTEX_GID` when your ids are not 1000. A missing `~/.cortex-secrets/push.token` or
+  `~/.claude/projects` is made by Docker as an empty folder; the hub then has no shared push token or memories to import.
 
 - **Command line:** `./cortex.sh <command>` (Windows `.\cortex.ps1`) runs `scripts/cortex_cli.py` in the container:
   `list`, `new`, `brain <vault> <engine args>`, `doctor`, `upgrade`, `rem <vault>`, `ideas <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`

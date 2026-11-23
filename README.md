@@ -67,6 +67,9 @@ On Windows, run the last line in PowerShell as:
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
+Prefer plain Docker? `docker compose up -d --build` works on its own: `compose.yaml` already holds every setting. The
+installer only adds a `.env` with your name and git identity, so what your agents learn is signed by you.
+
 **2. Open the page**
 
 Go to **http://cortex.localhost:8790** in your browser.
@@ -105,21 +108,22 @@ docker run --rm -v cortex_cortex-vaults:/v -v "$PWD":/b alpine tar czf /b/vaults
 
 Not sure? Keep the default.
 
-**Changed your mind later?** Your notes come with you. Write the new place in `.env`, then run the installer once with
-the old place:
+**Changed your mind later?** Your notes come with you. In `.env`, write the new place and the old one, then start
+Cortex as usual:
+
+```ini
+CORTEX_VAULTS=cortex-vaults                # the new place
+CORTEX_VAULTS_FROM=/home/me/Vaults         # the old place (leave it out when the old place was the Docker volume)
+```
 
 ```bash
-./install.sh --move-from=~/Vaults            # old place was the folder ~/Vaults
-./install.sh --move-from=cortex-vaults       # old place was the Docker volume
+docker compose up -d
 ```
 
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1 -MoveFrom "$env:USERPROFILE\Vaults"
-powershell -ExecutionPolicy Bypass -File install.ps1 -MoveFrom cortex-vaults
-```
+If the new place is empty, every vault is copied there before Cortex starts. The old copy is left untouched: delete it
+yourself once you see your agents on the page.
 
-It stops Cortex, copies every vault to the new place, and starts it again. The old copy is left untouched: delete it
-yourself once you see your agents on the page. If the new place already has files in it, nothing is copied.
+> ⚠️ With the Docker volume, `docker compose down -v` deletes your notes. Use `docker compose down` (without `-v`).
 
 ---
 

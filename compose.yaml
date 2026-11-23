@@ -1,6 +1,9 @@
 # Copyright (c) 2026 Adhonys Diaz · By MadLeak · PolyForm Noncommercial 1.0.0 (see LICENSE.md)
-# Cortex hub. Settings come from .env (copy .env.example); `docker compose up -d --build` starts it.
-# One folder on the host holds every agent's cortex and the hub's own data (.cortex-hub: local CA, access key).
+# Cortex hub. Everything it needs is set here: `docker compose up -d --build` runs it as it is, with no .env, at
+# http://cortex.localhost:8790 and the vaults in ~/Vaults. A .env (copy .env.example) only changes what you want to:
+# the port, where the vaults live, the git identity commits are signed with (set it, or agents cannot commit what they
+# learn), and on Linux your user ids. On every `up` the "vaults" service gets the vaults place ready first.
+# One place holds every agent's cortex and the hub's own data (.cortex-hub: local CA, access key).
 name: cortex
 
 services:
@@ -32,11 +35,32 @@ services:
     security_opt: ["no-new-privileges:true"]
     entrypoint: ["python3", "/opt/cortex/scripts/bench_calls.py", "--dir", "/tmp/bench"]
 
+  # runs once before the hub on every `up` and exits (scripts/vaults_init.sh): makes the vaults place the hub's user's,
+  # and when CORTEX_VAULTS points somewhere new and empty, copies the vaults over from CORTEX_VAULTS_FROM
+  vaults:
+    build: .
+    image: cortex-hub:2.26.0
+    user: "0:0"   # root, with only the rights to copy and hand over files
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: none
+    environment:
+      CORTEX_UID: ${CORTEX_UID:-1000}
+      CORTEX_GID: ${CORTEX_GID:-1000}
+    volumes:
+      - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
+      - ${CORTEX_VAULTS_FROM:-cortex-vaults}:/from:ro
+    entrypoint: ["sh", "/opt/cortex/scripts/vaults_init.sh"]
+
   # the command line, in the container: ./cortex.sh <command> (Windows: .\cortex.ps1), see scripts/cortex_cli.py
   cli:
     profiles: [tools]
     build: .
     image: cortex-hub:2.26.0
+    depends_on:
+      vaults: {condition: service_completed_successfully}
     user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
     read_only: true
     tmpfs: [/tmp]
@@ -57,6 +81,8 @@ services:
   hub:
     build: .
     image: cortex-hub:2.26.0
+    depends_on:
+      vaults: {condition: service_completed_successfully}
     restart: unless-stopped
     user: "${CORTEX_UID:-1000}:${CORTEX_GID:-1000}"
     read_only: true
@@ -99,5 +125,8 @@ services:
 #     the notes in Obsidian or an editor, and back them up like any files;
 #   - no folder at all: CORTEX_VAULTS=cortex-vaults keeps them in the Docker volume below, inside Docker only. Use the
 #     hub's page and ./cortex.sh to see them; --trusted needs a folder (it installs the CA from it).
+# Changing your mind is one `docker compose up`: set CORTEX_VAULTS to the new place and CORTEX_VAULTS_FROM to the old one
+# (unset, it is this volume); the "vaults" service copies them over when the new place is empty.
+# Careful: `docker compose down -v` deletes this volume and every vault in it. `down` alone keeps it.
 volumes:
   cortex-vaults: {}

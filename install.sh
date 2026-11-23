@@ -6,22 +6,18 @@
 #   ./install.sh --trusted    # https://cortex.local with no warning: sudo installers/setup_host.sh routes its DNS and
 #                             # trusts the hub's CA on this machine (what this script did before; one password)
 #   ./install.sh --remove     # sudo: takes the --trusted DNS route and CA off this machine
-#   ./install.sh --move-from=OLD   # copies the vaults from where they were (a folder, or cortex-vaults for the Docker
-#                             # volume) to where CORTEX_VAULTS in .env says now; the old copy is left as it was
 # It writes .env when there is none (your ids and git identity), creates ~/Vaults and starts the container. After
 # that, an agent is connected from the hub's "Connect an agent" form, and ./cortex.sh is the command line.
 # Windows: install.ps1.
 set -eu
 cd "$(dirname "$0")"
-LAN=0; TRUSTED=0; MOVE_FROM=
+LAN=0; TRUSTED=0
 for arg in "$@"; do
   case "$arg" in
     --lan) LAN=1 ;;
     --trusted) TRUSTED=1 ;;
     --remove) exec sudo "$(pwd)/installers/setup_host.sh" --remove ;;
-    --move-from=?*) MOVE_FROM=${arg#--move-from=}
-                    case "$MOVE_FROM" in "~/"*) MOVE_FROM=$HOME/${MOVE_FROM#"~/"} ;; esac ;;   # the shell leaves ~ after = alone
-    *) echo "unknown option: $arg (--lan, --trusted, --remove, --move-from=OLD)"; exit 1 ;;
+    *) echo "unknown option: $arg (--lan, --trusted, --remove)"; exit 1 ;;
   esac
 done
 command -v docker >/dev/null || { echo "missing: docker"; exit 1; }
@@ -59,46 +55,11 @@ fi
 
 val() { sed -n "s/^$1=//p" .env | tail -1; }
 vaults=$(val CORTEX_VAULTS); vaults=${vaults:-$HOME/Vaults}
-# CORTEX_VAULTS is a folder (a path) or the Docker volume cortex-vaults (no folder on this machine)
-project=${COMPOSE_PROJECT_NAME:-cortex}
-uid=$(val CORTEX_UID); gid=$(val CORTEX_GID); owner="${uid:-1000}:${gid:-1000}"
-mount_of() {   # what docker run mounts for a vaults place: the folder itself, or the volume's full name
-  case "$1" in
-    */*) printf %s "$1" ;;
-    cortex-vaults) printf '%s_cortex-vaults' "$project" ;;
-    *) echo "CORTEX_VAULTS must be a folder path or cortex-vaults, not: $1" >&2; exit 1 ;;
-  esac
-}
-target=$(mount_of "$vaults")
 case "$vaults" in
   */*) mkdir -p "$vaults" ;;   # a folder: made before docker would make it as root
-  *) [ "$TRUSTED" = 0 ] || { echo "--trusted needs the vaults in a folder (CORTEX_VAULTS is a Docker volume): it installs the CA from there"; exit 1; }
-     docker volume inspect "$target" >/dev/null 2>&1 || docker volume create --label "com.docker.compose.project=$project" \
-       --label com.docker.compose.volume=cortex-vaults "$target" >/dev/null ;;
-esac
-docker compose build hub
-image=$(docker compose config --images hub)
-# the container runs as CORTEX_UID: the vaults place must be its, and a new Docker volume starts out as root's
-in_box() { docker run --rm --user 0:0 --entrypoint sh "$@"; }
-
-if [ -n "$MOVE_FROM" ]; then
-  source=$(mount_of "$MOVE_FROM")
-  [ "$source" != "$target" ] || { echo "--move-from: the vaults are already there ($vaults)"; exit 1; }
-  case "$MOVE_FROM" in
-    */*) [ -d "$MOVE_FROM" ] || { echo "--move-from: no folder $MOVE_FROM"; exit 1; } ;;
-    *) docker volume inspect "$source" >/dev/null 2>&1 || { echo "--move-from: no Docker volume $source"; exit 1; } ;;
-  esac
-  empty='if [ -n "$(ls -A /vaults)" ]; then echo "--move-from: $1 is not empty; nothing was copied"; exit 3; fi'
-  in_box -v "$target:/vaults" "$image" -c "$empty" sh "$vaults"   # checked before the hub is stopped
-  docker compose stop hub >/dev/null 2>&1 || true   # nothing writes the old place while it is copied
-  echo "copying the vaults from $MOVE_FROM to $vaults ..."
-  in_box -v "$source:/from:ro" -v "$target:/vaults" "$image" -c \
-    "$empty"'
-     cp -a /from/. /vaults/ && chown -R "$2" /vaults' sh "$vaults" "$owner"
-  echo "moved. The old copy in $MOVE_FROM was left as it was: remove it yourself once the hub shows your cortexes."
-fi
-case "$vaults" in */*) ;; *) in_box -v "$target:/vaults" "$image" -c 'chown "$1" /vaults' sh "$owner" ;; esac
-docker compose up -d
+  *) [ "$TRUSTED" = 0 ] || { echo "--trusted needs the vaults in a folder (CORTEX_VAULTS is a Docker volume): it installs the CA from there"; exit 1; } ;;
+esac   # a bare name (CORTEX_VAULTS=cortex-vaults) is a Docker volume: no folder here
+docker compose up -d --build
 i=0; until docker compose logs hub 2>/dev/null | grep -q 'MCP at'; do
   i=$((i + 1)); [ $i -lt 60 ] || { echo "the hub did not start: docker compose logs hub"; exit 1; }; sleep 1
 done
