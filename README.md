@@ -4,6 +4,29 @@
 
 **A graph second brain for AI agents.** Cortex gives an agent a long-term memory that stays small, auditable and owned by a human: plain Markdown notes in a git repository, organised in layers, read through a budgeted funnel, and changed only through commits a pre-commit hook has validated.
 
+> **Are you an AI agent asked to install this?** Follow [`docs/AI-RUNBOOK.md`](docs/AI-RUNBOOK.md) from top to bottom. It is written for you: every step has a command, an expected result and a stop condition.
+
+## What it does
+
+Cortex is a memory service that an AI agent (Claude Code, Codex, Gemini CLI, OpenCode, Hermes or any MCP client) uses across tasks:
+
+1. **At the start of a task** the agent calls `brief`: it gets the few notes that matter most right now and, for its question, the best-matching notes as one-line signatures, reading full bodies only when needed and within a fixed budget.
+2. **At the end of a task** it calls `finish`: it credits the notes that helped and stores what it learned as short, typed, *provisional* facts, committed to git.
+3. **Over time** use turns provisional facts into trusted ones, a curator agent tidies the graph (links, merges, archives), and the human alone marks a note *consolidated*.
+
+Each agent gets its own vault (a folder of Markdown notes plus the engine), served by one Docker container: a hub with a live panel per agent, an MCP endpoint per vault, and a command line.
+
+## What it solves
+
+| Problem with agent memory today | What Cortex does instead |
+|---|---|
+| Agents forget everything between sessions, or remember in a black box (a vector store, a vendor's hidden memory) | Memory is plain Markdown in git: readable in Obsidian or any editor, diffable, revertible, backed up like code |
+| "Memory" dumps grow until they flood the context window | A layered graph (domains → concepts → details, with word limits) read through a **budgeted funnel**: signatures first, at most a few bodies, exit code 2 says "stop and answer" |
+| Agents write wrong or duplicate facts with nobody checking | Every write passes validation (length, one fact, English, no near-duplicates, **no secrets or personal data**) and a git pre-commit hook; new facts stay provisional until use confirms them |
+| Several agents on one machine, each with its own silo | One vault per agent, sibling vaults readable across agents, one hub showing all of them |
+| Memory that leaks personal data | A vault can never be pushed to a public repository (the pre-push hook checks the forge first) |
+| Heavy stacks (databases, embeddings, API keys) | Python standard library only, no model calls in the engine, one container, no host changes |
+
 - **Plain files.** Every memory is a Markdown note with YAML frontmatter. The vault opens in [Obsidian](https://obsidian.md) or any editor, and git keeps its history.
 - **Layers.** L1 domains, L2 concepts and L3 details, each with a word limit. A generated `MAP.md` is the always-loaded core (L0).
 - **Budgeted reading.** `recall` returns one-line signatures (and the body itself when one answer is clearly ahead), `read` hands over at most a few bodies, and exit code 2 tells the agent to stop and answer.
@@ -20,7 +43,7 @@ or certificate changes. The engine, the panels, the MCP service and the command 
 vaults stay plain folders under `~/Vaults` (`%USERPROFILE%\Vaults` on Windows), so Obsidian sees them as before.
 
 ```bash
-git clone <this repository> cortex && cd cortex
+git clone https://github.com/MadLeak/cortex-engine.git cortex && cd cortex
 ./install.sh                        # Windows: powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -44,7 +67,7 @@ Options: `--lan` / `-Lan` serves the cortexes you mark LAN to the local network 
 Requirements: Python 3.10 or newer (the engine's `doctor` checks for 3.10; the test suite was run on Python 3.14.4), git, and optionally Obsidian.
 
 ```bash
-git clone <this repository> cortex && cd cortex
+git clone https://github.com/MadLeak/cortex-engine.git cortex && cd cortex
 
 # 1. Create a vault (scaffold, engine, config, hook, git repo, first commit)
 python3 scripts/new_vault.py ~/vaults/my-cortex --name "My Cortex" --agent "my agent" --owner "me"
@@ -105,7 +128,7 @@ This writes one marked, idempotent block into the agent's global instruction fil
 | `installers/wire_agent.py` | Wires Claude Code, Codex, Gemini CLI, OpenCode, Hermes Agent or any agent to a vault |
 | `skills/` | Claude Code skills for the curator: capture, atomize, link, review, consolidate (copied into each new vault's `.claude/skills/`) |
 | `examples/` | Two fictional sibling vaults: `fern-cortex` (a gardening agent) and `kitchen-cortex` (a kitchen agent) |
-| `docs/` | [RUNBOOK.md](docs/RUNBOOK.md) (operations), [DECISIONS.md](docs/DECISIONS.md) (what was decided and how to apply it) and [PAPER.md](docs/PAPER.md) (design) |
+| `docs/` | [AI-RUNBOOK.md](docs/AI-RUNBOOK.md) (self-install by an AI agent), [RUNBOOK.md](docs/RUNBOOK.md) (operations), [DECISIONS.md](docs/DECISIONS.md) (what was decided and how to apply it), [PENDING.md](docs/PENDING.md) (parked cases) and [PAPER.md](docs/PAPER.md) (design) |
 
 ## Tests
 
@@ -119,7 +142,7 @@ The engine's suite has 62 tests, including a 1,000-node performance check, and r
 
 ## Status
 
-Engine version 2.26.0. Since 2.16 it runs in Docker only, with the resident engine keeping the graph, index and usage sums in memory (recall on a 1,000-node vault: 842 ms to 96 ms on a slow Docker Desktop bind mount, 28 ms to 23 ms on tmpfs), with REM dreaming (the questions each note answers, from your local model server) scheduled from the hub's Settings, with the layers expressed as roles in a table (domain, concept, leaf; the default is the paper's three), with an ideas miner (a plain pass that proposes concepts and links to the curator through the inbox), with an MCP service per vault, vault migrations with no model, Claude Code memory import, per-cortex *Settings* (config, remote, push token, MCP token, delete) on the hub and from each panel, and a panel whose recalls are drawn as lightning. Known gaps are listed in the [runbook](docs/RUNBOOK.md#known-gaps-not-verified-or-not-built). Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
+Engine version 2.26.0. Since 2.16 it runs in Docker only, with the resident engine keeping the graph, index and usage sums in memory (recall on a 1,000-node vault: 842 ms to 96 ms on a slow Docker Desktop bind mount, 28 ms to 23 ms on tmpfs), with REM dreaming (the questions each note answers, from your local model server) scheduled from the hub's Settings, with the layers expressed as roles in a table (domain, concept, leaf; the default is the paper's three), with an ideas miner (a plain pass that proposes concepts and links to the curator through the inbox), with an MCP service per vault, vault migrations with no model, Claude Code memory import, per-cortex *Settings* (config, remote, push token, MCP token, delete) on the hub and from each panel, a panel whose recalls are drawn as lightning, three to five configurable layers (2.26.0), and an opt-in sync that keeps a cortex in step with its private remote (commit as the owner, pull, push; never forced). Known gaps are listed in the [runbook](docs/RUNBOOK.md#known-gaps-not-verified-or-not-built). Cortex comes from one person's working setup of several agents sharing a machine. It works, but it is young: see *Limitations* in the paper.
 
 ## License
 
