@@ -512,6 +512,23 @@ Restore by cloning or copying, then follow §3 (hooksPath, `chmod +x`, identity)
 
 ## 10. Upgrading the engine
 
+**With the container, it is automatic** (`scripts/hub_update.py`). Each time an agent starts a task (`brief`):
+1. its vault is put on the hub's engine when it runs an older one (one commit `engine: v<version>` by the Cortex hub)
+   and its data on the current schema when it is behind (`migrate --commit`). The hub also does this for every vault
+   when it starts; `brief` catches what came in since (a vault copied in, pulled from another machine, made by an
+   older tool). A vault on a newer engine is left alone.
+2. at most once every `CORTEX_UPDATE_HOURS` (24), in the background, the hub reads the engine version on the default
+   branch of `CORTEX_UPDATE_REPO` (the first 4 KB of `brain_core.py` from raw.githubusercontent.com; the repository is
+   public, no token). When it is newer, `brief` adds `## update` with the two commands to run in the engine folder:
+   `git pull`, then `docker compose up -d --build`. The hub restarts on the new image and brings every vault up to it.
+   The container never rebuilds itself: it has no access to Docker, on purpose. The last answer is kept in
+   `<vaults>/.cortex-hub/update-state.json`; offline, nothing is said and the next interval tries again.
+   `CORTEX_UPDATE_CHECK=0` in `.env` turns the check off.
+
+No image registry is involved: the image is built from this folder, so `git pull` is how a new version arrives.
+
+**With Python on the host**, by hand:
+
 Upgrade all siblings together:
 
 ```bash
