@@ -55,7 +55,10 @@ fi
 
 val() { sed -n "s/^$1=//p" .env | tail -1; }
 vaults=$(val CORTEX_VAULTS); vaults=${vaults:-$HOME/Vaults}
-mkdir -p "$vaults"   # before docker would create it as root
+case "$vaults" in
+  */*) mkdir -p "$vaults" ;;   # a folder: made before docker would make it as root
+  *) [ "$TRUSTED" = 0 ] || { echo "--trusted needs the vaults in a folder (CORTEX_VAULTS is a Docker volume): it installs the CA from there"; exit 1; } ;;
+esac   # a bare name (CORTEX_VAULTS=cortex-vaults) is a Docker volume: no folder here
 docker compose up -d --build
 i=0; until docker compose logs hub 2>/dev/null | grep -q 'MCP at'; do
   i=$((i + 1)); [ $i -lt 60 ] || { echo "the hub did not start: docker compose logs hub"; exit 1; }; sleep 1

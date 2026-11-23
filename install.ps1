@@ -45,7 +45,9 @@ if ($Trusted -and -not (Select-String -Path .env -Pattern 'compose.trusted.yaml'
   throw '-Trusted: this .env has no compose.trusted.yaml in COMPOSE_FILE (see .env.example), or remove .env and run again' }
 
 $vaults = Get-EnvValue CORTEX_VAULTS; if (-not $vaults) { $vaults = Join-Path $env:USERPROFILE 'Vaults' }
-New-Item -ItemType Directory -Force -Path $vaults | Out-Null
+$folder = $vaults -match '[\\/]'   # a bare name (CORTEX_VAULTS=cortex-vaults) is a Docker volume: no folder here
+if ($Trusted -and -not $folder) { throw '-Trusted needs the vaults in a folder (CORTEX_VAULTS is a Docker volume): it installs the CA from there' }
+if ($folder) { New-Item -ItemType Directory -Force -Path $vaults | Out-Null }
 docker compose up -d --build; if ($LASTEXITCODE) { throw 'docker compose failed' }
 for ($i = 0; $i -lt 60 -and -not (docker compose logs hub 2>$null | Select-String -SimpleMatch 'MCP at'); $i++) { Start-Sleep 1 }
 if (-not (docker compose logs hub 2>$null | Select-String -SimpleMatch 'MCP at')) { throw 'the hub did not start: docker compose logs hub' }

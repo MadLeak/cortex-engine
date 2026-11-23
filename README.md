@@ -87,24 +87,23 @@ Restart the agent. That's it: it now checks its memory at the start of each task
 
 ## Where your notes live (your choice)
 
-By default the installer keeps every vault in a folder on your computer:
+You choose whether the notes sit in a folder on your computer or stay inside Docker. One line in the `.env` file
+decides it (`CORTEX_VAULTS`); set it before the first start.
 
-| System | Default folder |
-|---|---|
-| Linux, macOS | `~/Vaults` |
-| Windows | `%USERPROFILE%\Vaults` |
+| Option | `.env` | Good for |
+|---|---|---|
+| **A folder on your computer** (default) | nothing to set: `~/Vaults` (Windows `%USERPROFILE%\Vaults`) | Opening the notes in Obsidian or an editor, and backing them up like any files |
+| **A folder you pick** | `CORTEX_VAULTS=/path/you/prefer` (Windows `D:\Cortex\Vaults`) | Same, somewhere else (another disk, a synced folder) |
+| **No folder, inside Docker only** | `CORTEX_VAULTS=cortex-vaults` | Keeping your computer clean: nothing is mapped, the notes live in a Docker volume |
 
-Sharing this folder with the container (the *mapping* in `compose.yaml`) is what lets **you** open the notes in
-Obsidian, edit them, or back them up like any other files.
+With *no folder* you still see everything on the hub's page and with `./cortex.sh`, but not in Obsidian, and the
+`--trusted` install option is not available. To back that volume up:
 
-**You decide where it goes.** To use another folder, set it in the `.env` file before you start:
-
-```ini
-CORTEX_VAULTS=/path/you/prefer        # Windows: CORTEX_VAULTS=D:\Cortex\Vaults
+```bash
+docker run --rm -v cortex_cortex-vaults:/v -v "$PWD":/b alpine tar czf /b/vaults-backup.tgz -C /v .
 ```
 
-If you do not care where the notes are, leave it as it is: the default works on its own and nothing else on your
-machine changes.
+Not sure? Keep the default.
 
 ---
 

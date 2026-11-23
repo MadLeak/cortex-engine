@@ -18,6 +18,11 @@ themselves. Options: `--lan` / `-Lan` (the cortexes marked LAN on the local netw
 device accepts it once), `--trusted` / `-Trusted` (administrator: `https://cortex.local` with no warning, §8),
 `--remove` / `-Remove`.
 
+- **Where the vaults live:** `CORTEX_VAULTS` in `.env`. Unset, the host folder `~/Vaults` (`%USERPROFILE%\Vaults`) is
+  mapped at `/vaults`; a path maps that folder instead; the bare name `cortex-vaults` maps no host folder and keeps the
+  vaults in the Docker volume `cortex_cortex-vaults` (no Obsidian or host git on them, and `--trusted` is refused because
+  it installs the CA from the folder). Choose before the first start: switching later does not move existing vaults.
+
 - **Command line:** `./cortex.sh <command>` (Windows `.\cortex.ps1`) runs `scripts/cortex_cli.py` in the container:
   `list`, `new`, `brain <vault> <engine args>`, `doctor`, `upgrade`, `rem <vault>`, `ideas <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`
   (as `CORTEX_GIT_NAME` / `CORTEX_GIT_EMAIL`), `precommit`.

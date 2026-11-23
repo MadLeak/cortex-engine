@@ -93,3 +93,11 @@ services:
       - --lan-port=9443
       - --lan-redirect-port=9080
       - --lan-dns-port=5354
+
+# Where the vaults live, set by CORTEX_VAULTS in .env (your choice):
+#   - a folder on this machine, mapped into the container (the default: ~/Vaults, or any path you set). You can open
+#     the notes in Obsidian or an editor, and back them up like any files;
+#   - no folder at all: CORTEX_VAULTS=cortex-vaults keeps them in the Docker volume below, inside Docker only. Use the
+#     hub's page and ./cortex.sh to see them; --trusted needs a folder (it installs the CA from it).
+volumes:
+  cortex-vaults: {}
