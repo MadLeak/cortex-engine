@@ -21,7 +21,14 @@ device accepts it once), `--trusted` / `-Trusted` (administrator: `https://corte
 - **Where the vaults live:** `CORTEX_VAULTS` in `.env`. Unset, the host folder `~/Vaults` (`%USERPROFILE%\Vaults`) is
   mapped at `/vaults`; a path maps that folder instead; the bare name `cortex-vaults` maps no host folder and keeps the
   vaults in the Docker volume `cortex_cortex-vaults` (no Obsidian or host git on them, and `--trusted` is refused because
-  it installs the CA from the folder). Choose before the first start: switching later does not move existing vaults.
+  it installs the CA from the folder). To switch later, set the new place in `.env` and run `./install.sh
+  --move-from=<old place>` (Windows `install.ps1 -MoveFrom <old place>`), where the old place is a folder path or
+  `cortex-vaults`. It checks that the new place is empty (otherwise it stops with nothing changed), stops the hub, copies
+  everything with `cp -a` as root in a throwaway container of the hub image, gives it to `CORTEX_UID:CORTEX_GID`, and
+  starts the hub on the new place. The old copy is never deleted. The image makes `/vaults` belong to uid 1000, so a new
+  volume is writable even under a plain `docker compose up`; the installers also give a volume's top folder to
+  `CORTEX_UID:CORTEX_GID` on every run. `docker compose down -v` does not remove that volume: `docker volume rm
+  cortex_cortex-vaults` does, for good.
 
 - **Command line:** `./cortex.sh <command>` (Windows `.\cortex.ps1`) runs `scripts/cortex_cli.py` in the container:
   `list`, `new`, `brain <vault> <engine args>`, `doctor`, `upgrade`, `rem <vault>`, `ideas <vault>`, `token <vault> [--rotate]`, `commit <vault> -m`

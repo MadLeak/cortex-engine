@@ -5,9 +5,11 @@
 #   ... install.ps1 -Trusted    # administrator: https://cortex.local with no warning, through NRPT DNS rules and
 #                               # the hub's CA in the machine's root store (what this script did before)
 #   ... install.ps1 -Remove     # administrator: takes the -Trusted DNS rules and CA off this machine
+#   ... install.ps1 -MoveFrom OLD   # copies the vaults from where they were (a folder, or cortex-vaults for the Docker
+#                               # volume) to where CORTEX_VAULTS in .env says now; the old copy is left as it was
 # It writes .env when there is none, creates %USERPROFILE%\Vaults and starts the container. After that, an agent is
 # connected from the hub's "Connect an agent" form, and .\cortex.ps1 is the command line (in the container too).
-param([switch]$Lan, [switch]$Trusted, [switch]$Remove)
+param([switch]$Lan, [switch]$Trusted, [switch]$Remove, [string]$MoveFrom)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 function Get-EnvValue($k) { if (Test-Path .env) { (Select-String -Path .env -Pattern "^$k=(.*)$" | Select-Object -Last 1).Matches.Groups[1].Value } }
@@ -45,10 +47,47 @@ if ($Trusted -and -not (Select-String -Path .env -Pattern 'compose.trusted.yaml'
   throw '-Trusted: this .env has no compose.trusted.yaml in COMPOSE_FILE (see .env.example), or remove .env and run again' }
 
 $vaults = Get-EnvValue CORTEX_VAULTS; if (-not $vaults) { $vaults = Join-Path $env:USERPROFILE 'Vaults' }
-$folder = $vaults -match '[\\/]'   # a bare name (CORTEX_VAULTS=cortex-vaults) is a Docker volume: no folder here
-if ($Trusted -and -not $folder) { throw '-Trusted needs the vaults in a folder (CORTEX_VAULTS is a Docker volume): it installs the CA from there' }
+# CORTEX_VAULTS is a folder (a path) or the Docker volume cortex-vaults (no folder on this machine)
+$project = if ($env:COMPOSE_PROJECT_NAME) { $env:COMPOSE_PROJECT_NAME } else { 'cortex' }
+$uid = Get-EnvValue CORTEX_UID; $gid = Get-EnvValue CORTEX_GID
+$owner = "$(if ($uid) { $uid } else { 1000 }):$(if ($gid) { $gid } else { 1000 })"
+function Get-Mount($place) {   # what docker run mounts for a vaults place: the folder itself, or the volume's full name
+  if ($place -match '[\\/]') { return $place }
+  if ($place -eq 'cortex-vaults') { return "${project}_cortex-vaults" }
+  throw "CORTEX_VAULTS must be a folder path or cortex-vaults, not: $place" }
+function Test-Volume($name) {   # Continue: under Stop, Windows PowerShell 5.1 throws on a native command's stderr
+  $ErrorActionPreference = 'Continue'; docker volume inspect $name 2>$null | Out-Null; return -not $LASTEXITCODE }
+function Stop-Hub { $ErrorActionPreference = 'Continue'; docker compose stop hub 2>$null | Out-Null }
+# the container runs as CORTEX_UID: the vaults place must be its, and a new Docker volume starts out as root's.
+# The sh scripts carry no double quotes: Windows PowerShell 5.1 would mangle them on the way to docker.
+function Invoke-InBox { docker run --rm --user 0:0 --entrypoint sh @args
+  if ($LASTEXITCODE -eq 3) { Write-Host 'stopped: nothing was changed'; exit 3 }
+  if ($LASTEXITCODE) { throw "docker run failed ($LASTEXITCODE)" } }
+$folder = $vaults -match '[\\/]'
+$target = Get-Mount $vaults
 if ($folder) { New-Item -ItemType Directory -Force -Path $vaults | Out-Null }
-docker compose up -d --build; if ($LASTEXITCODE) { throw 'docker compose failed' }
+else {
+  if ($Trusted) { throw '-Trusted needs the vaults in a folder (CORTEX_VAULTS is a Docker volume): it installs the CA from there' }
+  if (-not (Test-Volume $target)) {
+    docker volume create --label "com.docker.compose.project=$project" --label com.docker.compose.volume=cortex-vaults $target | Out-Null } }
+docker compose build hub; if ($LASTEXITCODE) { throw 'docker compose build failed' }
+$image = docker compose config --images hub
+
+if ($MoveFrom) {
+  $source = Get-Mount $MoveFrom
+  if ($source -eq $target) { throw "-MoveFrom: the vaults are already there ($vaults)" }
+  if ($MoveFrom -match '[\\/]') { if (-not (Test-Path -PathType Container $MoveFrom)) { throw "-MoveFrom: no folder $MoveFrom" } }
+  elseif (-not (Test-Volume $source)) { throw "-MoveFrom: no Docker volume $source" }
+  $empty = 'if ls -A /vaults | grep -q .; then echo -MoveFrom: the new place is not empty, nothing was copied; exit 3; fi'
+  Invoke-InBox -v "${target}:/vaults" $image -c $empty   # checked before the hub is stopped
+  Stop-Hub   # nothing writes the old place while it is copied
+  "copying the vaults from $MoveFrom to $vaults ..."
+  Invoke-InBox -v "${source}:/from:ro" -v "${target}:/vaults" $image -c `
+    "$empty; cp -a /from/. /vaults/ && chown -R `$1 /vaults" sh $owner
+  "moved. The old copy in $MoveFrom was left as it was: remove it yourself once the hub shows your cortexes."
+}
+if (-not $folder) { Invoke-InBox -v "${target}:/vaults" $image -c 'chown $1 /vaults' sh $owner }
+docker compose up -d; if ($LASTEXITCODE) { throw 'docker compose failed' }
 for ($i = 0; $i -lt 60 -and -not (docker compose logs hub 2>$null | Select-String -SimpleMatch 'MCP at'); $i++) { Start-Sleep 1 }
 if (-not (docker compose logs hub 2>$null | Select-String -SimpleMatch 'MCP at')) { throw 'the hub did not start: docker compose logs hub' }
 

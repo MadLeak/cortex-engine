@@ -105,6 +105,22 @@ docker run --rm -v cortex_cortex-vaults:/v -v "$PWD":/b alpine tar czf /b/vaults
 
 Not sure? Keep the default.
 
+**Changed your mind later?** Your notes come with you. Write the new place in `.env`, then run the installer once with
+the old place:
+
+```bash
+./install.sh --move-from=~/Vaults            # old place was the folder ~/Vaults
+./install.sh --move-from=cortex-vaults       # old place was the Docker volume
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 -MoveFrom "$env:USERPROFILE\Vaults"
+powershell -ExecutionPolicy Bypass -File install.ps1 -MoveFrom cortex-vaults
+```
+
+It stops Cortex, copies every vault to the new place, and starts it again. The old copy is left untouched: delete it
+yourself once you see your agents on the page. If the new place already has files in it, nothing is copied.
+
 ---
 
 ## Everyday use

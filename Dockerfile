@@ -24,6 +24,9 @@ COPY scripts/ scripts/
 # HOME on the tmpfs: git keeps nothing there
 ENV HOME=/tmp PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
+# the mount point, ours: a new Docker volume (CORTEX_VAULTS=cortex-vaults) starts as a copy of it, so it is writable
+RUN mkdir /vaults && chown 1000:1000 /vaults
+
 USER 1000:1000
 EXPOSE 8443 8080 5353/udp 9443 9080 5354/udp
 HEALTHCHECK --interval=60s --timeout=5s CMD ["python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8443), 3)"]

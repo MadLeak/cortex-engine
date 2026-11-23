@@ -94,7 +94,7 @@ only edit it when §1 asked for a different port or the human gave an identity:
 | `CORTEX_UID`, `CORTEX_GID` | Linux: the output of `id -u` and `id -g` (the installer fills them). Windows/macOS: leave as is |
 | `CORTEX_OWNER` | the human's name, as they want it in `AGENTS.md` |
 | `CORTEX_GIT_NAME`, `CORTEX_GIT_EMAIL` | the identity vault commits are signed with. **Empty means `finish` cannot commit**: fill them |
-| `CORTEX_VAULTS` | where the vaults live. Commented: the host folder `~/Vaults` (`%USERPROFILE%\Vaults`), mapped into the container. A path: another host folder. `cortex-vaults`: no host folder, a Docker volume (no Obsidian, no `--trusted`). Change it only when the human chose; the default is fine |
+| `CORTEX_VAULTS` | where the vaults live. Commented: the host folder `~/Vaults` (`%USERPROFILE%\Vaults`), mapped into the container. A path: another host folder. `cortex-vaults`: no host folder, a Docker volume (no Obsidian, no `--trusted`). Change it only when the human chose; the default is fine. When it changes on a machine that already has vaults, run the installer with `--move-from=<old place>` (`-MoveFrom`) so they are copied, and leave the old copy for the human to delete |
 
 Never commit `.env` (it is gitignored) and never print its values back in chat beyond the names.
 
