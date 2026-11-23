@@ -1,0 +1,81 @@
+name: 🐞 Bug report
+description: Something in Cortex does not work as it should.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Never paste the contents of a vault** (notes, `MAP.md`, panels, `.env`, tokens): they hold what your agents
+        learned about you, and this page is public. Describe the problem with made-up examples instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, and what Cortex did.
+      placeholder: I ran `docker compose up -d --build` and the hub stopped with ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest list of steps that shows it. A made-up vault (`./cortex.sh new demo --from kitchen-cortex`) is ideal.
+      placeholder: |
+        1. ...
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: Cortex version
+      description: The `VERSION` line of `template-vault/_brain/scripts/brain_core.py`, or what `./cortex.sh doctor` prints.
+      placeholder: "2.26.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: How you run it
+      options:
+        - Docker (install.sh / install.ps1 / docker compose)
+        - Python on the host
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: System
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent or MCP client, if it matters
+      placeholder: Claude Code, Codex, Gemini CLI, OpenCode, Hermes, ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: For example `docker compose logs hub --tail 50`. Check it holds no tokens, addresses or note text first.
+      render: shell
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: This report contains no vault contents, tokens or personal data.
+          required: true

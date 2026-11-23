@@ -1,0 +1,51 @@
+name: 💡 Idea or feature request
+description: Something Cortex could do, or do better.
+title: "idea: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome, small or large. Start from the problem: a clear problem is easier to solve well than a fixed
+        solution. Please do not paste vault contents; made-up examples are best.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is hard, slow, missing or confusing today? Who runs into it?
+      placeholder: When my agent ..., I have to ...
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: What would you like Cortex to do? A rough sketch is fine.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+      description: Workarounds or other tools you have tried, if any.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Memory and recall (the engine)
+        - Agents and MCP
+        - The hub page and panels
+        - Install, Docker and updates
+        - Obsidian and the notes
+        - Docs
+        - Something else
+    validations:
+      required: true
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Would you help?
+      options:
+        - label: I could try it out once it is built.
+        - label: I could help build it.

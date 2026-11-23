@@ -223,8 +223,22 @@ docker compose --profile tools run --rm bench    # how long one memory call take
 Version **2.26.0**. Cortex comes from one person's working setup of several agents sharing a machine. It works every
 day, but it is young: see [what is not tested yet](docs/PENDING.md).
 
+## Bugs, ideas and feedback
+
+Cortex gets better with what you tell it. Pick the form that fits on the
+[new issue page](https://github.com/MadLeak/cortex-engine/issues/new/choose):
+
+| You have… | Use |
+|---|---|
+| Something that does not work | [🐞 Bug report](https://github.com/MadLeak/cortex-engine/issues/new?template=bug_report.yml) |
+| An idea, or something that could work better | [💡 Idea or feature request](https://github.com/MadLeak/cortex-engine/issues/new?template=idea.yml) |
+| A security problem | [🔒 Report it privately](https://github.com/MadLeak/cortex-engine/security/advisories/new), never in a public issue ([SECURITY.md](SECURITY.md)) |
+| A question about commercial use | [💼 Commercial license](https://github.com/MadLeak/cortex-engine/issues/new?template=commercial_license.yml) |
+
+Issues are public: **never paste your notes, panels, `.env` or tokens.** Made-up examples are perfect.
+
 ## License
 
 Copyright (c) 2026 Adhonys Diaz. Free for any **noncommercial** use (personal, research, education, charities) under the
 [PolyForm Noncommercial License 1.0.0](LICENSE.md). Using it in a product, a paid service or a company needs a
-commercial license: open an issue titled "Commercial license".
+commercial license: ask through the [Commercial license](https://github.com/MadLeak/cortex-engine/issues/new?template=commercial_license.yml) form.

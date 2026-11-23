@@ -1,0 +1,25 @@
+name: 💼 Commercial license
+description: Ask about using Cortex in a product, a paid service or a company.
+title: "Commercial license: "
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Cortex is free for noncommercial use under the PolyForm Noncommercial License 1.0.0. Commercial use needs a
+        separate license from the copyright holder. This issue is public: share only what you are happy to make public;
+        contact details can be exchanged once we reply.
+  - type: input
+    id: who
+    attributes:
+      label: Organization
+      placeholder: Company or project name
+    validations:
+      required: true
+  - type: textarea
+    id: use
+    attributes:
+      label: How you would use Cortex
+      description: Product, internal tool, paid service ... and roughly how many users or agents.
+    validations:
+      required: true
