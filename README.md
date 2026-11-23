@@ -93,9 +93,14 @@ Restart the agent. That's it: it now checks its memory at the start of each task
 You choose whether the notes sit in a folder on your computer or stay inside Docker. One line in the `.env` file
 decides it (`CORTEX_VAULTS`); set it before the first start.
 
+> 💡 **Recommended: map a folder.** Cortex is a second brain you are meant to look into. With the vaults in a folder
+> on your computer, you open that folder as a vault in [Obsidian](https://obsidian.md) and see everything your agents
+> know as linked notes and a graph: browse it, search it, fix a note by hand. Inside Docker only, you can still read
+> it on the hub's page, but not in Obsidian.
+
 | Option | `.env` | Good for |
 |---|---|---|
-| **A folder on your computer** (default) | nothing to set: `~/Vaults` (Windows `%USERPROFILE%\Vaults`) | Opening the notes in Obsidian or an editor, and backing them up like any files |
+| **A folder on your computer** (default, recommended) | nothing to set: `~/Vaults` (Windows `%USERPROFILE%\Vaults`) | Seeing your second brain in Obsidian, editing notes, and backing them up like any files |
 | **A folder you pick** | `CORTEX_VAULTS=/path/you/prefer` (Windows `D:\Cortex\Vaults`) | Same, somewhere else (another disk, a synced folder) |
 | **No folder, inside Docker only** | `CORTEX_VAULTS=cortex-vaults` | Keeping your computer clean: nothing is mapped, the notes live in a Docker volume |
 
@@ -106,7 +111,8 @@ With *no folder* you still see everything on the hub's page and with `./cortex.s
 docker run --rm -v cortex_cortex-vaults:/v -v "$PWD":/b alpine tar czf /b/vaults-backup.tgz -C /v .
 ```
 
-Not sure? Keep the default.
+Not sure? Keep the default folder. To look inside, open Obsidian → *Open folder as vault* → pick one agent's folder in
+`Vaults` (for example `Vaults/Claude Cortex`). Each agent's cortex is its own Obsidian vault.
 
 **Changed your mind later?** Your notes come with you. In `.env`, write the new place and the old one, then start
 Cortex as usual:
