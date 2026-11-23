@@ -140,6 +140,11 @@ Most of the time you do nothing: the agent uses its memory by itself. When you w
 | Ask a vault something | `./cortex.sh brain <vault> recall "which day do deploys happen"` |
 | Get a vault's connection token | `./cortex.sh token <vault>` |
 | Start Cortex again after a restart | Open Docker, then `docker compose up -d hub` in the `cortex` folder |
+| Update Cortex | `git pull`, then `docker compose up -d --build` in the `cortex` folder (your agent tells you when a new version is out) |
+
+**Staying up to date is automatic.** Every time an agent starts a task, its memory is upgraded to the newest engine
+Cortex has, with nothing lost. Once a day Cortex also checks GitHub for a new version; when there is one, your agent
+tells you the two commands above. No account, token or image registry is needed: Docker builds Cortex from this folder.
 
 Want to try it without your own data? `./cortex.sh new kitchen-cortex --from kitchen-cortex` creates a small example
 vault about a kitchen.
