@@ -23,6 +23,9 @@ scope; a private one is the LAN scope, which needs --data and signs browsers in 
 DATA/access.key. Public addresses are refused. Requests naming any other host are refused too (DNS rebinding).
 With --data the hub speaks HTTPS with a certificate from its own CA (scripts/hub_tls.py), limited to those names;
 --local-http keeps this machine's listener in plain HTTP (nothing to trust on the host) and HTTPS for the LAN only.
+The LAN listener also serves MCP for the cortexes marked lan, each behind its own token, and lets whoever signed in
+with the access key act as the owner (settings, connect, review), so a hub on a server works from any machine.
+--lan-name adds the names a reverse proxy forwards (cortex.example.com); the first is the address agents are given.
 """
 import argparse
 import hmac
@@ -439,6 +442,7 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
     lan_ip: str | None = None       # the LAN listener's address, for the by-IP links (/v/<agent>/)
     lan_tls = False                 # whether the LAN listener speaks HTTPS (it does whenever there is one)
     lan_public_port = 443           # the port LAN browsers use, for the links to the LAN listener
+    lan_names: list[str] = []       # the names a reverse proxy forwards to the LAN listener (--lan-name)
     owner = os.environ.get("CORTEX_OWNER", "the owner")
     csrf = secrets.token_urlsafe(24)
     sessions: dict[str, float] = {}
@@ -526,7 +530,7 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
         if self.hostname() not in self.allowed and self.vault_host() is None:
             self.send(HTTPStatus.MISDIRECTED_REQUEST, b"this hub does not answer to that host name", TEXT)
             return True
-        if self.key and path not in ("/login", "/ca.crt") and not self.signed_in():
+        if self.key and path not in ("/login", "/ca.crt") and not self.is_mcp(path) and not self.signed_in():
             if path.startswith("/api/") or self.command == "POST":
                 self.send(HTTPStatus.UNAUTHORIZED, b"sign in first", TEXT)
             else:
@@ -546,8 +550,16 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
         return o is not None and (urlsplit(o).hostname or "") in self.allowed
 
     def is_mcp(self, path: str) -> bool:
-        """/mcp/<vault>: the agents' MCP service, on this machine's listener only (--mcp), behind each vault's token."""
-        return self.mcp_hub is not None and self.scope == "localhost" and path.startswith("/mcp/")
+        """/mcp/<vault>: the agents' MCP service (--mcp), behind each vault's token: every cortex on this machine's
+        listener, the cortexes marked lan on the LAN listener."""
+        return self.mcp_hub is not None and path.startswith("/mcp/")
+
+    def mcp_allows(self, name: str) -> bool:
+        return self.scope != "lan" or name in self.visible()
+
+    def is_owner(self) -> bool:
+        """The owner: anyone on this machine's listener, or signed in with the access key on the LAN listener."""
+        return self.scope == "localhost" or (self.scope == "lan" and bool(self.key) and self.signed_in())
 
     def do_DELETE(self):
         path = urlsplit(self.path).path
@@ -576,15 +588,16 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                     by_ip = bool(ipaddress.ip_address(self.hostname()))
                 except ValueError:
                     by_ip = False
-                shared = f"Domain={self.domain}; " if self.domain and "." in self.domain and not by_ip else ""   # the agents' hosts too
+                under = self.domain and "." in self.domain and self.hostname().endswith(self.domain)
+                shared = f"Domain={self.domain}; " if under and not by_ip else ""   # a proxied name is not under it   # the agents' hosts too
                 return self.redirect("/", {"Set-Cookie": f"cortex_hub={tok}; {shared}Path=/; HttpOnly; Secure; "
                                                          f"SameSite=Strict; Max-Age={SESSION_DAYS * 86400}"})
             time.sleep(1)   # slows guessing
             return self.send(HTTPStatus.UNAUTHORIZED, LOGIN.replace("<!--err-->", "<p class=err>Wrong key.</p>").replace("__CREDIT__", CREDIT).encode(),
                              "text/html; charset=utf-8")
         if path == "/api/review/apply":
-            if self.scope != "localhost":   # only the owner, on this machine, marks nodes
-                return self.send(HTTPStatus.FORBIDDEN, b"review from the hub on this machine", TEXT)
+            if not self.is_owner():   # only the owner marks nodes
+                return self.send(HTTPStatus.FORBIDDEN, b"review as the hub's owner", TEXT)
             if not hmac.compare_digest(self.headers.get("X-Cortex-Csrf") or "", self.csrf):
                 return self.send(HTTPStatus.FORBIDDEN, b"stale page: reload it", TEXT)
             try:
@@ -600,21 +613,23 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                 return self.send(HTTPStatus.BAD_REQUEST, json.dumps({"error": str(e)}).encode(), "application/json")
             return self.send(HTTPStatus.INTERNAL_SERVER_ERROR if "error" in out else 200, json.dumps(out).encode(), "application/json")
         if path.startswith("/api/cortex/"):   # one cortex's settings: this machine only, the page's token
-            if self.scope != "localhost":
-                return self.send(HTTPStatus.FORBIDDEN, b"change a cortex from the hub on this machine", TEXT)
+            if not self.is_owner():
+                return self.send(HTTPStatus.FORBIDDEN, b"change a cortex as the hub's owner", TEXT)
             if not hmac.compare_digest(self.headers.get("X-Cortex-Csrf") or "", self.csrf):
                 return self.send(HTTPStatus.FORBIDDEN, b"stale page: reload it", TEXT)
             return self.cortex_action(path, raw)
         if path == "/api/connect":
-            if self.scope != "localhost":   # vaults live on this machine: only its owner connects agents
-                return self.send(HTTPStatus.FORBIDDEN, b"connect agents from the hub on this machine", TEXT)
+            if not self.is_owner():   # only the owner connects agents
+                return self.send(HTTPStatus.FORBIDDEN, b"connect agents as the hub's owner", TEXT)
             if not hmac.compare_digest(self.headers.get("X-Cortex-Csrf") or "", self.csrf):
                 return self.send(HTTPStatus.FORBIDDEN, b"stale page: reload it", TEXT)
             try:
-                out = connect(self.root, self.host_root or str(self.root), json.loads(raw or b"{}"), self.owner, self.creating,
+                req = json.loads(raw or b"{}")
+                if self.scope == "lan" and isinstance(req, dict):
+                    req["scope"] = "lan"   # made from the LAN listener: it must stay visible there
+                out = connect(self.root, self.host_root or str(self.root), req, self.owner, self.creating,
                               self.data, self.lan_domain is not None,
-                              self.url(self.domain if self.domain and "." in self.domain else "localhost")
-                              if self.mcp_hub is not None else None)
+                              self.mcp_base() if self.mcp_hub is not None else None)
                 out["url"] = self.vault_url(out["folder"], out["scope"])
             except ValueError as e:
                 return self.send(HTTPStatus.BAD_REQUEST, json.dumps({"error": str(e)}).encode(), "application/json")
@@ -630,6 +645,8 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
         return vaults(self.root).get(unquote(parts[3])), parts[4]
 
     def mcp_base(self) -> str:
+        if self.scope == "lan" and self.lan_names:   # behind a reverse proxy: the name agents reach it at
+            return f"https://{self.lan_names[0]}"
         return self.url(self.domain if self.domain and "." in self.domain else "localhost")
 
     def cortex_action(self, path: str, raw: bytes):
@@ -719,8 +736,8 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
         if path in VIEWS or path.startswith("/panel/"):   # one shell; the client picks the view
             return self.send(200, PAGE.replace("__CSRF__", self.csrf).replace("__CREDIT__", CREDIT).encode("utf-8"),
                              "text/html; charset=utf-8")
-        if path == "/api/review" and self.scope != "localhost":
-            return self.send(HTTPStatus.FORBIDDEN, b"review from the hub on this machine", TEXT)
+        if path == "/api/review" and not self.is_owner():
+            return self.send(HTTPStatus.FORBIDDEN, b"review as the hub's owner", TEXT)
         if path == "/api/review":
             name = (parse_qs(urlsplit(self.path).query).get("vault") or [""])[0]
             if not name:
@@ -730,8 +747,8 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
             items = list(read_store(review_dir(self.root, self.data) / f"{name}.jsonl").values())
             return self.send(200, json.dumps({"vault": name, "items": items}, ensure_ascii=False).encode(), "application/json")
         if path.startswith("/api/cortex/") and path.endswith("/settings"):
-            if self.scope != "localhost":
-                return self.send(HTTPStatus.FORBIDDEN, b"on this machine only", TEXT)
+            if not self.is_owner():
+                return self.send(HTTPStatus.FORBIDDEN, b"the hub's owner only", TEXT)
             v, _ = self.cortex_target(path)
             if v is None:
                 return self.send(404, b"no such cortex", TEXT)
@@ -741,8 +758,8 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
             out["sync"] = self.sync_scheduler().status(v)
             return self.send(200, json.dumps(out, ensure_ascii=False).encode(), "application/json")
         if path == "/api/memories":   # the owner's Claude Code memory folders, for Connect an agent
-            if self.scope != "localhost":
-                return self.send(HTTPStatus.FORBIDDEN, b"on this machine only", TEXT)
+            if not self.is_owner():
+                return self.send(HTTPStatus.FORBIDDEN, b"the hub's owner only", TEXT)
             return self.send(200, json.dumps({"folders": memory_folders()}).encode(), "application/json")
         if path == "/api/vaults":
             scopes = load_scopes(self.data)
@@ -755,10 +772,11 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                     d["lan_url"] = self.vault_url(d["name"], "lan")
                 if self.lan_ip and d["scope"] == "lan":
                     d["ip_url"] = self.url(self.lan_ip, lan=True) + f"/v/{subdomain(d['name'])}/"
+            owner = self.is_owner()
             hub = {"scope": self.scope, "tls": self.tls is not None, "login": self.key is not None, "domain": self.domain,
-                   "lan": self.lan_domain if self.scope == "localhost" else None,
-                   "connect": self.scope == "localhost" and wire_agent is not None and (ENGINE / "scripts/new_vault.py").is_file(),
-                   "mcp": self.scope == "localhost" and self.mcp_hub is not None}
+                   "owner": owner, "lan": self.lan_domain if owner and self.scope == "localhost" else None,
+                   "connect": owner and wire_agent is not None and (ENGINE / "scripts/new_vault.py").is_file(),
+                   "mcp": owner and self.mcp_hub is not None}
             return self.send(200, json.dumps({"vaults": data, "hub": hub, "t": datetime.now().isoformat(timespec="seconds")}).encode(),
                              "application/json")
         if re.fullmatch(r"/v/[^/]+", path):
@@ -1126,7 +1144,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     const act = el('div', { class: 'actions' }, null, c);
     el('a', { class: 'btn', href: openUrl(v), target: '_blank', rel: 'noopener' }, 'Open panel', act);
     el('a', { class: 'btn', href: openUrl(v, '#3d'), target: '_blank', rel: 'noopener' }, '3D', act);
-    if (hubInfo.scope === 'localhost' && hubInfo.connect)
+    if (hubInfo.owner && hubInfo.connect)
       el('button', { class: 'btn', type: 'button', title: `Settings of ${v.name}` }, 'Settings', act)
         .addEventListener('click', () => openSettings(v.name));
 
@@ -1200,7 +1218,7 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
     panelSlug = null;
   }
   function go(path, push = true) {
-    if (path === '/review' && loaded && hubInfo.scope !== 'localhost') path = '/agents';
+    if (path === '/review' && loaded && !hubInfo.owner) path = '/agents';
     if (path !== location.pathname) history[push ? 'pushState' : 'replaceState'](null, '', path);
     const m = path.match(/^\/panel\/([^/]*)\/?$/);
     const next = m ? 'panel' : path === '/wall' ? 'wall' : path === '/review' ? 'review' : 'agents';
@@ -1240,12 +1258,12 @@ dialog pre { font-size: 11px; white-space: pre-wrap; max-height: 160px; overflow
         el('a', { class: 'ext', href: v.url || `/v/${v.slug}/`, target: '_blank', rel: 'noopener', title: `Open ${v.name} on its own host`, 'aria-label': `Open ${v.name} in a new tab` }, '↗', pv);
       }
     }
-    $('#nav-review').hidden = hubInfo.scope !== 'localhost';
+    $('#nav-review').hidden = !hubInfo.owner;
     $('#nav-connect').hidden = !hubInfo.connect;
     $('#nav-ca').hidden = !hubInfo.tls;
   }
   async function reviewCount() {
-    if (hubInfo.scope !== 'localhost') return;
+    if (!hubInfo.owner) return;
     try {
       const r = await (await fetch('/api/review', { cache: 'no-store' })).json();
       const n = r.vaults.reduce((s, v) => s + v.open, 0);
@@ -1385,7 +1403,7 @@ Model server: ${rem.model}` : '');
     const key = new URLSearchParams(location.search).get('settings');
     if (!key) return;
     history.replaceState(null, '', location.pathname);
-    if (hubInfo.scope !== 'localhost' || !hubInfo.connect) return;
+    if (!hubInfo.owner || !hubInfo.connect) return;
     const label = v => { try { return v.url ? new URL(v.url).hostname.split('.')[0] : ''; } catch (e) { return ''; } };
     const v = vaults.find(x => x.name === key || decodeURIComponent(x.slug) === key || label(x) === key);
     if (v) openSettings(v.name);
@@ -1641,6 +1659,9 @@ def main() -> None:
     lan.add_argument("--lan-public-port", type=int, default=443, help="port LAN browsers use (443: none in the links)")
     lan.add_argument("--lan-redirect-port", type=int)
     lan.add_argument("--lan-dns-port", type=int)
+    lan.add_argument("--lan-name", action="append", default=[n for n in (env("CORTEX_LAN_NAMES") or "").split(",") if n.strip()],
+                     help="a name a reverse proxy forwards to the LAN listener (cortex.example.com); repeat for more. "
+                          "The first is the MCP address agents are given")
     a = ap.parse_args()
     import hub_tls
     address = a.address or a.host
@@ -1665,6 +1686,13 @@ def main() -> None:
     Hub.lan_domain = lan_dns[0] if a.lan_address else None
     Hub.lan_ip = a.lan_address
     Hub.lan_public_port = a.lan_public_port
+    names_ok = [n.strip().lower() for n in a.lan_name if n.strip()]
+    if names_ok and not a.lan_address:
+        sys.exit("--lan-name needs the LAN listener (--lan-address)")
+    for n in names_ok:
+        if not hub_tls.HOSTNAME.fullmatch(n):
+            sys.exit(f"--lan-name {n}: a host name")
+    Hub.lan_names = names_ok
     ctx, scheme = None, "http"
     if Hub.data and not (a.local_http and not a.lan_address):   # --local-http with no LAN listener: no CA at all
         names = dns + (lan_dns if a.lan_address else [])
@@ -1718,7 +1746,8 @@ def main() -> None:
         print(f"DNS on {a.host}:{a.dns_port}/udp: " + ", ".join(f"*.{d} = {ip}" for d, ip in zones.items()), flush=True)
     if a.lan_address:
         lan_hub = type("LanHub", (Hub,), {"scope": "lan", "domain": lan_dns[0], "key": key,
-                                          "allowed": own(lan_dns) | set(lan_ips), "public_port": a.lan_public_port})
+                                          "allowed": own(lan_dns) | set(lan_ips) | set(Hub.lan_names),
+                                          "public_port": a.lan_public_port})
         lan_httpd = listen(lan_hub, a.host, a.lan_port, ctx, a.lan_redirect_port)
         threading.Thread(target=lan_httpd.serve_forever, daemon=True).start()
         print(f"LAN listener for {', '.join(lan_dns + lan_ips)} on {a.host}:{a.lan_port}: the vaults marked lan, "

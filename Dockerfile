@@ -31,3 +31,8 @@ USER 1000:1000
 EXPOSE 8443 8080 5353/udp 9443 9080 5354/udp
 HEALTHCHECK --interval=60s --timeout=5s CMD ["python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8443), 3)"]
 ENTRYPOINT ["python3", "/opt/cortex/scripts/cortex_hub.py", "--root", "/vaults", "--data", "/vaults/.cortex-hub", "--host", "0.0.0.0", "--port", "8443"]
+# Alone (docker run, or a platform such as Coolify) it serves as compose does: MCP, plain HTTP on this machine's
+# listener. On a server set CORTEX_LAN_ADDRESS (the host's LAN address), CORTEX_LAN_HOST (its name) and, behind a
+# reverse proxy, CORTEX_LAN_NAMES (cortex.example.com): the LAN listener on 9443 then serves the cortexes marked lan,
+# MCP behind each vault's token and the page behind the access key. compose.yaml passes its own command.
+CMD ["--address=127.0.0.1", "--domain=cortex.localhost", "--mcp", "--local-http", "--lan-port=9443"]

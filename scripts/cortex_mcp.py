@@ -1286,6 +1286,10 @@ class McpRoutes:
     mcp_require_token = False
     mcp_tokens: dict = {}
 
+    def mcp_allows(self, name: str) -> bool:
+        """Whether this listener serves that vault over MCP; the Cortex hub narrows it on its LAN listener."""
+        return True
+
     def mcp_send(self, code: int, body: dict | list | None = None, extra: dict | None = None):
         data = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -1312,7 +1316,7 @@ class McpRoutes:
     def mcp_get(self):
         parts, _ = self.mcp_target()
         if parts == ["health"] or parts == ["mcp", "health"]:
-            names = sorted({v.name for v in self.mcp_hub.vaults().values()})
+            names = sorted({v.name for v in self.mcp_hub.vaults().values() if self.mcp_allows(v.name)})
             return self.mcp_send(200, {"ok": True, "vaults": names})
         if len(parts) == 2 and parts[0] == "mcp":
             return self.mcp_send(405, None, {"Allow": "POST"})   # no server-initiated stream: answers ride their POST
@@ -1332,8 +1336,10 @@ class McpRoutes:
             return self.mcp_send(400, failure(None, -32602, "role is reader or curator"))
         hub = self.mcp_hub
         v = hub.vaults().get(parts[1])
+        if v is not None and not self.mcp_allows(v.name):
+            v = None   # not served on this listener: answered as if it did not exist
         if v is None:
-            names = sorted({x.name for x in hub.vaults().values()})
+            names = sorted({x.name for x in hub.vaults().values() if self.mcp_allows(x.name)})
             return self.mcp_send(404, failure(None, -32602, f"no vault {parts[1]}; served here: {', '.join(names)}"))
         if self.mcp_require_token and not token_ok(v, self.headers.get("Authorization"), self.mcp_tokens):
             return self.mcp_send(401, failure(None, -32001, f"this cortex needs its token: Authorization: Bearer "

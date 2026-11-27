@@ -295,6 +295,83 @@ class ScopeTest(unittest.TestCase):
                                "o", lock, data, lan=False)
 
 
+class LanProxyTest(unittest.TestCase):
+    """A hub on a server behind a reverse proxy: the LAN listener answers the proxied name, serves MCP for the cortexes
+    marked lan behind each vault's token, and treats whoever signed in with the access key as the owner."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        for name in ("Fern Cortex", "Kale Cortex"):
+            v = root / name / "_brain"
+            (v / "scripts").mkdir(parents=True)
+            (v / "scripts" / "brain.py").write_text("")
+            (v / "Panel.html").write_text(f"<html>{name}</html>")
+            (v / "config.json").write_text("{}")
+        data = root / ".cortex-hub"
+        data.mkdir()
+        cortex_hub.save_scope(data, "Kale Cortex", "lan")
+        self.kale = cortex_hub.cortex_mcp.ensure_token(root / "Kale Cortex")
+        self.fern = cortex_hub.cortex_mcp.ensure_token(root / "Fern Cortex")
+        self.lan = type("LanHub", (cortex_hub.Hub,), {
+            "root": root, "data": data, "scope": "lan", "domain": "athena.cortex.home", "key": "the-access-key",
+            "allowed": {"athena.cortex.home", "cortex.example.com"}, "lan_domain": "athena.cortex.home",
+            "lan_names": ["cortex.example.com"], "sessions": {},
+            "mcp_hub": cortex_hub.cortex_mcp.Hub(root, 10.0), "mcp_require_token": True, "mcp_tokens": {}})
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.lan)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.tmp.cleanup()
+
+    def call(self, path, data=None, headers=None):
+        h = {"Host": "cortex.example.com", **(headers or {})}
+        req = urllib.request.Request(self.base + path, data=data, headers=h)
+        opener = urllib.request.build_opener(NoRedirect)
+        try:
+            with opener.open(req) as r:
+                return r.status, r.read().decode(), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, e.read().decode(), dict(e.headers)
+
+    def sign_in(self) -> dict:
+        status, _, headers = self.call("/login", b"key=the-access-key")
+        self.assertEqual(status, 302)
+        cookie = headers["Set-Cookie"]
+        self.assertNotIn("Domain=", cookie, "the proxied name is not under the LAN domain: a host-only cookie")
+        return {"Cookie": cookie.split(";")[0]}
+
+    def test_mcp_serves_lan_cortexes_behind_their_tokens_without_signing_in(self):
+        ping = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
+        ok = self.call("/mcp/Kale%20Cortex", ping, {"Authorization": f"Bearer {self.kale}", "Content-Type": "application/json"})
+        self.assertEqual((ok[0], json.loads(ok[1])["result"]), (200, {}))
+        self.assertEqual(self.call("/mcp/Kale%20Cortex", ping, {"Authorization": "Bearer guess"})[0], 401)
+        self.assertEqual(self.call("/mcp/Fern%20Cortex", ping, {"Authorization": f"Bearer {self.fern}"})[0], 404,
+                         "a local cortex is not served on the LAN listener, even with its token")
+        self.assertEqual(json.loads(self.call("/mcp/health")[1])["vaults"], ["Kale Cortex"])
+        self.assertEqual(self.call("/mcp/Kale%20Cortex", ping, {"Authorization": f"Bearer {self.kale}",
+                                                                  "Host": "evil.example"})[0], 421)
+
+    def test_the_page_asks_for_the_key_and_the_signed_in_owner_may_change_a_cortex(self):
+        self.assertEqual(self.call("/api/vaults")[0], 401)
+        self.assertEqual(self.call("/api/cortex/Kale%20Cortex/settings")[0], 401)
+        cookie = self.sign_in()
+        hub = json.loads(self.call("/api/vaults", headers=cookie)[1])["hub"]
+        self.assertTrue(hub["owner"])
+        self.assertEqual(self.call("/api/cortex/Kale%20Cortex/settings", headers=cookie)[0], 200)
+        self.assertEqual(self.lan.mcp_base(self.lan.__new__(self.lan)), "https://cortex.example.com",
+                         "agents are given the proxied name")
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 class TlsTest(unittest.TestCase):
     """A new machine name or address renews the server certificate under the same CA; nothing public can be signed."""
 
