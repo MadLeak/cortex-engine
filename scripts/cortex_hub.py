@@ -800,6 +800,10 @@ class Hub(hub_oauth.OAuthRoutes, cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                     d["lan_url"] = self.vault_url(d["name"], "lan")
                 if self.lan_ip and d["scope"] == "lan":
                     d["ip_url"] = self.url(self.lan_ip, lan=True) + f"/v/{subdomain(d['name'])}/"
+                if self.scope == "lan" and self.hostname() in self.lan_names:
+                    # behind a reverse proxy only its own name resolves: every panel by path on it (no by-IP link)
+                    d["url"] = d["lan_url"] = f"https://{self.hostname()}/v/{subdomain(d['name'])}/"
+                    d.pop("ip_url", None)
             owner = self.is_owner()
             hub = {"scope": self.scope, "tls": self.tls is not None, "login": self.key is not None, "domain": self.domain,
                    "owner": owner, "lan": self.lan_domain if owner and self.scope == "localhost" else None,

@@ -366,6 +366,14 @@ class LanProxyTest(unittest.TestCase):
         self.assertEqual(self.lan.mcp_base(self.lan.__new__(self.lan)), "https://cortex.example.com",
                          "agents are given the proxied name")
 
+    def test_panels_open_by_path_on_the_proxied_name(self):
+        cookie = self.sign_in()
+        kale = json.loads(self.call("/api/vaults", headers=cookie)[1])["vaults"][0]
+        self.assertEqual((kale["url"], kale["lan_url"]), ("https://cortex.example.com/v/kale/",) * 2,
+                         "only the proxied name resolves: no <agent>.<host>.cortex.home link")
+        self.assertNotIn("ip_url", kale)
+        self.assertEqual(self.call("/v/kale/Panel.html", headers=cookie)[1], "<html>Kale Cortex</html>")
+
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
