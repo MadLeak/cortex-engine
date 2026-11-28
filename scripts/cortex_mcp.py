@@ -1260,6 +1260,14 @@ def ensure_token(vault: Path) -> str:
     return tok
 
 
+def rotate_token(vault: Path) -> str:
+    """A new MCP token for the vault: the old one stops working at once (token_ok rereads a changed file)."""
+    p = token_path(vault)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
+    return ensure_token(vault)
+
+
 def token_ok(vault: Path, header: str | None, cached: dict) -> bool:
     """Authorization: Bearer <the vault's token>. The token is cached by the file's mtime and size, so a new token
     written to the file takes over at once and the old one stops working; a missing file lets nobody in."""
@@ -1285,6 +1293,20 @@ class McpRoutes:
     mcp_hub: "Hub | None" = None
     mcp_require_token = False
     mcp_tokens: dict = {}
+
+    def mcp_allows(self, name: str) -> bool:
+        """Whether this listener serves that vault over MCP; the Cortex hub narrows it on its LAN listener."""
+        return True
+
+    def mcp_denied(self, v: Path) -> bool:
+        """Whether this call is refused, and answered: with mcp_require_token, the vault's own token or a 401. The
+        Cortex hub adds OAuth sessions and the abuse checks (hub_oauth.OAuthRoutes)."""
+        if self.mcp_require_token and not token_ok(v, self.headers.get("Authorization"), self.mcp_tokens):
+            self.mcp_send(401, failure(None, -32001, f"this cortex needs its token: Authorization: Bearer "
+                                                     f"<the line in {v.name}/{TOKEN_IGNORE}>"),
+                          {"WWW-Authenticate": 'Bearer realm="cortex"'})
+            return True
+        return False
 
     def mcp_send(self, code: int, body: dict | list | None = None, extra: dict | None = None):
         data = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -1312,11 +1334,12 @@ class McpRoutes:
     def mcp_get(self):
         parts, _ = self.mcp_target()
         if parts == ["health"] or parts == ["mcp", "health"]:
-            names = sorted({v.name for v in self.mcp_hub.vaults().values()})
+            names = sorted({v.name for v in self.mcp_hub.vaults().values() if self.mcp_allows(v.name)})
             return self.mcp_send(200, {"ok": True, "vaults": names})
         if len(parts) == 2 and parts[0] == "mcp":
             return self.mcp_send(405, None, {"Allow": "POST"})   # no server-initiated stream: answers ride their POST
-        self.mcp_send(404, {"error": "not found"})      # e.g. an OAuth discovery probe: the token is a plain bearer
+        self.mcp_send(404, {"error": "not found"})      # e.g. an OAuth discovery probe: here the token is a plain
+        # bearer; the Cortex hub answers discovery itself (hub_oauth)
 
     def mcp_delete(self):
         self.mcp_send(405, None, {"Allow": "POST"})
@@ -1332,18 +1355,23 @@ class McpRoutes:
             return self.mcp_send(400, failure(None, -32602, "role is reader or curator"))
         hub = self.mcp_hub
         v = hub.vaults().get(parts[1])
+        if v is not None and not self.mcp_allows(v.name):
+            v = None   # not served on this listener: answered as if it did not exist
         if v is None:
-            names = sorted({x.name for x in hub.vaults().values()})
+            names = sorted({x.name for x in hub.vaults().values() if self.mcp_allows(x.name)})
             return self.mcp_send(404, failure(None, -32602, f"no vault {parts[1]}; served here: {', '.join(names)}"))
-        if self.mcp_require_token and not token_ok(v, self.headers.get("Authorization"), self.mcp_tokens):
-            return self.mcp_send(401, failure(None, -32001, f"this cortex needs its token: Authorization: Bearer "
-                                                            f"<the line in {v.name}/{TOKEN_IGNORE}>"),
-                                 {"WWW-Authenticate": 'Bearer realm="cortex"'})
+        if self.mcp_denied(v):
+            return
         st = hub.server(parts[1], q.get("by"), role)
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            if n > MAX_BODY:
-                return self.mcp_send(413, failure(None, -32600, "request too large"))
+        except ValueError:
+            return self.mcp_send(400, failure(None, -32600, "bad Content-Length"))
+        if n < 0:
+            return self.mcp_send(400, failure(None, -32600, "bad Content-Length"))
+        if n > MAX_BODY:
+            return self.mcp_send(413, failure(None, -32600, "request too large"))
+        try:
             msg = json.loads(self.rfile.read(n).decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return self.mcp_send(400, failure(None, -32700, "that body is not json"))

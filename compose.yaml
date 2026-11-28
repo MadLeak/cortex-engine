@@ -116,6 +116,11 @@ services:
       CORTEX_UPDATE_CHECK: ${CORTEX_UPDATE_CHECK:-1}   # once a day, is a newer Cortex published? said on brief (0: never ask)
       CORTEX_UPDATE_HOURS: ${CORTEX_UPDATE_HOURS:-24}
       CORTEX_UPDATE_REPO: ${CORTEX_UPDATE_REPO:-MadLeak/cortex-engine}
+      # behind a reverse proxy: its address or network (comma list), so the bad-token limit counts the client named in
+      # X-Forwarded-For, not the proxy (docs/RUNBOOK.md, Static tokens)
+      CORTEX_TRUSTED_PROXIES: ${CORTEX_TRUSTED_PROXIES:-}
+      # a URL the hub POSTs each security alert to, as JSON (it is also a line in .cortex-hub/alerts.jsonl)
+      CORTEX_ALERT_WEBHOOK: ${CORTEX_ALERT_WEBHOOK:-}
     volumes:
       - ${CORTEX_VAULTS:-${HOME:-${USERPROFILE}}/Vaults}:/vaults
       - ${CORTEX_CLAUDE_PROJECTS:-${HOME:-${USERPROFILE}}/.claude/projects}:/claude-projects:ro   # memory to import
