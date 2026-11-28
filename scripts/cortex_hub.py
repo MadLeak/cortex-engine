@@ -29,6 +29,7 @@ with the access key act as the owner (settings, connect, review), so a hub on a 
 """
 import argparse
 import hmac
+import html
 import ipaddress
 import json
 import os
@@ -44,7 +45,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlsplit
 
 ENGINE = Path(__file__).resolve().parents[1]   # the engine repository, when the hub runs from it
 sys.path.insert(0, str(ENGINE / "installers"))
@@ -58,6 +59,7 @@ import hub_rem  # noqa: E402  (REM dreaming inside the container)
 import hub_sync  # noqa: E402  (a cortex kept in step with its remote)
 import hub_settings  # noqa: E402  (each cortex's Settings dialog)
 import hub_update  # noqa: E402  (every cortex on the latest engine; a newer Cortex said on brief)
+import hub_oauth  # noqa: E402  (agent sessions over OAuth 2.1, abuse checks on static tokens)
 
 ACTIVITY_PREFIX = "window.BRAIN_ACTIVITY = "
 # the only files of a vault the hub serves, relative to its _brain folder
@@ -428,7 +430,7 @@ class Server(ThreadingHTTPServer):
             tls.close()
 
 
-class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
+class Hub(hub_oauth.OAuthRoutes, cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
     root: Path = Path.home() / "Vaults"
     host_root: str | None = None   # the root as the agents' machine writes it (the container sees /vaults)
     allowed: set[str] = {"localhost", "127.0.0.1", "::1"}   # Host header names the hub answers to
@@ -467,6 +469,8 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
         pass
 
     def send(self, code: int, body: bytes, ctype: str, headers: dict | None = None):
+        if any("\r" in str(v) or "\n" in str(v) for v in (headers or {}).values()):   # never a header injection
+            code, body, ctype, headers = HTTPStatus.INTERNAL_SERVER_ERROR, b"refused: a bad header value", TEXT, None
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -530,20 +534,34 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
         if self.hostname() not in self.allowed and self.vault_host() is None:
             self.send(HTTPStatus.MISDIRECTED_REQUEST, b"this hub does not answer to that host name", TEXT)
             return True
-        if self.key and path not in ("/login", "/ca.crt") and not self.is_mcp(path) and not self.signed_in():
+        if self.key and path not in ("/login", "/ca.crt") and not self.is_mcp(path) and not self.oauth_public(path) \
+                and not self.signed_in():
             if path.startswith("/api/") or self.command == "POST":
                 self.send(HTTPStatus.UNAUTHORIZED, b"sign in first", TEXT)
+            elif path == "/oauth/authorize":   # an agent's approval: sign in, then back to it
+                self.redirect("/login?next=" + quote(self.path, safe=""))
             else:
                 self.redirect("/login")
             return True
         return False
 
     def body(self, limit: int = 8192) -> bytes:
+        """The request body, at most `limit` bytes. ValueError("request too large") or ("bad Content-Length")."""
         limit = 262144 if urlsplit(self.path).path == "/api/review/apply" else limit   # a whole domain's decisions
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("bad Content-Length") from None
+        if n < 0:
+            raise ValueError("bad Content-Length")
         if n > limit:
             raise ValueError("request too large")
         return self.rfile.read(n)
+
+    def bad_body(self, e: ValueError):
+        if str(e) == "request too large":
+            return self.send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, b"request too large", TEXT)
+        return self.send(HTTPStatus.BAD_REQUEST, b"bad Content-Length", TEXT)
 
     def same_origin(self) -> bool:
         o = self.headers.get("Origin")
@@ -573,14 +591,24 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
             return
         if self.is_mcp(path):   # an agent, not a browser: its token stands in for the page's same-origin checks
             return self.mcp_post()
+        if self.oauth_public(path):   # an agent registering or getting its tokens: no browser either
+            try:
+                raw = self.body()
+            except ValueError as e:
+                return self.bad_body(e)
+            return self.oauth_post_public(path, raw)
         if path != "/login" and not self.same_origin():   # sign-in carries the key in the body: no Origin needed
             return self.send(HTTPStatus.FORBIDDEN, b"cross-site request refused", TEXT)
         try:
             raw = self.body()
-        except ValueError:
-            return self.send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, b"request too large", TEXT)
+        except ValueError as e:
+            return self.bad_body(e)
+        if self.oauth_post_owner(path, raw):   # an agent's approval, a session revoked
+            return
         if path == "/login":
-            key = (parse_qs(raw.decode("utf-8", "replace")).get("key") or [""])[0].strip()
+            form = parse_qs(raw.decode("utf-8", "replace"))
+            key = (form.get("key") or [""])[0].strip()
+            back = login_next((form.get("next") or [""])[0])
             if self.key and hmac.compare_digest(key.encode(), self.key.encode()):
                 tok = secrets.token_urlsafe(32)
                 self.sessions[tok] = time.time() + SESSION_DAYS * 86400
@@ -590,10 +618,10 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                     by_ip = False
                 under = self.domain and "." in self.domain and self.hostname().endswith(self.domain)
                 shared = f"Domain={self.domain}; " if under and not by_ip else ""   # a proxied name is not under it   # the agents' hosts too
-                return self.redirect("/", {"Set-Cookie": f"cortex_hub={tok}; {shared}Path=/; HttpOnly; Secure; "
-                                                         f"SameSite=Strict; Max-Age={SESSION_DAYS * 86400}"})
+                return self.redirect(back or "/", {"Set-Cookie": f"cortex_hub={tok}; {shared}Path=/; HttpOnly; Secure; "
+                                                                 f"SameSite=Strict; Max-Age={SESSION_DAYS * 86400}"})
             time.sleep(1)   # slows guessing
-            return self.send(HTTPStatus.UNAUTHORIZED, LOGIN.replace("<!--err-->", "<p class=err>Wrong key.</p>").replace("__CREDIT__", CREDIT).encode(),
+            return self.send(HTTPStatus.UNAUTHORIZED, login_page(back).replace("<!--err-->", "<p class=err>Wrong key.</p>").encode(),
                              "text/html; charset=utf-8")
         if path == "/api/review/apply":
             if not self.is_owner():   # only the owner marks nodes
@@ -674,10 +702,7 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                 elif action == "push":
                     out = {"message": hub_settings.push(v)}
                 elif action == "rotate-token":
-                    import secrets as _s
-                    cortex_mcp.token_path(v).parent.mkdir(parents=True, exist_ok=True)
-                    cortex_mcp.token_path(v).write_text(_s.token_urlsafe(32) + "\n", encoding="utf-8")
-                    token = cortex_mcp.ensure_token(v)
+                    token = cortex_mcp.rotate_token(v)
                     learner = hub_settings.read_config(v).get("learner") or "agent"
                     out = {"message": "new MCP token: the old one no longer works",
                            "token": token, "url": f"{self.mcp_base()}/mcp/{quote(v.name)}?by={quote(learner)}"}
@@ -716,6 +741,8 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
             return
         if self.is_mcp(path):
             return self.mcp_get()
+        if self.oauth_get(path):   # discovery, an agent's approval page, the owner's list of sessions
+            return
         own = self.vault_host()
         if own is not None:   # an agent's own host: its panel at the root
             rel = "Panel.html" if path in ("/", "/Panel.html") else path.lstrip("/")
@@ -729,7 +756,8 @@ class Hub(cortex_mcp.McpRoutes, BaseHTTPRequestHandler):
                 return self.redirect(self.url(self.domain) + "/login")
             return self.send(404, b"not found", TEXT)
         if path == "/login":
-            return self.send(200, LOGIN.replace("__CREDIT__", CREDIT).encode(), "text/html; charset=utf-8") if self.key else self.redirect("/")
+            back = login_next((parse_qs(urlsplit(self.path).query).get("next") or [""])[0])
+            return self.send(200, login_page(back).encode(), "text/html; charset=utf-8") if self.key else self.redirect(back or "/")
         if path == "/ca.crt" and self.tls:
             return self.send(200, (self.tls / "ca.crt").read_bytes(), "application/x-x509-ca-cert",
                              {"Content-Disposition": 'attachment; filename="cortex-hub-ca.crt"'})
@@ -1613,6 +1641,7 @@ button { cursor: pointer; }
   <h1>Cortex hub</h1>
   <p>Local network scope. Sign in with the access key in the hub's data folder (access.key).</p>
   <!--err-->
+  <!--next-->
   <input type="password" name="key" aria-label="Access key" autocomplete="current-password" required autofocus>
   <button type="submit">Sign in</button>
 </form>
@@ -1620,6 +1649,20 @@ button { cursor: pointer; }
 </body>
 </html>
 """
+
+
+def login_next(n: str) -> str:
+    """Where a sign-in goes back to: only an agent's approval page, never another site, rebuilt from its parsed
+    query so nothing (no CR or LF) reaches the Location header unencoded."""
+    path, sep, query = (n or "").partition("?")
+    if path != "/oauth/authorize":
+        return ""
+    return path + ("?" + urlencode(parse_qsl(query, keep_blank_values=True)) if sep and query else "")
+
+
+def login_page(back: str = "") -> str:
+    hidden = f'<input type="hidden" name="next" value="{html.escape(back, quote=True)}">' if back else ""
+    return LOGIN.replace("__CREDIT__", CREDIT).replace("<!--next-->", hidden)
 
 
 def listen(cls: type, host: str, port: int, ctx: ssl.SSLContext | None, redirect: int | None) -> Server:
@@ -1662,6 +1705,9 @@ def main() -> None:
     lan.add_argument("--lan-name", action="append", default=[n for n in (env("CORTEX_LAN_NAMES") or "").split(",") if n.strip()],
                      help="a name a reverse proxy forwards to the LAN listener (cortex.example.com); repeat for more. "
                           "The first is the MCP address agents are given")
+    ap.add_argument("--trusted-proxy", action="append", default=[env("CORTEX_TRUSTED_PROXIES") or ""],
+                    help="a reverse proxy's address or network (also CORTEX_TRUSTED_PROXIES, comma separated): for "
+                         "its requests the client address is the last X-Forwarded-For hop; repeat for more")
     a = ap.parse_args()
     import hub_tls
     address = a.address or a.host
@@ -1693,6 +1739,9 @@ def main() -> None:
         if not hub_tls.HOSTNAME.fullmatch(n):
             sys.exit(f"--lan-name {n}: a host name")
     Hub.lan_names = names_ok
+    if names_ok and not hub_oauth.parse_proxies(a.trusted_proxy):
+        sys.exit("--lan-name needs --trusted-proxy (CORTEX_TRUSTED_PROXIES): without it every client behind the reverse "
+                 "proxy shares its address, so one client's bad tokens or registrations would lock them all out")
     ctx, scheme = None, "http"
     if Hub.data and not (a.local_http and not a.lan_address):   # --local-http with no LAN listener: no CA at all
         names = dns + (lan_dns if a.lan_address else [])
@@ -1734,6 +1783,12 @@ def main() -> None:
             print(line, flush=True)
         for v in vaults(Hub.root).values():
             cortex_mcp.ensure_token(v)
+        hub_oauth.DATA = Hub.data   # alerts.jsonl beside the CA and the access key
+        Hub.oauth = hub_oauth.Store(Hub.data / "oauth.json" if Hub.data else None)
+        Hub.limiter = hub_oauth.Limiter()
+        Hub.reg_limiter = hub_oauth.Limiter(limit=hub_oauth.REG_LIMIT, window=hub_oauth.REG_WINDOW,
+                                            block=hub_oauth.REG_BLOCK)
+        Hub.trusted_proxies = hub_oauth.parse_proxies(a.trusted_proxy)
         hub_update.UPSTREAM.poke(Hub.root)   # is a newer Cortex published? asked in the background, said on brief
         port = "" if (scheme, Hub.public_port) in (("https", 443), ("http", 80)) else f":{Hub.public_port}"
         print(f"MCP at {scheme}://{dns[0]}{port}/mcp/<vault>, each vault behind the token in "

@@ -131,6 +131,46 @@ Skills extension serves the curator skills. The server's `instructions` (sent wi
 which clients put in the model's instructions) tell the agent that this vault is its long-term memory, to start each
 task with `action=brief` and to end it with `action=finish`: nothing to tell it by hand. Only Claude Code's line has been tried against a real client; the others follow each tool's docs.
 
+**Agent sessions (OAuth 2.1).** Besides the static token, `/mcp/<vault>` takes an OAuth access token, as the MCP
+authorization spec defines it, so a client that speaks it (Claude Code, Codex, Gemini CLI, OpenCode) signs in and keeps
+its tokens itself: register the URL with no `Authorization` header and the client does the rest.
+- **Discovery:** a call with no token gets 401 with `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource/mcp/<vault>"`;
+  that document and `/.well-known/oauth-authorization-server` name the endpoints. `<base>` is the first `--lan-name`
+  behind a proxy, else the listener's own URL. Clients register themselves (`POST /oauth/register`, public clients,
+  redirect URIs on a loopback address or https, printable ASCII only), at most 10 per client address in 10 minutes;
+  a client the owner never approves is forgotten after 10 minutes, and when the registry is full (500) the oldest of
+  those makes room.
+- **Enrollment:** the client opens `/oauth/authorize` in the browser (PKCE S256 required, `resource` = one vault's MCP
+  URL). Only the hub's owner sees the approval page: anyone on this machine's listener, or signed in with the access key
+  on the LAN listener (not signed in, the hub asks for the key and comes back to the page). *Approve* is the agent's
+  enrollment on that one vault; *Deny* tells the client so. A malformed request goes back to the client only on a
+  loopback redirect URI; to an https one it is an error page (the hub is no open redirector).
+- **Idle 60 minutes:** the access token works for its vault only and dies after 60 minutes without a call (each accepted
+  call extends it), and 24 hours after it was issued in any case. The client then refreshes on its own.
+- **Rotation:** each refresh returns a new access and refresh token, and the presented refresh token stops working. The
+  previous one presented again within 30 s gets the same pair back (a client retrying a lost answer).
+- **Reuse:** a used refresh token presented later, an older one, a code used twice, or an access token of one vault
+  presented at another means it leaked: the whole session is revoked and an alert written. The agent must be approved
+  again. `GET /api/oauth` lists each vault's sessions (client, created, last used, state) and
+  `POST /api/oauth/<id>/revoke` ends one, both for the owner only (the page's token for the POST).
+- Sessions live in `<data>/oauth.json` (mode 600, written atomically), tokens only as SHA-256 hashes, never logged.
+
+**Static tokens.** Agents that only send a fixed header (Hermes, n8n's MCP client) keep using
+`<vault>/_brain/state/mcp.token`, with two protections:
+- one vault's token presented at another vault's endpoint is rotated at once (as *New token* does) with an alert: give
+  its agents the new one. The vault that was called is never touched;
+- a bearer that matches nothing, 5 times within 10 minutes from one client address (an IPv6 one by its /64), gets
+  that address 429 for its unknown bearers for 15 minutes; a valid token is checked first and always works, so an
+  agent sharing the address is not locked out (no token is revoked; a call with no header at all is not counted; one
+  alert per address a minute at most). The client address is the socket peer;
+  behind a reverse proxy, list the proxy in `CORTEX_TRUSTED_PROXIES` (comma separated addresses or networks, also
+  `--trusted-proxy`) and the last `X-Forwarded-For` hop is used instead. Without it every client behind the proxy
+  shares the proxy's address, and so its block: the hub refuses to start when `--lan-name` is set without it.
+
+**Alerts.** Each of these events is a JSON line `{t, kind, vault, detail}` in `<data>/alerts.jsonl` (kinds:
+`oauth_wrong_vault`, `refresh_reuse`, `code_reuse`, `static_token_misuse`, `bad_bearer_block`), never with a token in it.
+With `CORTEX_ALERT_WEBHOOK` set, the hub also POSTs the same JSON there (5 s timeout; a failure is one log line).
+
 **Starting with a memory.** A new cortex can start with what the agent already knows. *Connect an agent* lists the
 owner's Claude Code memory folders (`~/.claude/projects/*/memory`, mounted read-only); the ones ticked are imported as
 the cortex is made, and `./cortex.sh memories` / `./cortex.sh import <vault> <project>...` do it from the command line,
